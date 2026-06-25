@@ -1,0 +1,196 @@
+"""
+会话 API 路由: Thread 的 CRUD、消息列表
+"""
+
+import logging
+from uuid import UUID
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, desc
+
+from app.db.engine import get_db
+from app.api.deps import get_current_user
+from app.models.user import User
+from app.models.thread import Thread
+from app.models.message import Message
+from app.schemas.thread import (
+    ThreadCreate, ThreadResponse, ThreadListResponse,
+    ThreadUpdateTitle, ThreadUpdateGraph, MessageResponse,
+)
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@router.get("", response_model=ThreadListResponse)
+async def list_threads(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # 总数
+    count_result = await db.execute(
+        select(func.count(Thread.id)).where(
+            Thread.user_id == current_user.id, Thread.is_archived == False
+        )
+    )
+    total = count_result.scalar()
+
+    # 分页查询
+    result = await db.execute(
+        select(Thread)
+        .where(Thread.user_id == current_user.id, Thread.is_archived == False)
+        .order_by(desc(Thread.updated_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    threads = result.scalars().all()
+
+    return ThreadListResponse(
+        threads=[ThreadResponse.model_validate(t) for t in threads],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("", response_model=ThreadResponse, status_code=201)
+async def create_thread(
+    req: ThreadCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    thread = Thread(
+        user_id=current_user.id,
+        title=req.title,
+        preset_type=req.preset_type,
+        execution_graph=req.execution_graph,
+    )
+    db.add(thread)
+    await db.flush()
+    await db.refresh(thread)
+    await db.commit()
+    logger.info(f"创建会话: {thread.id} by user {current_user.username}")
+    return ThreadResponse.model_validate(thread)
+
+
+@router.get("/{thread_id}", response_model=ThreadResponse)
+async def get_thread(
+    thread_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Thread).where(Thread.id == thread_id, Thread.user_id == current_user.id)
+    )
+    thread = result.scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return ThreadResponse.model_validate(thread)
+
+
+@router.delete("/{thread_id}")
+async def delete_thread(
+    thread_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Thread).where(Thread.id == thread_id, Thread.user_id == current_user.id)
+    )
+    thread = result.scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 软删除: 归档
+    thread.is_archived = True
+    thread.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.flush()
+    await db.commit()
+    return {"success": True, "message": "会话已归档"}
+
+
+@router.patch("/{thread_id}/title", response_model=ThreadResponse)
+async def update_title(
+    thread_id: UUID,
+    req: ThreadUpdateTitle,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Thread).where(Thread.id == thread_id, Thread.user_id == current_user.id)
+    )
+    thread = result.scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    thread.title = req.title
+    thread.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.flush()
+    await db.refresh(thread)
+    await db.commit()
+    return ThreadResponse.model_validate(thread)
+
+
+@router.patch("/{thread_id}/graph", response_model=ThreadResponse)
+async def update_graph(
+    thread_id: UUID,
+    req: ThreadUpdateGraph,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Thread).where(Thread.id == thread_id, Thread.user_id == current_user.id)
+    )
+    thread = result.scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    thread.execution_graph = req.execution_graph
+    thread.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db.flush()
+    await db.refresh(thread)
+    await db.commit()
+    return ThreadResponse.model_validate(thread)
+
+
+@router.get("/{thread_id}/messages")
+async def list_messages(
+    thread_id: UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # 验证会话归属
+    result = await db.execute(
+        select(Thread).where(Thread.id == thread_id, Thread.user_id == current_user.id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 查询消息
+    msgs_result = await db.execute(
+        select(Message)
+        .where(Message.thread_id == thread_id)
+        .order_by(Message.created_at)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    messages = msgs_result.scalars().all()
+
+    # 总数
+    count_result = await db.execute(
+        select(func.count(Message.id)).where(Message.thread_id == thread_id)
+    )
+    total = count_result.scalar()
+
+    return {
+        "messages": [MessageResponse.model_validate(m) for m in messages],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }

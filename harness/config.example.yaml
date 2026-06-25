@@ -1,0 +1,117 @@
+config_version: 1
+
+# --- Models (same pattern as DeerFlow) ---
+# models:
+#   - name: gpt-4o
+#     display_name: GPT-4o
+#     use: langchain_openai:ChatOpenAI
+#     model: gpt-4o
+#     api_key: $OPENAI_API_KEY
+#     temperature: 0.7
+#     max_tokens: 4096
+#     supports_vision: true
+
+# --- Tool Groups ---
+tool_groups:
+  - name: web
+  - name: code
+  - name: files
+  - name: abacus
+
+# --- Sandbox ---
+sandbox:
+  allow_host_bash: false
+  bash_output_max_chars: 20000
+  read_file_output_max_chars: 50000
+  ls_output_max_chars: 20000
+  # mounts:
+  #   - host_path: /home/user/data
+  #     container_path: /mnt/data
+  #     read_only: true
+
+# --- Memory ---
+memory:
+  enabled: false
+  storage_path: memory.json
+  debounce_seconds: 30
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+
+# --- Summarization ---
+summarization:
+  enabled: false
+  trigger:
+    - type: tokens
+      value: 32000
+  keep:
+    type: messages
+    value: 10
+
+# --- Title ---
+title:
+  enabled: false
+  max_words: 6
+  max_chars: 60
+
+# --- Loop Detection ---
+loop_detection:
+  enabled: true
+  warn_threshold: 3
+  hard_limit: 5
+  window_size: 20
+
+# --- Subagents ---
+subagents:
+  timeout_seconds: 900
+
+# --- Checkpointer (LangGraph conversation state persistence) ---
+# backend: memory | sqlite | postgres
+# - memory:  in-process, no persistence (default, no extra deps)
+# - sqlite:  file-based persistence (requires langgraph-checkpoint-sqlite)
+# - postgres: database persistence (requires langgraph-checkpoint-postgres)
+# sqlite_dir 为空时自动使用 ~/.multiagent-studio/data/deerflow.db
+checkpointer:
+  backend: memory
+  sqlite_dir: ""           # 空 = 使用 ~/.multiagent-studio/data/
+  postgres_url: ""
+
+# --- Database (application-level persistence: runs/threads/events) ---
+# 与 checkpointer 共享同一个 deerflow.db 文件
+database:
+  backend: sqlite          # memory | sqlite | postgres
+  sqlite_dir: ""           # 空 = 使用 ~/.multiagent-studio/data/
+  postgres_url: ""
+
+# --- Uploads ---
+uploads:
+  max_files: 10
+  max_file_size: 52428800
+  max_total_size: 104857600
+
+# --- Guardrails ---
+# guardrails:
+#   enabled: true
+#   provider:
+#     use: harness.config.builtin:AllowlistProvider
+#     config:
+#       denied_tools: ["bash"]
+
+# --- MCP Extension Config (separate file) ---
+# See extensions_config.json for MCP server definitions
+
+# --- Tool Plugins ---
+# Register additional tools from arbitrary Python modules without modifying
+# core code. Each entry supports:
+#   module:     Python module path (required)
+#   attr:       Attribute / factory name in the module (optional)
+#   category:   Tool category in the registry (default: "custom")
+#   is_factory: Whether ``attr`` is a callable returning tool(s)
+#
+# plugins:
+#   tools:
+#     - module: "harness.tools.weather"
+#       attr: "build_weather_tools"
+#       category: "weather"
+#       is_factory: true

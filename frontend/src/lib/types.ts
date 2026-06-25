@@ -1,0 +1,193 @@
+/**
+ * 全局 TypeScript 类型定义
+ * 与 Harness models.py 和 App 服务 schemas 保持一致
+ */
+
+// ===== Harness 相关 (对齐 harness/models.py) =====
+export interface SubAgentConfig {
+  name: string;
+  display_name: string;
+  description: string;
+  system_prompt: string;
+  model: string;
+  tools: string[] | null;
+  disallowed_tools: string[];
+  temperature: number;
+  max_turns: number;
+}
+
+export interface AgentNode {
+  id: string;
+  type: "lead" | "subagent";
+  config: SubAgentConfig;
+  position: { x: number; y: number };
+  connections: string[];
+}
+
+export interface ExecutionGraph {
+  nodes: AgentNode[];
+  edges: [string, string][];
+  entry_point: string;
+}
+
+// ===== SSE 事件 (对齐 SSEEventType) =====
+export type SSEEventType =
+  | "message"
+  | "tool_call"
+  | "tool_result"
+  | "subagent_start"
+  | "subagent_end"
+  | "clarification"
+  | "todo_update"
+  | "title_update"
+  | "memory_update"
+  | "token_usage"
+  | "evaluation"
+  | "error"
+  | "finished";
+
+export interface SSEEvent {
+  type: SSEEventType;
+  content?: string;
+  thread_id?: string;
+  msg_type?: string;
+  tool_name?: string;
+  tool_args?: Record<string, unknown>;
+  tool_result?: string;
+  subagent_name?: string;
+  instruction?: string;
+  request?: ClarificationRequest;
+  todo?: TodoItem;
+  title?: string;
+  tokens?: TokenUsage;
+  trace_id?: string;
+  status?: string;
+  duration_ms?: number;
+}
+
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  model?: string;
+}
+
+export interface TodoItem {
+  id: string;
+  description: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  assigned_agent: string | null;
+}
+
+export interface ClarificationRequest {
+  id: string;
+  question: string;
+  context: string;
+  options: string[] | null;
+  required: boolean;
+}
+
+// ===== 消息 =====
+export interface ChatMessage {
+  id: string;
+  role: "human" | "ai" | "tool" | "subagent" | "system";
+  content: string;
+  msgType: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  tokenCount: number;
+}
+
+// ===== 会话 =====
+export interface ThreadSummary {
+  id: string;
+  title: string;
+  status: "idle" | "running" | "suspended" | "finished" | "error";
+  presetType: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ThreadDetail {
+  id: string;
+  userId: string;
+  title: string;
+  status: string;
+  presetType: string | null;
+  executionGraph: ExecutionGraph | null;
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ===== 用户 =====
+export interface User {
+  id: string;
+  email: string;
+  username: string;
+  displayName: string;
+  role: "user" | "admin";
+  avatarUrl: string;
+  isActive: boolean;
+}
+
+export interface AuthState {
+  user: User | null;
+  accessToken: string | null;
+  isAuthenticated: boolean;
+}
+
+// ===== 画布 =====
+export interface CanvasNode {
+  id: string;
+  type: "lead" | "subagent";
+  position: { x: number; y: number };
+  data: {
+    config: SubAgentConfig;
+    status: "idle" | "running" | "done" | "error";
+    isEntryPoint: boolean;
+  };
+}
+
+export interface CanvasEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+// ===== 预设 =====
+export interface PresetAgent {
+  name: string;
+  display_name: string;
+  description: string;
+}
+
+// ===== 工具组 =====
+export interface ToolGroup {
+  name: string;
+  description: string;
+  tools: string[];
+}
+
+// ===== 监控 =====
+export interface TraceSpan {
+  id: string;
+  name: string;
+  type: "trace" | "span" | "generation";
+  parentId: string | null;
+  startTime: string;
+  endTime: string | null;
+  durationMs: number;
+  metadata: Record<string, unknown>;
+  children: TraceSpan[];
+}
+
+export interface TokenUsageStats {
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  by_model: Record<string, TokenUsage>;
+  by_date: Array<{ date: string; tokens: number; cost: number }>;
+}
