@@ -1,12 +1,12 @@
 "use client";
 
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 import { Send, Square, AlertTriangle } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
 import { SSEClient } from "@/lib/sse-client";
 import { useCanvasStore } from "@/lib/canvas-store";
-import { threadsAPI } from "@/lib/api-client";
-import { ChatMessage } from "@/lib/types";
+import { threadsAPI, filesAPI } from "@/lib/api-client";
+import { ChatMessage, AttachedFile } from "@/lib/types";
 import MessageList from "./MessageList";
 import ClarificationDialog from "./ClarificationDialog";
 import InputBar from "./InputBar";
@@ -14,6 +14,12 @@ import InputBar from "./InputBar";
 interface ChatPanelProps {
   threadId: string;
   threadTitle: string;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
@@ -24,13 +30,96 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
   } = useChatStore();
   const { exportGraph } = useCanvasStore();
   const sseRef = useRef<SSEClient | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
 
-  async function sendMessage(text: string) {
-    if (!text.trim() || isStreaming) return;
+  const handleAttachFiles = useCallback((fileList: FileList | null) => {
+    if (!fileList) return;
+    const newFiles: AttachedFile[] = Array.from(fileList).map((file) => ({
+      filename: file.name,
+      original_name: file.name,
+      mime_type: file.type,
+      size_bytes: file.size,
+      virtual_path: `/mnt/user-data/uploads/${file.name}`,
+      status: "pending",
+    }));
+    setAttachedFiles((prev) => [...prev, ...newFiles]);
 
-    addMessage({ role: "human", content: text, msgType: "text", metadata: {}, tokenCount: 0 });
+    // Upload each file immediately
+    newFiles.forEach((attached) => {
+      const file = Array.from(fileList).find((f) => f.name === attached.filename);
+      if (!file) return;
+
+      setAttachedFiles((prev) =>
+        prev.map((f) => (f.filename === attached.filename ? { ...f, status: "uploading" } : f))
+      );
+
+      filesAPI
+        .upload(threadId, file)
+        .then((res) => {
+          const data = res.data || {};
+          setAttachedFiles((prev) =>
+            prev.map((f) =>
+              f.filename === attached.filename
+                ? {
+                    ...f,
+                    id: data.id,
+                    filename: data.filename || f.filename,
+                    original_name: data.original_name || f.original_name,
+                    mime_type: data.mime_type || f.mime_type,
+                    size_bytes: data.size_bytes ?? f.size_bytes,
+                    virtual_path: data.virtual_path || f.virtual_path,
+                    status: "done",
+                  }
+                : f
+            )
+          );
+        })
+        .catch((err) => {
+          const msg = err?.response?.data?.detail || err.message || "Upload failed";
+          setAttachedFiles((prev) =>
+            prev.map((f) =>
+              f.filename === attached.filename ? { ...f, status: "error", error: msg } : f
+            )
+          );
+        });
+    });
+  }, [threadId]);
+
+  const handleRemoveFile = useCallback((filename: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.filename !== filename));
+  }, []);
+
+  async function sendMessage(text: string, files: AttachedFile[]) {
+    if ((!text.trim() && files.length === 0) || isStreaming) return;
+
+    // Build file metadata payload for Harness UploadsMiddleware
+    const readyFiles = files.filter((f) => f.status === "done");
+    const filesPayload = readyFiles.map((f) => ({
+      filename: f.filename,
+      size: f.size_bytes,
+      path: f.virtual_path,
+      mime_type: f.mime_type,
+    }));
+
+    const displayContent = [
+      text,
+      readyFiles.length > 0
+        ? `\n\n[Attached ${readyFiles.length} file(s): ${readyFiles
+            .map((f) => `${f.original_name || f.filename} (${formatFileSize(f.size_bytes)})`)
+            .join(", ")}]`
+        : "",
+    ].join("");
+
+    addMessage({
+      role: "human",
+      content: displayContent.trim(),
+      msgType: "text",
+      metadata: { files: filesPayload },
+      tokenCount: 0,
+    });
     setStreaming(true);
     setError(null);
+    setAttachedFiles([]);
 
     // 只在用户配置了完整的 SubAgent 画布时才发送 execution_graph
     const canvasNodes = useCanvasStore.getState().nodes;
@@ -57,6 +146,7 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
         thread_id: threadId,
         message: text,
         execution_graph: graph || undefined,
+        files: filesPayload.length > 0 ? filesPayload : undefined,
       });
     } catch (err: any) {
       console.error(err);
@@ -83,6 +173,7 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
     }
     setStreaming(false);
     setActiveThread(threadId);
+    setAttachedFiles([]);
 
     const loadHistory = async () => {
       // 已有内存消息时跳过（避免覆盖流式数据）
@@ -143,7 +234,14 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
       )}
 
       {/* 输入栏 */}
-      <InputBar onSend={sendMessage} onStop={stopExecution} isStreaming={isStreaming} />
+      <InputBar
+        onSend={sendMessage}
+        onStop={stopExecution}
+        isStreaming={isStreaming}
+        attachedFiles={attachedFiles}
+        onAttachFiles={handleAttachFiles}
+        onRemoveFile={handleRemoveFile}
+      />
 
       {/* 澄清弹窗 */}
       <ClarificationDialog threadId={threadId} />

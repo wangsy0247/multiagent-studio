@@ -29,6 +29,7 @@ class ExecuteRequest(BaseModel):
     message: str
     execution_graph: Optional[dict] = None
     plan_mode: bool = False
+    files: Optional[list[dict]] = None  # 当前消息附带的上传文件元数据
 
 
 class ClarificationResponse(BaseModel):
@@ -71,6 +72,7 @@ async def execute(
                 user_id=str(current_user.id),
                 message=req.message,
                 execution_graph=req.execution_graph,
+                files=req.files,
             ):
                 # 解析事件
                 try:

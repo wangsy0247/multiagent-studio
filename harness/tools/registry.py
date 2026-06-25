@@ -7,17 +7,11 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, tool
 
-from harness.config import HarnessConfig
+from harness.config.tool_config import ToolConfig, ToolGroupConfig
 from harness.models import ToolGroup
-from harness.services.sandbox import SandboxService
+from harness.utils import resolve_variable
 
-from .abacus import build_abacus_tools
-from .code import CodeTools
-from .core import build_core_tools
-from .files import build_file_tools
 from .mcp_adapter import load_mcp_tools_from_config
-from .search import build_search_tools
-from .weather import build_weather_tools
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +23,6 @@ class ToolRegistry:
         self._tools: dict[str, BaseTool] = {}
         self._mcp_tools: dict[str, BaseTool] = {}
         self._categories: dict[str, str] = {}
-        self._sandbox: SandboxService | None = None
-        self._workspace: str = "."
-        self._thread_id: str | None = None
 
     # ---- registration ----
 
@@ -85,6 +76,42 @@ class ToolRegistry:
         for t in tools:
             self._mcp_tools[t.name] = t
         return tools
+
+    # ---- config-driven tool loading ----
+
+    def load_tools_from_config(self, tools_config: list[ToolConfig] | None) -> list[BaseTool]:
+        """Load tools declared in ``config.yaml`` (DeerFlow-style).
+
+        Each ``ToolConfig.use`` is a variable path like
+        ``harness.tools.search:web_search``. Loaded tools override any
+        previously registered tools with the same name.
+
+        Returns the list of tools successfully loaded.
+        """
+        loaded: list[BaseTool] = []
+        if not tools_config:
+            return loaded
+
+        for cfg in tools_config:
+            try:
+                tool = resolve_variable(cfg.use, BaseTool)
+                self.register(tool, category=cfg.group)
+                loaded.append(tool)
+                logger.info(
+                    "Loaded tool '%s' from %s (group=%s)",
+                    tool.name,
+                    cfg.use,
+                    cfg.group,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load tool '%s' from %s: %s",
+                    cfg.name,
+                    cfg.use,
+                    exc,
+                )
+
+        return loaded
 
     # ---- plugin loading ----
 
@@ -175,79 +202,50 @@ class ToolRegistry:
 
     # ---- setup ----
 
-    def setup_tool_groups(self) -> dict[str, ToolGroup]:
-        """Return predefined tool groups."""
-        return {
-            "search": ToolGroup(
-                name="search",
-                description="搜索工具组",
-                tools=["web_search", "arxiv_search", "paper_search"],
-            ),
-            "code": ToolGroup(
-                name="code",
-                description="代码执行工具组",
-                tools=["python", "bash", "execute_code"],
-            ),
-            "files": ToolGroup(
-                name="files",
-                description="文件操作工具组",
-                tools=["file_read", "file_write", "list_files"],
-            ),
-            "data": ToolGroup(
-                name="data",
-                description="数据分析工具组",
-                tools=["python", "chart_generate", "csv_process"],
-            ),
-            "abacus": ToolGroup(
-                name="abacus",
-                description="Abacus 材料计算工具组",
-                tools=["generate_abacus_input", "submit_abacus_job"],
-            ),
-            "weather": ToolGroup(
-                name="weather",
-                description="天气查询工具组",
-                tools=["weather_search"],
-            ),
-            "mcp": ToolGroup(
-                name="mcp",
-                description="MCP 外部工具",
-                tools=list(self._mcp_tools.keys()),
-                dynamic=True,
-            ),
-        }
-
-    def bind_context(
+    def setup_tool_groups(
         self,
-        sandbox: SandboxService | None = None,
-        workspace: str = ".",
-        thread_id: str | None = None,
-    ) -> "ToolRegistry":
-        """Bind runtime context (sandbox + workspace) to execution tools."""
-        self._sandbox = sandbox
-        self._workspace = workspace
-        self._thread_id = thread_id
-        # Re-register code tools with the provided sandbox.
-        code_tools = CodeTools(sandbox=sandbox).get_tools()
-        for t in code_tools:
-            self.register(t, category="code")
-        # Re-register file tools with the provided workspace.
-        file_tools = build_file_tools(workspace=workspace)
-        for t in file_tools:
-            self.register(t, category="files")
-        return self
+        tool_groups_config: list[ToolGroupConfig] | None = None,
+    ) -> dict[str, ToolGroup]:
+        """Return tool groups derived from config and registered categories.
 
-    def initialize_defaults(self, config: HarnessConfig | None = None) -> "ToolRegistry":
-        """Register the built-in tool sets."""
-        for tool in build_core_tools():
-            self.register(tool, category="core")
-        for tool in build_search_tools():
-            self.register(tool, category="search")
-        for tool in CodeTools(sandbox=self._sandbox).get_tools():
-            self.register(tool, category="code")
-        for tool in build_file_tools(workspace=self._workspace):
-            self.register(tool, category="files")
-        for tool in build_abacus_tools():
-            self.register(tool, category="abacus")
-        for tool in build_weather_tools():
-            self.register(tool, category="weather")
-        return self
+        Args:
+            tool_groups_config: Optional list of group definitions from
+                ``config.yaml``. When provided, tools are assigned to groups
+                based on their registered category matching the group name.
+        """
+        groups: dict[str, ToolGroup] = {}
+
+        # Build groups from config when available.
+        if tool_groups_config:
+            for cfg in tool_groups_config:
+                tools_in_group = [
+                    name for name, category in self._categories.items()
+                    if category == cfg.name
+                ]
+                groups[cfg.name] = ToolGroup(
+                    name=cfg.name,
+                    description=cfg.description or f"{cfg.name} 工具组",
+                    tools=tools_in_group,
+                )
+
+        # Auto-create groups for any remaining registered categories.
+        for name, category in self._categories.items():
+            if category not in groups:
+                groups[category] = ToolGroup(
+                    name=category,
+                    description=f"{category} 工具组",
+                    tools=[],
+                )
+            if name not in groups[category].tools:
+                groups[category].tools.append(name)
+
+        # Always include the dynamic MCP group.
+        groups["mcp"] = ToolGroup(
+            name="mcp",
+            description="MCP 外部工具",
+            tools=list(self._mcp_tools.keys()),
+            dynamic=True,
+        )
+
+        return groups
+

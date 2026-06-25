@@ -5,6 +5,7 @@
 import os
 import logging
 from uuid import UUID
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse
@@ -15,7 +16,7 @@ from app.db.engine import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.file_record import FileRecord
-from app.services.file_service import save_upload, validate_file, WORKSPACE_ROOT
+from app.services.file_service import save_upload, validate_file, get_upload_dir, upload_virtual_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,8 +29,8 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传文件到会话"""
-    validate_file(file)
+    """上传文件到会话的 Harness uploads 目录."""
+    await validate_file(file)
 
     try:
         record = await save_upload(file, str(current_user.id), str(thread_id))
@@ -38,10 +39,12 @@ async def upload_file(
         await db.refresh(record)
         return {
             "id": str(record.id),
-            "filename": record.original_name,
+            "filename": record.filename,
+            "original_name": record.original_name,
             "mime_type": record.mime_type,
             "size_bytes": record.size_bytes,
             "storage_path": record.storage_path,
+            "virtual_path": upload_virtual_path(record.filename),
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -65,9 +68,11 @@ async def list_files(
         "files": [
             {
                 "id": str(f.id),
-                "filename": f.original_name,
+                "filename": f.filename,
+                "original_name": f.original_name,
                 "mime_type": f.mime_type,
                 "size_bytes": f.size_bytes,
+                "virtual_path": upload_virtual_path(f.filename),
                 "thread_id": str(f.thread_id) if f.thread_id else None,
                 "created_at": f.created_at.isoformat(),
             }
@@ -90,12 +95,12 @@ async def download_file(
     if record is None:
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    full_path = os.path.join(WORKSPACE_ROOT, record.storage_path)
-    if not os.path.exists(full_path):
+    full_path = get_upload_dir(str(record.user_id), str(record.thread_id)) / record.filename
+    if not full_path.is_file():
         raise HTTPException(status_code=404, detail="文件已丢失")
 
     return FileResponse(
-        full_path,
+        str(full_path),
         filename=record.original_name,
         media_type=record.mime_type,
     )
@@ -116,9 +121,12 @@ async def delete_file(
         raise HTTPException(status_code=404, detail="文件不存在")
 
     # 删除物理文件
-    full_path = os.path.join(WORKSPACE_ROOT, record.storage_path)
-    if os.path.exists(full_path):
-        os.remove(full_path)
+    full_path = get_upload_dir(str(record.user_id), str(record.thread_id)) / record.filename
+    if full_path.is_file():
+        try:
+            full_path.unlink()
+        except OSError as exc:
+            logger.warning("Failed to delete upload file %s: %s", full_path, exc)
 
     # 删除数据库记录
     await db.delete(record)

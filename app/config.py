@@ -42,6 +42,11 @@ class AppSettings(BaseSettings):
     # ── Workspace ────────────────────────────────────────
     workspace_root: str = "~/.multiagent-studio/workspace"
 
+    # ── Harness Data Root ────────────────────────────────
+    # Uploads are stored in the Harness data layout so the sandbox provider
+    # and UploadsMiddleware can access them directly.
+    harness_data_root: str = "~/.multiagent-studio"
+
     def validate_jwt_secret(self) -> None:
         """启动时校验 JWT_SECRET 不是弱密钥。若未设置则自动生成。"""
         if not self.jwt_secret or self.jwt_secret.lower() in _WEAK_JWT_SECRETS:
@@ -74,5 +79,7 @@ def get_settings() -> AppSettings:
     global _settings
     if _settings is None:
         _settings = AppSettings()  # type: ignore[call-arg]
+        _settings.workspace_root = os.path.expanduser(_settings.workspace_root)
+        _settings.harness_data_root = os.path.expanduser(_settings.harness_data_root)
         _settings.validate_jwt_secret()
     return _settings

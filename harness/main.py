@@ -21,6 +21,7 @@ from harness.agents.subagent_manager import SubagentManager
 from harness.agents.features import RuntimeFeatures
 from harness.api.server import HarnessService as _BaseService, set_harness
 from harness.config import HarnessConfig, load_config
+from harness.config.tool_config import ToolConfig
 from harness.config.checkpointer_config import (
     CheckpointerConfig,
     load_checkpointer_config_from_dict,
@@ -42,6 +43,7 @@ from harness.models import (
     HarnessState,
     SubAgentConfig,
     TokenUsage,
+    _human_message_with_files,
     initial_state,
 )
 from harness.observability.langfuse_manager import ObservabilityManager
@@ -53,7 +55,6 @@ from harness.runtime.journal import RunJournal
 from harness.runtime.runs.store import make_run_store
 from harness.runtime.runs.store.base import RunStore
 from harness.services.message_bus import MessageBus
-from harness.services.sandbox import SandboxService
 from harness.tools.registry import ToolRegistry
 
 logging.basicConfig(
@@ -100,7 +101,7 @@ class HarnessService(_BaseService):
         self.judge: JudgeEvaluator | None = None
         self.subagent_manager: SubagentManager | None = None
         self.graph: Any = None
-        self.sandbox: SandboxService | None = None
+        self.sandbox: Any | None = None
         self.message_bus = MessageBus()
         self._active_runs: dict[str, dict[str, Any]] = {}  # 仅保留 cancelled 等运行期标记
         self._active_runs_max: int = 1000                   # 并发容量上限
@@ -136,10 +137,13 @@ class HarnessService(_BaseService):
         # 1. LLM factories
         self.llm = self._init_llm(cfg.default_model)
 
-        # 2. Register core tools
-        self.tool_registry.initialize_defaults(cfg)
+        # 2. Load tools declared in config.yaml (DeerFlow-style)
+        if self.config_manager is not None:
+            raw_tools = self.config_manager.get("tools", [])
+            tool_configs = [ToolConfig(**t) for t in raw_tools]
+            self.tool_registry.load_tools_from_config(tool_configs)
 
-        # 2.5 Load tool plugins declared in config.yaml
+        # 2.5 Load legacy tool plugins declared in config.yaml
         if self.config_manager is not None:
             plugin_tools = self.config_manager.get("plugins.tools", [])
             self.tool_registry.load_plugins_from_config(plugin_tools)
@@ -343,11 +347,7 @@ class HarnessService(_BaseService):
             else:
                 mws.append(MW[0]({"workspace_root": cfg.workspace_root}))
                 mws.append(MW[1]())
-                mws.append(MW[2]({
-                    "sandbox_image": cfg.sandbox_image,
-                    "mem_limit": cfg.sandbox_mem_limit,
-                    "lazy_init": True,  # DeerFlow default: lazy container creation
-                }))
+                mws.append(MW[2]())
 
         # --- [3-5] wrap_model_call onion ---
         mws.append(MW[3]())   # LLMErrorHandling (outermost)
@@ -518,6 +518,7 @@ class HarnessService(_BaseService):
         user_id: str,
         message: str,
         graph: ExecutionGraph | None = None,
+        files: list[dict] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the agent pipeline and stream SSE events in real time.
 
@@ -556,14 +557,14 @@ class HarnessService(_BaseService):
                     "treating as new session",
                     thread_id, existing_user, user_id,
                 )
-                current_state = initial_state(thread_id, user_id, message)
+                current_state = initial_state(thread_id, user_id, message, files)
             else:
                 # 已有会话，追加新消息
                 current_state = dict(state_snapshot.values)
-                current_state["messages"].append(HumanMessage(content=message))
+                current_state["messages"].append(_human_message_with_files(message, files))
         else:
             # 新会话
-            current_state = initial_state(thread_id, user_id, message)
+            current_state = initial_state(thread_id, user_id, message, files)
 
         # ── 注册运行期取消标记（不保存完整 state） ──
         self._active_runs[thread_id] = {"cancelled": False}
@@ -585,7 +586,7 @@ class HarnessService(_BaseService):
 
         # Ensure sandbox directories exist
         try:
-            get_paths().ensure_thread_dirs(thread_id, user_id)
+            get_paths().ensure_thread_dirs(thread_id, user_id=user_id)
         except Exception:
             logger.warning("Failed to create thread dirs for %s/%s", thread_id, user_id)
 

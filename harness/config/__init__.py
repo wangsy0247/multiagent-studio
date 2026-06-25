@@ -9,10 +9,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
 
 from harness.config.config_manager import ConfigManager
+from harness.config.tool_config import ToolConfig, ToolGroupConfig
 
 # Resolve .env relative to the harness package directory — NOT the CWD.
 # This fixes ``python -m harness.main`` when started from the project root.
@@ -52,6 +53,7 @@ class HarnessConfig(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
 
     # Middleware
+    sandbox_use: str = ""  # e.g. harness.services.docker_sandbox_provider:DockerSandboxProvider
     sandbox_image: str = "python:3.11-slim"
     sandbox_mem_limit: str = "512m"
     sandbox_cpu_quota: int = 100000
@@ -60,6 +62,10 @@ class HarnessConfig(BaseSettings):
     summary_message_threshold: int = 20
     max_concurrent_subagents: int = 3
     debounce_seconds: float = 30.0
+
+    # Tools (DeerFlow-style config-driven tool loading)
+    tools: list[ToolConfig] = Field(default_factory=list, description="Available tools loaded from config.yaml")
+    tool_groups: list[ToolGroupConfig] = Field(default_factory=list, description="Available tool groups")
 
     # MCP
     mcp_config_path: str = "./extensions_config.json"

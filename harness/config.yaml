@@ -13,13 +13,82 @@ config_version: 1
 
 # --- Tool Groups ---
 tool_groups:
-  - name: web
+  - name: search
+    description: 搜索工具组
   - name: code
+    description: 代码执行工具组
   - name: files
+    description: 文件操作工具组
+  - name: data
+    description: 数据分析工具组
   - name: abacus
+    description: Abacus 材料计算工具组
+  - name: weather
+    description: 天气查询工具组
+
+# --- Tools Configuration ---
+# Tools are loaded dynamically from the specified module path.
+# Format: use: module.path:variable_name
+# To disable a built-in tool, simply remove or comment out its entry.
+tools:
+  - name: web_search
+    group: search
+    use: harness.tools.search:web_search
+
+  - name: arxiv_search
+    group: search
+    use: harness.tools.search:arxiv_search
+
+  - name: bash
+    group: code
+    use: harness.tools.sandbox_tools:bash
+
+  - name: file_read
+    group: files
+    use: harness.tools.sandbox_tools:file_read
+
+  - name: file_write
+    group: files
+    use: harness.tools.sandbox_tools:file_write
+
+  - name: list_files
+    group: files
+    use: harness.tools.sandbox_tools:list_files
+
+  - name: glob_tool
+    group: files
+    use: harness.tools.sandbox_tools:glob_tool
+
+  - name: grep_tool
+    group: files
+    use: harness.tools.sandbox_tools:grep_tool
+
+  - name: str_replace
+    group: files
+    use: harness.tools.sandbox_tools:str_replace
+
+  - name: generate_abacus_input
+    group: abacus
+    use: harness.tools.abacus:generate_abacus_input
+
+  - name: submit_abacus_job
+    group: abacus
+    use: harness.tools.abacus:submit_abacus_job
+
+  - name: weather_search
+    group: weather
+    use: harness.tools.weather:weather_search
+
+  - name: code_check
+    group: code
+    use: harness.tools.core:code_check
+
 
 # --- Sandbox ---
 sandbox:
+  # Sandbox provider (DeerFlow-style). Leave empty to use LocalSandboxProvider.
+  # use: harness.services.docker_sandbox_provider:DockerSandboxProvider
+  use: harness.services.docker_sandbox_provider:DockerSandboxProvider
   allow_host_bash: false
   bash_output_max_chars: 20000
   read_file_output_max_chars: 50000
@@ -94,6 +163,7 @@ uploads:
 #     use: harness.config.builtin:AllowlistProvider
 #     config:
 #       denied_tools: ["bash"]
+
 
 # --- MCP Extension Config (separate file) ---
 # See extensions_config.json for MCP server definitions

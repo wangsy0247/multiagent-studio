@@ -43,9 +43,9 @@ class TestPresets:
 class TestSubagentManager:
     @pytest.fixture
     def registry(self):
-        reg = ToolRegistry()
-        reg.initialize_defaults()
-        return reg
+        # Tools are now loaded from config.yaml; the registry can be empty for
+        # these manager lifecycle tests.
+        return ToolRegistry()
 
     @pytest.fixture
     def llm_factory(self):

@@ -39,7 +39,12 @@ class HarnessClient:
             raise HarnessUnavailableError(f"Harness 服务不可达: {self.base_url}")
 
     async def stream_execute(
-        self, thread_id: str, user_id: str, message: str, execution_graph: Optional[dict] = None
+        self,
+        thread_id: str,
+        user_id: str,
+        message: str,
+        execution_graph: Optional[dict] = None,
+        files: Optional[list[dict]] = None,
     ) -> AsyncGenerator[str, None]:
         """代理执行请求，流式返回 SSE 事件"""
         payload = {
@@ -49,6 +54,8 @@ class HarnessClient:
         }
         if execution_graph:
             payload["execution_graph"] = execution_graph
+        if files:
+            payload["files"] = files
 
         client = await self._get_client()
         url = f"{self.base_url}/api/v1/execute"

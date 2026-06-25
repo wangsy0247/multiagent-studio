@@ -173,13 +173,22 @@ class HarnessState(TypedDict, total=False):
     evaluation: EvaluationResult
 
 
+def _human_message_with_files(message: str, files: list[dict] | None = None) -> HumanMessage:
+    """Create a HumanMessage with optional uploaded file metadata."""
+    kwargs: dict[str, Any] = {}
+    if files:
+        kwargs["files"] = files
+    return HumanMessage(content=message, additional_kwargs=kwargs)
+
+
 def initial_state(
     thread_id: str,
     user_id: str,
     message: str,
+    files: list[dict] | None = None,
 ) -> HarnessState:
     return HarnessState(
-        messages=[HumanMessage(content=message)],
+        messages=[_human_message_with_files(message, files)],
         thread_id=thread_id,
         user_id=user_id,
         plan_mode=False,
@@ -200,6 +209,7 @@ class ExecuteRequest(BaseModel):
     user_id: str
     message: str
     execution_graph: ExecutionGraph | None = None
+    files: list[dict] | None = None
 
 
 class ClarificationResponse(BaseModel):

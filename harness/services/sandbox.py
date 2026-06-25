@@ -1,4 +1,8 @@
-"""Docker sandbox service for isolated code execution."""
+"""Docker sandbox service for isolated code execution.
+
+Manages Docker container sandboxes per thread with DeerFlow-style multi-point
+bind mounts (workspace, uploads, outputs, acp-workspace).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +16,12 @@ logger = logging.getLogger(__name__)
 class SandboxService:
     """Manage Docker container sandboxes per thread."""
 
-    def __init__(self, image: str = "python:3.11-slim", mem_limit: str = "512m", cpu_quota: int = 100000):
+    def __init__(
+        self,
+        image: str = "python:3.11-slim",
+        mem_limit: str = "512m",
+        cpu_quota: int = 100000,
+    ):
         self.image = image
         self.mem_limit = mem_limit
         self.cpu_quota = cpu_quota
@@ -23,12 +32,25 @@ class SandboxService:
         if self._client is None:
             try:
                 import docker
+
                 self._client = docker.from_env()
             except Exception as exc:
                 logger.warning("Docker not available: %s", exc)
         return self._client
 
-    async def get_or_create(self, thread_id: str, workspace: str) -> Any:
+    async def get_or_create(
+        self,
+        thread_id: str,
+        workspace: str,
+        mounts: list[tuple[str, str, bool]] | None = None,
+    ) -> Any:
+        """Get or create a sandbox container for the thread.
+
+        Args:
+            thread_id: Thread identifier.
+            workspace: Legacy workspace path (kept for compatibility).
+            mounts: List of (host_path, container_path, read_only) bind mounts.
+        """
         if thread_id in self._pool:
             return self._pool[thread_id]
 
@@ -36,23 +58,37 @@ class SandboxService:
         MAX_CONTAINERS = 50
         if len(self._pool) >= MAX_CONTAINERS:
             oldest_tid = next(iter(self._pool))
-            logger.warning("Container pool full (%d), evicting oldest: %s", MAX_CONTAINERS, oldest_tid)
+            logger.warning(
+                "Container pool full (%d), evicting oldest: %s",
+                MAX_CONTAINERS,
+                oldest_tid,
+            )
             await self.cleanup(oldest_tid)
 
         client = self._get_client()
         if client is None:
             return None
 
-        # Docker requires absolute host paths for volume mounts
-        host_workspace = str(Path(workspace).resolve())
+        # Build Docker volume mappings
+        volumes: dict[str, dict[str, Any]] = {}
+        if mounts:
+            for host_path, container_path, read_only in mounts:
+                host_abs = str(Path(host_path).resolve())
+                mode = "ro" if read_only else "rw"
+                volumes[host_abs] = {"bind": container_path, "mode": mode}
+        else:
+            # Fallback to legacy single-workspace mount for compatibility.
+            host_workspace = str(Path(workspace).resolve())
+            volumes = {host_workspace: {"bind": "/workspace", "mode": "rw"}}
+
         loop = asyncio.get_event_loop()
         container = await loop.run_in_executor(
             None,
             lambda: client.containers.run(
                 image=self.image,
                 command="sleep infinity",
-                volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
-                working_dir="/workspace",
+                volumes=volumes,
+                working_dir="/mnt/user-data/workspace",
                 network_mode="bridge",
                 detach=True,
                 remove=True,
@@ -70,18 +106,16 @@ class SandboxService:
 
         loop = asyncio.get_event_loop()
         try:
-            if isinstance(command, str):
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: container.exec_run(command)),
-                    timeout=timeout,
-                )
-            else:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: container.exec_run(command)),
-                    timeout=timeout,
-                )
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: container.exec_run(command)),
+                timeout=timeout,
+            )
             exit_code, output = result
-            text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output)
+            text = (
+                output.decode("utf-8", errors="replace")
+                if isinstance(output, bytes)
+                else str(output)
+            )
             return f"[exit:{exit_code}]\n{text}"
         except asyncio.TimeoutError:
             return f"[error] command timed out after {timeout}s"

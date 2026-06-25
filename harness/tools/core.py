@@ -5,10 +5,6 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
-from harness.tools.search import web_search, arxiv_search
-from harness.tools.code import python, bash
-from harness.tools.files import file_read, file_write
-from harness.tools.abacus import generate_abacus_input, submit_abacus_job
 
 
 def create_ask_clarification_tool() -> Any:
@@ -120,16 +116,12 @@ def create_code_check_tool() -> Any:
 
 
 def build_core_tools() -> list[BaseTool]:
-    """Return the list of core tools bundled by the registry."""
+    """Return the list of core utility tools.
+
+    These are generic helper tools that do not belong to the search, code,
+    files, abacus, or weather categories.
+    """
     return [
-        web_search,
-        arxiv_search,
-        python,
-        bash,
-        file_read,
-        file_write,
-        generate_abacus_input,
-        submit_abacus_job,
         create_ask_clarification_tool(),
         create_data_query_tool(),
         create_chart_generate_tool(),

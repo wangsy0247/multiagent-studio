@@ -1,126 +1,66 @@
-"""SandboxMiddleware — provide Docker container isolation for code execution.
+"""SandboxMiddleware — bind runtime context to sandbox-backed tools.
 
-Supports ``lazy_init=True`` (DeerFlow-compatible): defer container creation until
-the first sandbox-wrapped tool (bash/python/execute_code) is actually invoked.
+With the DeerFlow-style sandbox provider layer, this middleware no longer
+creates Docker containers directly. Instead it injects the current thread and
+workspace into the sandbox tool context so those tools can acquire the
+configured sandbox provider on demand.
 """
 from __future__ import annotations
 
-import contextvars
 import logging
+from typing import Any
 
 from langgraph.runtime import Runtime
 
 from harness.middleware.base import HarnessAgentMiddleware
 from harness.models import HarnessState
-from harness.services.sandbox import SandboxService
+from harness.tools.sandbox_tools import set_sandbox_tool_context
 
 logger = logging.getLogger(__name__)
 
-SANDBOX_WRAPPED_TOOLS = {"bash", "python", "execute_code"}
 
-# ── thread-safe context (fixes race condition with shared instance) ──
-_thread_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "sandbox_thread_id", default=""
-)
-_workspace_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "sandbox_workspace", default=""
-)
+def _set_context_from_state(state: Any) -> None:
+    """Extract thread_id/workspace/user_id from state and set tool contexts."""
+    if isinstance(state, dict):
+        thread_id = state.get("thread_id", "default")
+        workspace = state.get("workspace", ".")
+        user_id = state.get("user_id")
+    else:
+        thread_id = getattr(state, "thread_id", "default")
+        workspace = getattr(state, "workspace", ".")
+        user_id = getattr(state, "user_id", None)
+    set_sandbox_tool_context(workspace=workspace, thread_id=thread_id, user_id=user_id)
 
 
 class SandboxMiddleware(HarnessAgentMiddleware):
-    """Acquire a sandbox container and wrap execution tools.
-
-    - ``lazy_init=False`` (default): container created in ``abefore_agent``.
-    - ``lazy_init=True``: container created lazily on first sandboxed tool call.
-    """
+    """Inject thread/workspace context into sandbox-backed tools."""
 
     name = "sandbox"
 
     def __init__(self, config: dict | None = None):
         super().__init__(config)
-        self._service: SandboxService | None = None
-        self._lazy_init: bool = self.config.get("lazy_init", False)
-
-    def _get_service(self) -> SandboxService:
-        if self._service is None:
-            self._service = SandboxService(
-                image=self.config.get("sandbox_image", "python:3.11-slim"),
-                mem_limit=self.config.get("mem_limit", "512m"),
-                cpu_quota=self.config.get("cpu_quota", 100000),
-            )
-        return self._service
-
-    # ------------------------------------------------------------------
-    # abefore_agent
-    # ------------------------------------------------------------------
 
     async def abefore_agent(
         self,
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
-        """Initialize sandbox — eager or lazy depending on config."""
-        thread_id = state.get("thread_id", "unknown")
-        workspace = state.get("workspace", ".")
-
-        if self._lazy_init:
-            # Store context for later lazy creation (ContextVar — thread-safe)
-            _thread_id_ctx.set(thread_id)
-            _workspace_ctx.set(workspace)
-            logger.debug("Sandbox deferred (lazy_init) for thread=%s", thread_id)
-            return {"sandbox": None}
-        else:
-            return await self._acquire_sandbox(thread_id, workspace)
-
-    # ------------------------------------------------------------------
-    # awrap_tool_call — lazy creation on first sandboxed tool
-    # ------------------------------------------------------------------
+        """Set sandbox context for file/shell tools at agent start."""
+        _set_context_from_state(state)
+        logger.debug("Sandbox context set for agent run")
+        return None
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
-        """Lazily create sandbox when a wrapped tool is first invoked."""
-        tool_name = ""
-        if hasattr(request, "tool_call") and hasattr(request.tool_call, "name"):
-            tool_name = request.tool_call.get("name", "")
-        elif hasattr(request, "tool") and isinstance(request.tool, dict):
-            tool_name = request.tool.get("name", "")
+        """Re-inject sandbox context before each tool call.
 
-        if tool_name not in SANDBOX_WRAPPED_TOOLS:
-            return await handler(request)
-
-        # Lazy creation on first sandboxed tool call
-        tid = _thread_id_ctx.get()
-        ws = _workspace_ctx.get()
-        if self._lazy_init and tid:
-            service = self._get_service()
-            # Check if already created
-            if tid not in service._pool:
-                result = await self._acquire_sandbox(tid, ws)
-                # Update tool context so the executor can find the sandbox
-                if result and result.get("sandbox"):
-                    try:
-                        from harness.tools.code import set_tool_context
-                        set_tool_context(
-                            thread_id=tid,
-                            sandbox=result["sandbox"],
-                            workspace=ws,
-                        )
-                    except ImportError:
-                        pass
+        ``abefore_agent`` only runs once per agent turn, but individual tool
+        calls may execute in a different async context. Re-setting the context
+        here guarantees that sandbox tools see the correct thread_id and
+        workspace.
+        """
+        state = getattr(request, "state", None)
+        if state is None and isinstance(request, dict):
+            state = request.get("state")
+        _set_context_from_state(state)
 
         return await handler(request)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    async def _acquire_sandbox(self, thread_id: str, workspace: str) -> dict | None:
-        """Create the Docker sandbox container. Returns state update dict."""
-        service = self._get_service()
-        try:
-            sandbox = await service.get_or_create(thread_id, workspace)
-            if sandbox is not None:
-                logger.debug("Sandbox acquired for thread=%s", thread_id)
-            return {"sandbox": sandbox}
-        except Exception as exc:
-            logger.warning("Sandbox not available for thread=%s: %s", thread_id, exc)
-            return {"sandbox": None}

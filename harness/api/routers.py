@@ -41,6 +41,7 @@ async def execute(
             user_id=request.user_id,
             message=request.message,
             graph=request.execution_graph,
+            files=request.files,
         ):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 

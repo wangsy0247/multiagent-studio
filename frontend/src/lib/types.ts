@@ -88,6 +88,18 @@ export interface ClarificationRequest {
   required: boolean;
 }
 
+// ===== 上传文件附件 =====
+export interface AttachedFile {
+  id?: string;
+  filename: string;
+  original_name?: string;
+  mime_type?: string;
+  size_bytes: number;
+  virtual_path: string;
+  status: "pending" | "uploading" | "done" | "error";
+  error?: string;
+}
+
 // ===== 消息 =====
 export interface ChatMessage {
   id: string;

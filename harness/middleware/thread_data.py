@@ -97,9 +97,9 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
 
         from harness.config.paths import get_paths
         paths_obj = get_paths()
-        paths_obj.ensure_thread_dirs(thread_id, user_id)
+        paths_obj.ensure_thread_dirs(thread_id, user_id=user_id)
 
-        user_data_root = paths_obj.sandbox_user_data_dir(thread_id, user_id)
+        user_data_root = paths_obj.sandbox_user_data_dir(thread_id, user_id=user_id)
 
         dirs: dict[str, str] = {}
         for sub in THREAD_SUBDIRS:

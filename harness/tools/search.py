@@ -161,33 +161,15 @@ def create_arxiv_search_tool() -> Any:
     return arxiv_search
 
 
-def create_paper_search_tool() -> Any:
-    """Create the ``paper_search`` tool (alias for arxiv_search)."""
-
-    @tool
-    def paper_search(query: str, max_results: int = 5) -> str:
-        """Search for academic papers.
-
-        Args:
-            query: Search query.
-            max_results: Maximum number of papers.
-        """
-        arxiv = create_arxiv_search_tool()
-        return arxiv.invoke({"query": query, "max_results": max_results})
-
-    return paper_search
-
 
 def build_search_tools() -> list[Any]:
     """Return all search tools."""
     return [
         create_web_search_tool(),
         create_arxiv_search_tool(),
-        create_paper_search_tool(),
     ]
 
 
 # Module-level convenience instances.
 web_search = create_web_search_tool()
 arxiv_search = create_arxiv_search_tool()
-paper_search = create_paper_search_tool()

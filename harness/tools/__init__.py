@@ -8,7 +8,6 @@ from .abacus import (
     generate_abacus_input,
     submit_abacus_job,
 )
-from .code import CodeTools, bash, build_code_tools, execute_code, python
 from .core import (
     ask_clarification,
     build_core_tools,
@@ -24,23 +23,29 @@ from .core import (
     data_query,
     template_render,
 )
-from .files import (
-    build_file_tools,
+from .registry import ToolRegistry
+from .sandbox_tools import (
+    bash,
+    build_sandbox_tools,
+    create_bash_tool,
     create_file_read_tool,
     create_file_write_tool,
+    create_glob_tool,
+    create_grep_tool,
     create_list_files_tool,
+    create_str_replace_tool,
     file_read,
     file_write,
+    glob_tool,
+    grep_tool,
     list_files,
+    str_replace,
 )
-from .registry import ToolRegistry
 from .search import (
     arxiv_search,
     build_search_tools,
     create_arxiv_search_tool,
-    create_paper_search_tool,
     create_web_search_tool,
-    paper_search,
     web_search,
 )
 from .weather import (
@@ -51,7 +56,6 @@ from .weather import (
 
 __all__ = [
     "ToolRegistry",
-    "CodeTools",
     # core
     "ask_clarification",
     "chart_generate",
@@ -69,24 +73,25 @@ __all__ = [
     # search
     "web_search",
     "arxiv_search",
-    "paper_search",
     "create_web_search_tool",
     "create_arxiv_search_tool",
-    "create_paper_search_tool",
     "build_search_tools",
-    # code
-    "python",
+    # sandbox (code + files)
     "bash",
-    "execute_code",
-    "build_code_tools",
-    # files
     "file_read",
     "file_write",
     "list_files",
+    "glob_tool",
+    "grep_tool",
+    "str_replace",
+    "create_bash_tool",
     "create_file_read_tool",
     "create_file_write_tool",
     "create_list_files_tool",
-    "build_file_tools",
+    "create_glob_tool",
+    "create_grep_tool",
+    "create_str_replace_tool",
+    "build_sandbox_tools",
     # abacus
     "generate_abacus_input",
     "submit_abacus_job",
