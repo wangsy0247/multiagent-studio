@@ -17,10 +17,32 @@ from pathlib import Path
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from harness.config.checkpointer_config import CheckpointerConfig, CheckpointerBackend
+from harness.models import (
+    ClarificationRequest,
+    EvaluationResult,
+    SubAgentResult,
+    TodoItem,
+    TokenUsage,
+)
 
 logger = logging.getLogger(__name__)
+
+# Harness Pydantic models that may appear directly in HarnessState checkpoints.
+HARNESS_MSGPACK_TYPES = [
+    ClarificationRequest,
+    EvaluationResult,
+    SubAgentResult,
+    TodoItem,
+    TokenUsage,
+]
+
+
+def _create_harness_serde() -> JsonPlusSerializer:
+    """Serializer that explicitly allows harness custom state types."""
+    return JsonPlusSerializer(allowed_msgpack_modules=HARNESS_MSGPACK_TYPES)
 
 # ---------------------------------------------------------------------------
 # human-readable error messages for missing packages
@@ -107,7 +129,7 @@ class AsyncCheckpointerProvider:
     @staticmethod
     def _create_memory() -> MemorySaver:
         """In-process checkpointer — no persistence, always available."""
-        return MemorySaver()
+        return MemorySaver(serde=_create_harness_serde())
 
     async def _create_sqlite(self) -> BaseCheckpointSaver:
         """File-based async SQLite checkpointer."""
@@ -128,7 +150,7 @@ class AsyncCheckpointerProvider:
         # 设置 is_setup=True，之后 LangGraph 内部调用 setup() 就是空操作。
         conn = await aiosqlite.connect(str(db_path))
         self._conn = conn  # 保存以便 close() 时关闭
-        saver = AsyncSqliteSaver(conn)
+        saver = AsyncSqliteSaver(conn, serde=_create_harness_serde())
         await saver.setup()
         logger.info("AsyncSqliteSaver initialized at %s", db_path)
         return saver
@@ -148,7 +170,7 @@ class AsyncCheckpointerProvider:
         import asyncpg
         conn = await asyncpg.connect(cfg.postgres_url)
         self._conn = conn
-        saver = AsyncPostgresSaver(conn)
+        saver = AsyncPostgresSaver(conn, serde=_create_harness_serde())
         await saver.setup()
         logger.info("AsyncPostgresSaver initialized")
         return saver

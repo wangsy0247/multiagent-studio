@@ -44,11 +44,20 @@ def resolve_variable(variable_path: str, expected_type: type[Any] | tuple[type[A
             f"Module '{module_path}' does not define attribute '{variable_name}'"
         ) from err
 
-    if expected_type is not None and not isinstance(variable, expected_type):
-        raise ValueError(
-            f"Resolved variable '{variable_path}' has type {type(variable)}, "
-            f"expected {expected_type}"
-        )
+    if expected_type is not None:
+        # Support both instance checks (tools, functions) and subclass checks
+        # (provider classes, middleware classes).
+        if isinstance(variable, type):
+            if not issubclass(variable, expected_type):
+                raise ValueError(
+                    f"Resolved variable '{variable_path}' has type {type(variable)}, "
+                    f"expected subclass of {expected_type}"
+                )
+        elif not isinstance(variable, expected_type):
+            raise ValueError(
+                f"Resolved variable '{variable_path}' has type {type(variable)}, "
+                f"expected {expected_type}"
+            )
 
     return variable
 

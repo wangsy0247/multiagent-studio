@@ -334,7 +334,16 @@ class ModelConfig(ConfigSection):
 class SandboxConfig(ConfigSection):
     """Configuration for the execution sandbox."""
 
-    use: bool = False
+    use: str = ""
+    image: str = "python:3.11-slim"
+
+    # OpenSandbox-specific settings
+    server_url: str = "http://localhost:8080"
+    api_key: str = ""
+    resource_cpu: str = "1"
+    resource_memory: str = "2Gi"
+    timeout_minutes: int = 30
+
     allow_host_bash: bool = False
     bash_output_max_chars: int = 10000
     read_file_output_max_chars: int = 5000

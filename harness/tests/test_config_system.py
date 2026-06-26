@@ -244,6 +244,26 @@ class TestConfigSections:
         sc = SandboxConfig.from_dict({})
         assert sc.allow_host_bash is False
         assert sc.bash_output_max_chars == 10000
+        assert sc.image == "python:3.11-slim"
+        assert sc.server_url == "http://localhost:8080"
+        assert sc.resource_cpu == "1"
+        assert sc.resource_memory == "2Gi"
+
+    def test_sandbox_config_parses_opensandbox_runtime_options(self):
+        sc = SandboxConfig.from_dict({
+            "use": "harness.services.open_sandbox_provider:OpenSandboxProvider",
+            "image": "python:3.12-slim",
+            "server_url": "http://opensandbox:8080",
+            "resource_cpu": "2",
+            "resource_memory": "4Gi",
+            "timeout_minutes": 60,
+        })
+        assert sc.use.endswith("OpenSandboxProvider")
+        assert sc.image == "python:3.12-slim"
+        assert sc.server_url == "http://opensandbox:8080"
+        assert sc.resource_cpu == "2"
+        assert sc.resource_memory == "4Gi"
+        assert sc.timeout_minutes == 60
 
     def test_memory_config(self):
         mc = MemoryConfig.from_dict({

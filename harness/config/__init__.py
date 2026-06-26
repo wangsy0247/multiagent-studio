@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
 
@@ -18,6 +19,11 @@ from harness.config.tool_config import ToolConfig, ToolGroupConfig
 # Resolve .env relative to the harness package directory — NOT the CWD.
 # This fixes ``python -m harness.main`` when started from the project root.
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+# Load .env into os.environ so that tools using os.getenv() (e.g. web_search)
+# can see values defined in harness/.env without requiring a manual export.
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE, override=False)
 
 
 class HarnessConfig(BaseSettings):
@@ -53,10 +59,16 @@ class HarnessConfig(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
 
     # Middleware
-    sandbox_use: str = ""  # e.g. harness.services.docker_sandbox_provider:DockerSandboxProvider
+    sandbox_use: str = ""  # e.g. harness.services.open_sandbox_provider:OpenSandboxProvider
     sandbox_image: str = "python:3.11-slim"
-    sandbox_mem_limit: str = "512m"
-    sandbox_cpu_quota: int = 100000
+
+    # OpenSandbox settings
+    sandbox_server_url: str = "http://localhost:8080"
+    sandbox_api_key: str = ""
+    sandbox_resource_cpu: str = "1"
+    sandbox_resource_memory: str = "2Gi"
+    sandbox_timeout_minutes: int = 30
+
     tool_max_retries: int = 3
     summary_token_threshold: int = 8000
     summary_message_threshold: int = 20

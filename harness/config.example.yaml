@@ -16,14 +16,24 @@ tool_groups:
   - name: web
   - name: code
   - name: files
-  - name: abacus
 
 # --- Sandbox ---
 sandbox:
   # Sandbox provider (DeerFlow-style). Choose one of:
-  #   - harness.services.docker_sandbox_provider:DockerSandboxProvider
+  #   - harness.services.open_sandbox_provider:OpenSandboxProvider  (recommended)
   #   - harness.services.local_sandbox_provider:LocalSandboxProvider (default when empty)
   use: ""
+
+  # Sandbox base image (used by OpenSandbox).
+  image: python:3.11-slim
+
+  # OpenSandbox settings.
+  server_url: http://localhost:8080
+  api_key: ""
+  resource_cpu: "1"
+  resource_memory: "2Gi"
+  timeout_minutes: 30
+
   allow_host_bash: false
   bash_output_max_chars: 20000
   read_file_output_max_chars: 50000
@@ -117,10 +127,6 @@ tool_groups:
     description: 文件操作工具组
   - name: data
     description: 数据分析工具组
-  - name: abacus
-    description: Abacus 材料计算工具组
-  - name: weather
-    description: 天气查询工具组
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
@@ -134,6 +140,10 @@ tools:
   - name: arxiv_search
     group: search
     use: harness.tools.search:arxiv_search
+
+  - name: web_fetch
+    group: search
+    use: harness.tools.search:web_fetch
 
   - name: bash
     group: code
@@ -163,39 +173,6 @@ tools:
     group: files
     use: harness.tools.sandbox_tools:str_replace
 
-  - name: generate_abacus_input
-    group: abacus
-    use: harness.tools.abacus:generate_abacus_input
-
-  - name: submit_abacus_job
-    group: abacus
-    use: harness.tools.abacus:submit_abacus_job
-
-  - name: weather_search
-    group: weather
-    use: harness.tools.weather:weather_search
-
-  # Core / utility tools (loaded from config.yaml)
-  # - name: data_query
-  #   group: data
-  #   use: harness.tools.core:data_query
-  #
-  # - name: chart_generate
-  #   group: data
-  #   use: harness.tools.core:chart_generate
-  #
-  # - name: csv_process
-  #   group: data
-  #   use: harness.tools.core:csv_process
-  #
-  # - name: template_render
-  #   group: data
-  #   use: harness.tools.core:template_render
-  #
-  # - name: code_check
-  #   group: code
-  #   use: harness.tools.core:code_check
-
 # --- Tool Plugins (legacy) ---
 # Register additional tools from arbitrary Python modules without modifying
 # core code. Each entry supports:
@@ -205,8 +182,4 @@ tools:
 #   is_factory: Whether ``attr`` is a callable returning tool(s)
 #
 # plugins:
-#   tools:
-#     - module: "harness.tools.weather"
-#       attr: "build_weather_tools"
-#       category: "weather"
-#       is_factory: true
+#   tools: []

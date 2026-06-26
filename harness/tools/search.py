@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from html.parser import HTMLParser
 from typing import Any
 
 import requests
@@ -22,41 +23,114 @@ def _simulate_web_results(query: str, num_results: int) -> str:
     )
 
 
-def _call_serpapi(query: str, num_results: int, api_key: str) -> str | None:
-    """Call SerpAPI Google search and return formatted results.
+def _is_tavily_quota_error(exc: Exception) -> bool:
+    """Detect Tavily quota/credit exhaustion."""
+    text = str(exc).lower()
+    indicators = [
+        "quota",
+        "credits",
+        "insufficient",
+        "limit",
+        "exceeded",
+        "too many requests",
+    ]
+    if any(ind in text for ind in indicators):
+        return True
 
-    Returns None if the request fails or returns no organic results.
-    """
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) in (429, 403, 402):
+        return True
+
+    return False
+
+
+def _call_duckduckgo(query: str, num_results: int) -> str | None:
+    """Call DuckDuckGo search as a free fallback."""
     try:
-        resp = requests.get(
-            "https://serpapi.com/search",
-            params={
-                "engine": "google",
-                "q": query,
-                "api_key": api_key,
-                "num": min(num_results, 10),
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        results = data.get("organic_results", [])
+        from duckduckgo_search import DDGS
+    except ImportError:
+        logger.warning("duckduckgo-search is not installed; cannot use DuckDuckGo fallback")
+        return None
+
+    try:
+        with DDGS(timeout=30) as ddgs:
+            results = ddgs.text(query, max_results=num_results)
         if not results:
             return None
 
         lines = []
         for r in results[:num_results]:
             title = r.get("title", "")
-            snippet = r.get("snippet", "")
-            link = r.get("link", "")
-            line = f"- {title}: {snippet}"
-            if link:
-                line += f"\n  来源: {link}"
+            body = r.get("body", r.get("snippet", ""))
+            href = r.get("href", r.get("link", ""))
+            line = f"- {title}: {body}"
+            if href:
+                line += f"\n  来源: {href}"
             lines.append(line)
         return "\n".join(lines)
     except Exception as exc:
-        logger.warning("SerpAPI search failed: %s", exc)
+        logger.warning("DuckDuckGo search failed: %s", exc)
         return None
+
+
+def _format_tavily_results(data: dict, num_results: int) -> str:
+    """Format Tavily API response into plain text."""
+    results = data.get("results", [])
+    lines = []
+    for r in results[:num_results]:
+        title = r.get("title", "")
+        content = r.get("content", "")
+        url = r.get("url", "")
+        line = f"- {title}: {content}"
+        if url:
+            line += f"\n  来源: {url}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+class _HtmlTextExtractor(HTMLParser):
+    """Very light HTML-to-text extractor using only the stdlib."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip = 0
+        self._skip_tags = {"script", "style", "nav", "footer", "header", "aside", "noscript"}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._skip_tags:
+            self._skip += 1
+        if tag in {"br", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "blockquote"}:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._skip_tags and self._skip > 0:
+            self._skip -= 1
+        if tag in {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "blockquote"}:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip == 0:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        import re
+
+        text = "".join(self._parts)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n\n", text)
+        return text.strip()
+
+
+def _extract_text_from_html(html: str) -> str:
+    """Extract readable text from raw HTML."""
+    try:
+        extractor = _HtmlTextExtractor()
+        extractor.feed(html)
+        return extractor.get_text()
+    except Exception as exc:
+        logger.warning("HTML text extraction failed: %s", exc)
+        return ""
 
 
 def create_web_search_tool() -> Any:
@@ -71,11 +145,8 @@ def create_web_search_tool() -> Any:
             num_results: Maximum number of results.
         """
         has_tavily = bool(os.getenv("TAVILY_API_KEY"))
-        has_serpapi = bool(os.getenv("SERPAPI_API_KEY"))
-        if not has_tavily and not has_serpapi:
-            return _simulate_web_results(query, num_results)
 
-        # Try Tavily first
+        # Try Tavily first (default provider).
         if has_tavily:
             try:
                 resp = requests.post(
@@ -85,28 +156,23 @@ def create_web_search_tool() -> Any:
                     timeout=30,
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                results = data.get("results", [])
-                lines = []
-                for r in results[:num_results]:
-                    title = r.get("title", "")
-                    content = r.get("content", "")
-                    url = r.get("url", "")
-                    line = f"- {title}: {content}"
-                    if url:
-                        line += f"\n  来源: {url}"
-                    lines.append(line)
-                return "\n".join(lines)
+                return _format_tavily_results(resp.json(), num_results)
             except Exception as exc:
-                logger.warning("Tavily search failed: %s", exc)
+                if _is_tavily_quota_error(exc):
+                    logger.warning(
+                        "Tavily quota/credits exhausted, falling back to DuckDuckGo: %s",
+                        exc,
+                    )
+                else:
+                    logger.warning("Tavily search failed: %s", exc)
 
-        # Fallback to SerpAPI
-        if has_serpapi:
-            serpapi_key = os.getenv("SERPAPI_API_KEY")
-            result = _call_serpapi(query, num_results, serpapi_key)
-            if result is not None:
-                return result
+        # Fallback 1: DuckDuckGo (free, no API key).
+        result = _call_duckduckgo(query, num_results)
+        if result is not None:
+            logger.info("Using DuckDuckGo fallback for query: %s", query)
+            return result
 
+        # Final fallback: simulated placeholder results.
         return _simulate_web_results(query, num_results)
 
     return web_search
@@ -161,15 +227,71 @@ def create_arxiv_search_tool() -> Any:
     return arxiv_search
 
 
+def create_web_fetch_tool() -> Any:
+    """Create the ``web_fetch`` tool.
+
+    Tries a direct HTTP fetch and extracts the main text from HTML.
+    Falls back to Jina AI Reader if direct fetch fails or yields too little text.
+    """
+
+    @tool
+    def web_fetch(url: str) -> str:
+        """Fetch and extract the main text content of a web page.
+
+        Args:
+            url: The full URL to fetch (must include scheme, e.g. https://example.com).
+        """
+        if not url.startswith(("http://", "https://")):
+            return "Error: URL must start with http:// or https://"
+
+        # Primary path: direct fetch + stdlib HTML-to-text extraction.
+        try:
+            resp = requests.get(
+                url,
+                timeout=30,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            resp.raise_for_status()
+            text = _extract_text_from_html(resp.text)
+            if len(text) >= 200:
+                return text[:8000]
+            logger.warning("Direct fetch returned too little text (%d chars), trying Jina AI", len(text))
+        except Exception as exc:
+            logger.warning("Direct fetch failed: %s", exc)
+
+        # Fallback: Jina AI Reader (useful when the site needs JS or blocks direct requests).
+        try:
+            jina_url = f"https://r.jina.ai/{url}"
+            resp = requests.get(jina_url, timeout=30, headers={"Accept": "text/plain"})
+            resp.raise_for_status()
+            text = resp.text.strip()
+            if not text:
+                return "Error: Jina AI returned empty content"
+            return text[:8000]
+        except Exception as exc:
+            logger.warning("Jina AI fetch failed: %s", exc)
+            return f"Error: failed to fetch {url}: {exc}"
+
+    return web_fetch
+
 
 def build_search_tools() -> list[Any]:
     """Return all search tools."""
     return [
         create_web_search_tool(),
         create_arxiv_search_tool(),
+        create_web_fetch_tool(),
     ]
 
 
 # Module-level convenience instances.
 web_search = create_web_search_tool()
 arxiv_search = create_arxiv_search_tool()
+web_fetch = create_web_fetch_tool()

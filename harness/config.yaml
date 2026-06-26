@@ -15,16 +15,12 @@ config_version: 1
 tool_groups:
   - name: search
     description: 搜索工具组
-  - name: code
-    description: 代码执行工具组
+  # - name: code
+  #   description: 代码执行工具组
   - name: files
     description: 文件操作工具组
-  - name: data
-    description: 数据分析工具组
-  - name: abacus
-    description: Abacus 材料计算工具组
-  - name: weather
-    description: 天气查询工具组
+  # - name: data
+  #   description: 数据分析工具组
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
@@ -38,6 +34,10 @@ tools:
   - name: arxiv_search
     group: search
     use: harness.tools.search:arxiv_search
+
+  - name: web_fetch
+    group: search
+    use: harness.tools.search:web_fetch
 
   - name: bash
     group: code
@@ -67,28 +67,25 @@ tools:
     group: files
     use: harness.tools.sandbox_tools:str_replace
 
-  - name: generate_abacus_input
-    group: abacus
-    use: harness.tools.abacus:generate_abacus_input
-
-  - name: submit_abacus_job
-    group: abacus
-    use: harness.tools.abacus:submit_abacus_job
-
-  - name: weather_search
-    group: weather
-    use: harness.tools.weather:weather_search
-
-  - name: code_check
-    group: code
-    use: harness.tools.core:code_check
-
 
 # --- Sandbox ---
 sandbox:
   # Sandbox provider (DeerFlow-style). Leave empty to use LocalSandboxProvider.
-  # use: harness.services.docker_sandbox_provider:DockerSandboxProvider
-  use: harness.services.docker_sandbox_provider:DockerSandboxProvider
+  # Available providers:
+  #   - harness.services.open_sandbox_provider:OpenSandboxProvider  (recommended)
+  #   - harness.services.local_sandbox_provider:LocalSandboxProvider
+  use: harness.services.open_sandbox_provider:OpenSandboxProvider
+
+  # Sandbox base image (used by OpenSandbox).
+  image: python:3.11-slim
+
+  # OpenSandbox settings.
+  server_url: http://localhost:8080
+  api_key: "multiagent-studio"
+  resource_cpu: "1"
+  resource_memory: "2Gi"
+  timeout_minutes: 30
+
   allow_host_bash: false
   bash_output_max_chars: 20000
   read_file_output_max_chars: 50000

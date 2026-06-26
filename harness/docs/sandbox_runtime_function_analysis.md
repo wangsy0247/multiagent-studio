@@ -1,6 +1,9 @@
 # Harness 沙箱系统函数级运行分析
 
 > 本文档描述改造后的 Harness 沙箱系统（DeerFlow 风格虚拟路径）从初始化到工具执行的完整函数调用链路。
+>
+> **注意**：`DockerSandboxProvider` 已被移除，当前仅支持 `OpenSandboxProvider` 与 `LocalSandboxProvider`。
+> 文档中关于 `DockerSandboxProvider` / `SandboxService` 的章节仅保留作历史参考，后续需更新。
 
 ---
 

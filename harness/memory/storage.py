@@ -78,17 +78,17 @@ class FileMemoryStorage(MemoryStorage):
 
     def _get_memory_file_path(self, agent_name: str | None = None, *,
                               user_id: str | None = None) -> Path:
-        """Resolve the memory file path, preferring the unified Paths tool.
+        """Resolve the memory file path under the configured memory root.
 
-        Falls back to the legacy ``_memory_root`` when the user has explicitly
-        configured a non-default path.
+        Layout::
+
+            {memory_root}/users/{user_id}/memory.json
+            {memory_root}/users/{user_id}/agents/{agent_name}/memory.json
         """
-        from harness.config.paths import get_paths
-        paths = get_paths()
         uid = user_id or "default"
         if agent_name:
-            return paths.user_agent_memory_file(uid, agent_name)
-        return paths.user_memory_file(uid)
+            return self._memory_root / "users" / uid / "agents" / agent_name / "memory.json"
+        return self._memory_root / "users" / uid / "memory.json"
 
     def _load_memory_from_file(self, agent_name: str | None = None, *,
                                user_id: str | None = None) -> dict[str, Any]:
