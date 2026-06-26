@@ -153,14 +153,24 @@ class HarnessService(_BaseService):
             await self.tool_registry.load_mcp_tools(cfg.mcp_config_path)
 
         # 4. Memory system (DeerFlow-aligned: global singletons)
+        memory_cfg_dict: dict[str, Any] = {}
+        if self.config_manager is not None:
+            memory_cfg_dict = self.config_manager.get("memory") or {}
+
+        # Respect config.yaml memory section when present; fall back to
+        # HarnessConfig / RuntimeFeatures defaults otherwise.
         mem_cfg = MemoryConfig(
-            enabled=self.features.memory,
-            debounce_seconds=int(cfg.debounce_seconds),
-            model_name=cfg.default_model,
+            enabled=memory_cfg_dict.get("enabled", self.features.memory),
+            storage_path=memory_cfg_dict.get("storage_path") or cfg.memory_root,
+            debounce_seconds=int(memory_cfg_dict.get("debounce_seconds", cfg.debounce_seconds)),
+            model_name=memory_cfg_dict.get("model_name") or cfg.default_model,
+            max_facts=int(memory_cfg_dict.get("max_facts", 100)),
+            fact_confidence_threshold=float(
+                memory_cfg_dict.get("fact_confidence_threshold", 0.7)
+            ),
+            injection_enabled=memory_cfg_dict.get("injection_enabled", True),
+            max_injection_tokens=int(memory_cfg_dict.get("max_injection_tokens", 2000)),
         )
-        # Set storage path from config's memory_root
-        if cfg.memory_root:
-            mem_cfg.storage_path = cfg.memory_root
         set_memory_config(mem_cfg)
         # Ensure storage singleton is initialized with our root
         FileMemoryStorage(memory_root=cfg.memory_root)
@@ -419,11 +429,14 @@ class HarnessService(_BaseService):
                 }))
 
         # --- [13] Memory (aafter_agent → queue, DeerFlow-aligned) ---
+        # Use the per-user memory path (users/{user_id}/memory.json) instead of
+        # the per-agent path so that dynamic context injection reads from the
+        # same file that memory updates write to.
         if feat.memory is not False:
             if isinstance(feat.memory, HarnessAgentMiddleware):
                 mws.append(feat.memory)
             else:
-                mws.append(MW[13](config=None, agent_name="lead"))
+                mws.append(MW[13](config=None))
 
         # --- [14] ViewImage (vision) ---
         if feat.vision is not False:

@@ -98,12 +98,11 @@ sandbox:
 # --- Memory ---
 memory:
   enabled: True
-  storage_path: memory.json
-  debounce_seconds: 30
+  debounce_seconds: 120
   max_facts: 100
-  fact_confidence_threshold: 0.7
+  fact_confidence_threshold: 0.8
   injection_enabled: true
-  max_injection_tokens: 2000
+  max_injection_tokens: 1000
 
 # --- Summarization ---
 summarization:
@@ -117,9 +116,7 @@ summarization:
 
 # --- Title ---
 title:
-  enabled: True
-  max_words: 6
-  max_chars: 60
+  enabled: false
 
 # --- Loop Detection ---
 loop_detection:
