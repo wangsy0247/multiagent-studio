@@ -31,6 +31,8 @@ echo "  App PID: $APP_PID"
 # 3. Frontend (Next.js 开发服务器, 端口 3000)
 echo "[3/3] 启动前端 (端口 3000)..."
 cd frontend
+# 清理上次构建缓存，确保 Tailwind/CSS 变更生效
+rm -rf .next
 npm run dev &
 FRONTEND_PID=$!
 cd "$ROOT"

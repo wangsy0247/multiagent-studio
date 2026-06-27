@@ -128,16 +128,24 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
     );
     const graph = hasConfiguredSubagents ? exportGraph() : undefined;
 
+    let connected = false;
     const sse = new SSEClient({
       onEvent: (event) => {
+        connected = true;
         handleSSEEvent(event);
         if (event.type === "finished" || event.type === "error") {
           setStreaming(false);
         }
       },
       onStatus: (status) => {
-        if (status === "error") setStreaming(false);
+        if (status === "connected") connected = true;
+        if (status === "error" && !connected) {
+          // 连接直接失败（后端不可达） → 提示用户
+          setStreaming(false);
+          setError("无法连接后端服务 (localhost:8000)，请确认已启动 Harness + App 服务");
+        }
       },
+      maxReconnectAttempts: 1, // 提问场景不需要重连
     });
     sseRef.current = sse;
 
@@ -149,7 +157,10 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
         files: filesPayload.length > 0 ? filesPayload : undefined,
       });
     } catch (err: any) {
-      console.error(err);
+      console.error("SSE 连接异常:", err);
+      if (!connected) {
+        setError("无法连接后端服务，请确认端口 8000 已启动");
+      }
     } finally {
       setStreaming(false);
       sseRef.current = null;

@@ -1,14 +1,24 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import { useParams } from "next/navigation";
 import { PanelLeftClose, PanelLeft, MessageCircle, GitGraph, BarChart3 } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { ThreadDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import AgentCanvas from "@/components/canvas/AgentCanvas";
-import ChatPanel from "@/components/chat/ChatPanel";
-import MonitoringPanel from "@/components/monitoring/MonitoringPanel";
+
+// React.lazy 客户端按需加载 → 避免 next/dynamic 的 SSR bootstrap 问题
+const AgentCanvas = lazy(() => import("@/components/canvas/AgentCanvas"));
+const ChatPanel = lazy(() => import("@/components/chat/ChatPanel"));
+const MonitoringPanel = lazy(() => import("@/components/monitoring/MonitoringPanel"));
+
+function PanelFallback() {
+  return (
+    <div className="flex items-center justify-center h-full bg-slate-50">
+      <div className="w-6 h-6 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+    </div>
+  );
+}
 
 type TabType = "graph" | "chat" | "monitor";
 
@@ -39,10 +49,10 @@ export default function WorkspacePage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex items-center justify-center h-full bg-slate-50">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm text-muted-foreground">加载会话...</p>
+          <div className="w-8 h-8 border-3 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+          <p className="text-sm text-slate-500">加载会话...</p>
         </div>
       </div>
     );
@@ -50,12 +60,12 @@ export default function WorkspacePage() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <div className="flex items-center justify-center h-full bg-slate-50">
         <div className="text-center">
-          <p className="text-destructive mb-2">{error}</p>
+          <p className="text-red-600 mb-3">{error}</p>
           <button
             onClick={loadThread}
-            className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg"
+            className="px-5 py-2 text-sm bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors"
           >
             重试
           </button>
@@ -64,65 +74,73 @@ export default function WorkspacePage() {
     );
   }
 
+  const tabs = [
+    { id: "chat" as TabType, icon: MessageCircle, label: "对话" },
+    { id: "graph" as TabType, icon: GitGraph, label: "画布" },
+    { id: "monitor" as TabType, icon: BarChart3, label: "监控" },
+  ];
+
   return (
     <div className="flex h-full">
-      {/* 主面板 */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Tab 栏 */}
-        <div className="flex items-center border-b px-4 h-10 bg-card flex-shrink-0">
-          <div className="flex items-center gap-1">
-            {[
-              { id: "chat" as TabType, icon: MessageCircle, label: "对话" },
-              { id: "graph" as TabType, icon: GitGraph, label: "画布" },
-              { id: "monitor" as TabType, icon: BarChart3, label: "监控" },
-            ].map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition",
-                  tab === t.id
-                    ? "bg-primary/10 text-primary font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-accent"
-                )}
-              >
-                <t.icon className="w-3.5 h-3.5" />
-                {t.label}
-              </button>
-            ))}
+        {/* Tab bar */}
+        <div className="flex items-center border-b border-slate-200 px-4 h-11 bg-white flex-shrink-0">
+          <div className="flex items-center gap-0.5">
+            {tabs.map((t) => {
+              const isActive = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm transition-all duration-150",
+                    isActive
+                      ? "bg-slate-100 text-slate-900 font-medium"
+                      : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+                  )}
+                >
+                  <t.icon className={cn("w-3.5 h-3.5", isActive && "text-slate-700")} />
+                  {t.label}
+                </button>
+              );
+            })}
           </div>
           <div className="flex-1" />
-          <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+          <span className="text-xs text-slate-400 truncate max-w-[250px]">
             {thread?.title || "新会话"}
           </span>
         </div>
 
-        {/* 内容区 */}
+        {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {tab === "graph" && (
-            <AgentCanvas threadId={thread_id} initialGraph={thread?.executionGraph || null} />
-          )}
-          {tab === "chat" && (
-            <ChatPanel threadId={thread_id} threadTitle={thread?.title || ""} />
-          )}
-          {tab === "monitor" && (
-            <MonitoringPanel threadId={thread_id} />
-          )}
+          <Suspense fallback={<PanelFallback />}>
+            {tab === "graph" && (
+              <AgentCanvas threadId={thread_id} initialGraph={thread?.executionGraph || null} />
+            )}
+            {tab === "chat" && (
+              <ChatPanel threadId={thread_id} threadTitle={thread?.title || ""} />
+            )}
+            {tab === "monitor" && (
+              <MonitoringPanel threadId={thread_id} />
+            )}
+          </Suspense>
         </div>
       </div>
 
-      {/* 右侧配置面板 (仅在画布模式显示) */}
+      {/* Right config panel (graph mode only) */}
       {tab === "graph" && (
         <>
           <button
             onClick={() => setRightPanelOpen(!rightPanelOpen)}
-            className="absolute right-0 top-1/2 -translate-y-1/2 p-1 bg-card border rounded-l-md shadow-sm hover:bg-accent z-10"
+            className="absolute right-0 top-1/2 -translate-y-1/2 p-1.5 bg-white border border-slate-200 rounded-l-lg shadow-sm hover:bg-slate-50 z-10 transition-colors"
           >
-            {rightPanelOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
+            {rightPanelOpen ? <PanelLeftClose className="w-4 h-4 text-slate-500" /> : <PanelLeft className="w-4 h-4 text-slate-500" />}
           </button>
           {rightPanelOpen && (
-            <aside className="w-80 border-l bg-card overflow-y-auto p-4">
-              <p className="text-sm text-muted-foreground">点击画布中的节点进行配置</p>
+            <aside className="w-80 border-l bg-white overflow-y-auto p-6">
+              <p className="text-sm text-slate-500 text-center mt-20">
+                点击画布中的节点进行配置
+              </p>
             </aside>
           )}
         </>

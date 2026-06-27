@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Play, Download, Upload, Trash2, AlertTriangle, CheckCircle } from "lucide-react";
+import { Play, FileJson, Upload, Trash2, AlertTriangle, CheckCircle, RotateCcw } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas-store";
 import { useChatStore } from "@/lib/chat-store";
 import { SSEClient } from "@/lib/sse-client";
@@ -30,8 +30,17 @@ export default function CanvasControls({ threadId }: CanvasControlsProps) {
     addMessage({ role: "human", content: message, msgType: "text", metadata: {}, tokenCount: 0 });
     setStreaming(true);
 
+    let connected = false;
     const sse = new SSEClient({
-      onEvent: (event) => handleSSEEvent(event),
+      onEvent: (event) => { connected = true; handleSSEEvent(event); },
+      onStatus: (status) => {
+        if (status === "connected") connected = true;
+        if (status === "error" && !connected) {
+          setStreaming(false);
+          useChatStore.getState().setError("无法连接后端服务 (localhost:8000)，请确认已启动 Harness + App 服务");
+        }
+      },
+      maxReconnectAttempts: 1,
     });
 
     try {
@@ -42,6 +51,9 @@ export default function CanvasControls({ threadId }: CanvasControlsProps) {
       });
     } catch (err) {
       console.error("执行出错", err);
+      if (!connected) {
+        useChatStore.getState().setError("无法连接后端服务，请确认端口 8000 已启动");
+      }
     } finally {
       setStreaming(false);
     }
@@ -64,7 +76,6 @@ export default function CanvasControls({ threadId }: CanvasControlsProps) {
       importGraph(graph);
       setShowImport(false);
       setImportInput("");
-      // 保存到后端
       threadsAPI.updateGraph(threadId, graph).catch(console.error);
     } catch {
       alert("JSON 格式无效");
@@ -81,71 +92,71 @@ export default function CanvasControls({ threadId }: CanvasControlsProps) {
   }
 
   return (
-    <div className="flex items-center gap-1 bg-card border rounded-lg shadow-sm p-1">
+    <div className="relative inline-flex items-center gap-0.5 bg-white border border-slate-200 rounded-xl shadow-sm p-1">
       <button
         onClick={handleRun}
-        className="flex items-center gap-1 px-2.5 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition font-medium"
-        title="运行 (先校验再执行)"
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors font-medium"
+        title="运行"
       >
         <Play className="w-3 h-3" />
         运行
       </button>
 
       <button
-        onClick={() => validate() && setShowValidation(true)}
-        className="p-1.5 rounded hover:bg-accent transition"
+        onClick={() => { validate(); setShowValidation(true); }}
+        className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors group"
         title="校验画布"
       >
-        <CheckCircle className="w-3.5 h-3.5 text-muted-foreground" />
+        <CheckCircle className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600" />
       </button>
 
-      <div className="w-px h-6 bg-border mx-1" />
+      <div className="w-px h-6 bg-slate-200 mx-0.5" />
 
       <button
         onClick={handleSave}
-        className="p-1.5 rounded hover:bg-accent transition"
-        title="保存到服务器"
+        className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors group"
+        title="保存"
       >
-        <Download className="w-3.5 h-3.5 text-muted-foreground" />
+        <Upload className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600" />
       </button>
 
-      <button onClick={handleExport} className="p-1.5 rounded hover:bg-accent transition" title="导出 JSON">
-        <Upload className="w-3.5 h-3.5 text-muted-foreground" />
+      <button onClick={handleExport} className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors group" title="导出 JSON">
+        <FileJson className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600" />
       </button>
 
       <button
         onClick={() => setShowImport(!showImport)}
-        className="p-1.5 rounded hover:bg-accent transition"
+        className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors group"
         title="导入 JSON"
       >
-        <Download className="w-3.5 h-3.5 text-muted-foreground rotate-180" />
+        <RotateCcw className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600" />
       </button>
 
-      <div className="w-px h-6 bg-border mx-1" />
+      <div className="w-px h-6 bg-slate-200 mx-0.5" />
 
       <button
         onClick={clearCanvas}
-        className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition"
+        className="p-1.5 rounded-lg hover:bg-red-50 transition-colors group"
         title="清空画布"
       >
-        <Trash2 className="w-3.5 h-3.5" />
+        <Trash2 className="w-3.5 h-3.5 text-slate-400 group-hover:text-red-500" />
       </button>
 
-      {/* 校验错误弹窗 */}
+      {/* Validation popup */}
       {showValidation && validationErrors.length > 0 && (
-        <div className="absolute top-full right-0 mt-2 w-64 bg-card border rounded-lg shadow-lg p-3 z-50">
-          <div className="flex items-center gap-2 text-destructive text-xs font-medium mb-2">
-            <AlertTriangle className="w-3.5 h-3.5" />
+        <div className="absolute top-full right-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-lg p-4 z-50 animate-scale-in">
+          <div className="flex items-center gap-2 text-red-600 text-xs font-semibold mb-3">
+            <AlertTriangle className="w-4 h-4" />
             校验错误 ({validationErrors.length})
           </div>
-          <ul className="space-y-1">
+          <ul className="space-y-1.5 mb-3">
             {validationErrors.map((e, i) => (
-              <li key={i} className="text-xs text-muted-foreground">• {e}</li>
+              <li key={i} className="text-xs text-slate-600 pl-1">• {e}</li>
             ))}
           </ul>
           <button
             onClick={() => setShowValidation(false)}
-            className="mt-2 w-full py-1 text-xs bg-muted rounded hover:bg-accent"
+            className="w-full py-1.5 text-xs bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
           >
             关闭
           </button>
@@ -153,40 +164,40 @@ export default function CanvasControls({ threadId }: CanvasControlsProps) {
       )}
 
       {showValidation && validationErrors.length === 0 && (
-        <div className="absolute top-full right-0 mt-2 w-48 bg-card border rounded-lg shadow-lg p-3 z-50">
-          <div className="flex items-center gap-2 text-green-600 text-xs font-medium">
-            <CheckCircle className="w-3.5 h-3.5" />
+        <div className="absolute top-full right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-lg p-4 z-50 animate-scale-in">
+          <div className="flex items-center gap-2 text-emerald-600 text-xs font-semibold">
+            <CheckCircle className="w-4 h-4" />
             校验通过
           </div>
           <button
             onClick={() => setShowValidation(false)}
-            className="mt-2 w-full py-1 text-xs bg-muted rounded hover:bg-accent"
+            className="mt-3 w-full py-1.5 text-xs bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
           >
             关闭
           </button>
         </div>
       )}
 
-      {/* 导入弹窗 */}
+      {/* Import popup */}
       {showImport && (
-        <div className="absolute top-full right-0 mt-2 w-80 bg-card border rounded-lg shadow-lg p-3 z-50">
+        <div className="absolute top-full right-0 mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-lg p-4 z-50 animate-scale-in">
           <textarea
             value={importInput}
             onChange={(e) => setImportInput(e.target.value)}
             rows={6}
-            className="w-full px-2 py-1.5 text-xs border rounded font-mono"
+            className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg font-mono input-focus"
             placeholder='粘贴 ExecutionGraph JSON...'
           />
-          <div className="flex gap-2 mt-2">
+          <div className="flex gap-2 mt-3">
             <button
               onClick={handleImport}
-              className="flex-1 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
+              className="flex-1 py-2 text-xs bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors font-medium"
             >
               导入
             </button>
             <button
               onClick={() => setShowImport(false)}
-              className="flex-1 py-1 text-xs bg-muted rounded hover:bg-accent"
+              className="flex-1 py-2 text-xs bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
             >
               取消
             </button>
