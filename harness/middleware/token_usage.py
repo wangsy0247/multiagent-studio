@@ -6,6 +6,7 @@ metadata from the AIMessage response and accumulate into state.token_usage.
 from __future__ import annotations
 
 import logging
+from typing import override
 
 from langgraph.runtime import Runtime
 from langchain_core.messages import AIMessage
@@ -25,6 +26,7 @@ class TokenUsageMiddleware(HarnessAgentMiddleware):
         super().__init__(config)
         self.enabled = True
 
+    @override
     async def aafter_model(
         self,
         state: HarnessState,

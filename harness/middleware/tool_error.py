@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import override
 
 from langchain_core.messages import ToolMessage
 
@@ -24,6 +25,7 @@ class ToolErrorHandlingMiddleware(HarnessAgentMiddleware):
         super().__init__(config)
         self.max_retries = int(self.config.get("max_retries", 3))
 
+    @override
     async def awrap_tool_call(self, request, handler):
         """Retry the tool call up to max_retries times on failure."""
         last_error = None

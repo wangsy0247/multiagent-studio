@@ -24,6 +24,7 @@ import logging
 import re
 import uuid
 from datetime import datetime
+from typing import override
 
 from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
@@ -85,29 +86,32 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
 
     # ── Reminder builders ────────────────────────────────────────────────
 
-    def _build_full_reminder(self, *, user_id: str | None = None) -> str:
+    def _build_full_reminder(self, *, user_id: str | None = None) -> tuple[str, str]:
+        """Build the full reminder and return (reminder_text, memory_context_text)."""
         mem_cfg = get_memory_config()
         injection_enabled = mem_cfg.injection_enabled
+        memory_context = ""
         memory_block = ""
         if injection_enabled:
             try:
                 memory_data = get_memory_data(self._agent_name, user_id=user_id)
-                formatted = format_memory_for_injection(
+                memory_context = format_memory_for_injection(
                     memory_data,
                     max_tokens=mem_cfg.max_injection_tokens,
                 )
-                if formatted:
-                    memory_block = f"<memory>\n{formatted}\n</memory>\n\n"
+                if memory_context:
+                    memory_block = f"<memory>\n{memory_context}\n</memory>\n\n"
             except Exception as exc:
                 logger.warning("Failed to load memory for injection: %s", exc)
 
         current_date = datetime.now().strftime("%Y-%m-%d, %A")
-        return (
+        reminder = (
             f"<system-reminder>\n"
             f"{memory_block}"
             f"<current_date>{current_date}</current_date>\n"
             f"</system-reminder>"
         )
+        return reminder, memory_context
 
     def _build_date_update_reminder(self) -> str:
         current_date = datetime.now().strftime("%Y-%m-%d, %A")
@@ -158,7 +162,7 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
             )
             if first_idx is None:
                 return None
-            full_reminder = self._build_full_reminder(user_id=user_id)
+            full_reminder, memory_context = self._build_full_reminder(user_id=user_id)
             logger.info(
                 "DynamicContextMiddleware: injecting full reminder (len=%d, has_memory=%s, user_id=%s)",
                 len(full_reminder),
@@ -168,7 +172,10 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
             reminder_msg, user_msg = self._make_reminder_and_user_messages(
                 messages[first_idx], full_reminder,
             )
-            return {"messages": [reminder_msg, user_msg]}
+            return {
+                "messages": [reminder_msg, user_msg],
+                "memory_context": memory_context,
+            }
 
         if last_date == current_date:
             # Same day: nothing to do
@@ -192,5 +199,6 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
         )
         return {"messages": [reminder_msg, user_msg]}
 
+    @override
     async def abefore_agent(self, state: HarnessState, runtime: Runtime) -> dict | None:
         return self._inject(state)

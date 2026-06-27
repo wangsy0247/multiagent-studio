@@ -7,7 +7,7 @@ Memory reading/injection is handled by DynamicContextMiddleware.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
@@ -47,6 +47,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         self._agent_name = agent_name
         self._memory_config = memory_config
 
+    @override
     async def aafter_agent(
         self,
         state: HarnessState,

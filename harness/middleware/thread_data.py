@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import override
 
 from langgraph.runtime import Runtime
 
@@ -87,6 +88,8 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
     def __init__(self, config: dict | None = None):
         super().__init__(config)
 
+    @override
+    @override
     async def abefore_agent(
         self,
         state: HarnessState,

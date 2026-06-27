@@ -482,7 +482,10 @@ class HarnessService(_BaseService):
         if self.observability and self.observability.enabled:
             try:
                 from langfuse.langchain import CallbackHandler
-                handler = CallbackHandler()
+                # The Langfuse singleton is already configured by
+                # ObservabilityManager with the credentials from HarnessConfig.
+                # Pass public_key only to select the right client instance.
+                handler = CallbackHandler(public_key=self.config.langfuse_public_key)
                 cfg["callbacks"] = [handler]
             except Exception as exc:
                 logger.warning("Failed to wire Langfuse callback: %s", exc)
@@ -572,9 +575,11 @@ class HarnessService(_BaseService):
                 )
                 current_state = initial_state(thread_id, user_id, message, files)
             else:
-                # 已有会话，追加新消息
+                # 已有会话，追加新消息（不修改 checkpoint 反序列化出来的对象）
                 current_state = dict(state_snapshot.values)
-                current_state["messages"].append(_human_message_with_files(message, files))
+                current_state["messages"] = list(current_state.get("messages", [])) + [
+                    _human_message_with_files(message, files)
+                ]
         else:
             # 新会话
             current_state = initial_state(thread_id, user_id, message, files)
@@ -624,13 +629,6 @@ class HarnessService(_BaseService):
             "type": "message", "content": "", "thread_id": thread_id,
             "status": "started", "trace_id": trace_id,
         }
-
-        # ── 检查是否有之前后台生成的标题 ──
-        title_mw = self._get_middleware_by_name("title")
-        if title_mw is not None:
-            pending = title_mw.get_pending_title(thread_id)
-            if pending:
-                yield {"type": "title_update", "thread_id": thread_id, "title": pending}
 
         # Per-run streaming state
         final_state: dict[str, Any] = {}
@@ -771,20 +769,15 @@ class HarnessService(_BaseService):
             if _collected_token_usage and self.observability:
                 self.observability.log_token_usage(trace_id, "", _collected_token_usage)
 
-            # 标题生成（等待最多 5s，优先在当前 SSE 流中返回给前端）
-            title_mw = self._get_middleware_by_name("title")
-            if title_mw is not None:
-                msgs = final_state.get("messages", [])
-                if msgs and not title_mw._generated.intersection({thread_id}):
-                    title_mw._generated.add(thread_id)
-                    asyncio.create_task(title_mw._generate_and_store(thread_id, msgs))
-                # 轮询等待后台标题生成完成（最多 5s）
-                for _ in range(50):
-                    pending = title_mw.get_pending_title(thread_id)
-                    if pending:
-                        yield {"type": "title_update", "thread_id": thread_id, "title": pending}
-                        break
-                    await asyncio.sleep(0.1)
+            # 标题已作为 HarnessState 字段被 checkpoint 持久化
+            suggested_title = final_state.get("suggested_title")
+            if suggested_title and not _title_emitted:
+                _title_emitted = True
+                yield {
+                    "type": "title_update",
+                    "thread_id": thread_id,
+                    "title": suggested_title,
+                }
 
             # Emit pending clarification if any
             pending: Any = final_state.get("pending_clarification")
@@ -872,13 +865,19 @@ class HarnessService(_BaseService):
             yield {"type": "error", "content": "no pending clarification", "thread_id": thread_id}
             return
 
-        # Update pending clarification with the answer
-        if hasattr(pending, "answer"):
-            pending.answer = answer
-            pending.resolved_at = datetime.now()
+        # Update pending clarification with the answer — create a new object
+        # instead of mutating the checkpoint-deserialized value.
+        if isinstance(pending, ClarificationRequest):
+            pending = pending.model_copy(
+                update={"answer": answer, "resolved_at": datetime.now()}
+            )
         else:
-            pending["answer"] = answer
-            pending["resolved_at"] = datetime.now().isoformat()
+            pending = {
+                **pending,
+                "answer": answer,
+                "resolved_at": datetime.now().isoformat(),
+            }
+        state["pending_clarification"] = pending
 
         # ── 注册运行期取消标记 ──
         self._active_runs[thread_id] = {"cancelled": False}
@@ -1051,9 +1050,9 @@ class HarnessService(_BaseService):
                 async def _make_subagent_node(
                     state: HarnessState,
                     _cfg: SubAgentConfig = sub_config,
-                ) -> HarnessState:
+                ) -> dict[str, Any] | None:
                     if self.subagent_manager is None:
-                        return state
+                        return None
                     # Create SubAgent if not already registered
                     if self.subagent_manager.get(_cfg.name) is None:
                         await self.subagent_manager.create(_cfg)
@@ -1069,8 +1068,8 @@ class HarnessService(_BaseService):
                             last_user,
                             parent_state=state,
                         )
-                        state["subagent_results"][_cfg.name] = result.model_dump()
-                    return state
+                        return {"subagent_results": {_cfg.name: result.model_dump()}}
+                    return None
 
                 custom.add_node(node_id, _make_subagent_node)
 

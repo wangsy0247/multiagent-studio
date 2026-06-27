@@ -1,7 +1,14 @@
 """Middleware base class — HarnessAgentMiddleware extending LangChain's AgentMiddleware.
 
-Provides the base class for all 14 Harness middleware, compatible with
-``create_agent()`` from ``langchain.agents``.
+Provides a thin project-specific base class for all Harness middleware, compatible
+with ``create_agent()`` from ``langchain.agents``.
+
+Important: this class intentionally does **not** override any async hook defaults.
+``create_agent()`` decides which middleware nodes to add to the graph by checking
+whether a subclass overrides a hook. If we provided default async implementations
+here, every subclass would appear to implement every hook and the graph would get
+needlessly deep (one node per hook per middleware). Subclasses should override only
+the hooks they actually need.
 """
 from __future__ import annotations
 
@@ -9,7 +16,6 @@ import logging
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
-from langgraph.runtime import Runtime
 
 from harness.models import HarnessState
 
@@ -22,13 +28,14 @@ class HarnessAgentMiddleware(AgentMiddleware[HarnessState, Any, Any]):
     Parameters
     ----------
     config : dict | None
-        Configuration dict.
+        Configuration dict passed down from ``_register_middlewares()``.
 
-    Hooks (override in subclasses)
-    -------------------------------
-    *async* variants are the primary interface.
+    Hooks (override in subclasses only when needed)
+    ------------------------------------------------
+    *Async* variants are the primary interface because the Harness service runs
+    entirely asynchronously.
 
-    Per-turn hooks (one invocation per ``create_agent()`` call):
+    Per-turn hooks (one invocation per agent run):
       - ``abefore_agent(state, runtime)``   → dict | None
       - ``aafter_agent(state, runtime)``    → dict | None
 
@@ -55,66 +62,3 @@ class HarnessAgentMiddleware(AgentMiddleware[HarnessState, Any, Any]):
         super().__init__()
         self.config = config or {}
         logger.debug("Initialized %s with config=%s", self.name, self.config)
-
-    # ------------------------------------------------------------------
-    # Per-turn hooks
-    # ------------------------------------------------------------------
-
-    async def abefore_agent(
-        self, state: HarnessState, runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Called once before the agent starts executing.  Return state updates or None."""
-        return None
-
-    async def aafter_agent(
-        self, state: HarnessState, runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Called once after the agent finishes.  Return state updates or None."""
-        return None
-
-    # ------------------------------------------------------------------
-    # Per-model-call hooks
-    # ------------------------------------------------------------------
-
-    async def abefore_model(
-        self, state: HarnessState, runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Called before each LLM call.  Return state updates or None."""
-        return None
-
-    async def aafter_model(
-        self, state: HarnessState, runtime: Runtime[Any],
-    ) -> dict[str, Any] | None:
-        """Called after each LLM call.  Return state updates or None."""
-        return None
-
-    # ------------------------------------------------------------------
-    # Wrap hooks
-    # ------------------------------------------------------------------
-
-    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
-        """Wrap individual tool execution.  Call ``await handler(request)`` to invoke."""
-        return await handler(request)
-
-    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        """Wrap model execution.  Call ``await handler(request)`` to invoke."""
-        return await handler(request)
-
-    # ------------------------------------------------------------------
-    # Deferred hooks (sub-agent lifecycle)
-    # ------------------------------------------------------------------
-
-    async def defer_before(self, state: HarnessState, runtime: Runtime[Any]) -> None:
-        """Called before a SubAgent starts."""
-        pass
-
-    async def defer_after(self, state: HarnessState, runtime: Runtime[Any]) -> None:
-        """Called after a SubAgent finishes."""
-        pass
-
-    # ------------------------------------------------------------------
-    # Sync hooks — removed overrides; let parent AgentMiddleware no-ops handle them.
-    # LangChain 1.x calls sync hooks before async ones; raising NotImplementedError
-    # here breaks the middleware chain.  Async hooks (abefore_*, aafter_*) above
-    # contain all the actual logic.
-    # ------------------------------------------------------------------

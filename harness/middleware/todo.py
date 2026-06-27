@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import override
 
 from langgraph.runtime import Runtime
 
@@ -24,6 +25,7 @@ class TodoMiddleware(HarnessAgentMiddleware):
     def __init__(self, config: dict | None = None):
         super().__init__(config)
 
+    @override
     async def abefore_agent(
         self,
         state: HarnessState,
@@ -34,6 +36,7 @@ class TodoMiddleware(HarnessAgentMiddleware):
             return {"context_lost": True}
         return None
 
+    @override
     async def aafter_model(
         self,
         state: HarnessState,

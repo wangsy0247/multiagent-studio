@@ -6,7 +6,7 @@ Patches message history before the model sees it, following DeerFlow pattern.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -31,6 +31,7 @@ class DanglingToolCallMiddleware(HarnessAgentMiddleware):
     # awrap_model_call — onion model, innermost wrapper
     # ------------------------------------------------------------------
 
+    @override
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         """Patch dangling tool calls before passing to handler (real LLM)."""
         # request has .messages (list of LangChain messages)

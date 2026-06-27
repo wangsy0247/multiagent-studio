@@ -1,7 +1,15 @@
-"""SubagentLimitMiddleware — cap the number of concurrently running SubAgents."""
+"""SubagentLimitMiddleware — cap the number of task calls per assistant turn.
+
+This implementation is fully stateless: it inspects the last ``AIMessage``
+before the model sees its own output and strips any ``task`` tool calls beyond
+``max_concurrent``.  Because ``create_agent`` executes all tool calls in a
+single batch and waits for them before the next model call, per-turn limiting
+is equivalent to limiting concurrent SubAgents.
+"""
 from __future__ import annotations
 
 import logging
+from typing import override
 
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.runtime import Runtime
@@ -13,13 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class SubagentLimitMiddleware(HarnessAgentMiddleware):
-    """Prevent the Lead Agent from spawning more SubAgents than allowed.
-
-    The maximum concurrent count is clamped to [2, 4].
-    Uses ``awrap_tool_call`` to track active subagent count around ``task``
-    tool executions, and ``abefore_model`` to strip excess ``task`` tool
-    calls when the limit is reached.
-    """
+    """Prevent the Lead Agent from spawning more SubAgents than allowed per turn."""
 
     name = "subagent_limit"
 
@@ -27,66 +29,58 @@ class SubagentLimitMiddleware(HarnessAgentMiddleware):
         super().__init__(config)
         raw = self.config.get("max_concurrent", 3)
         self._max_concurrent: int = min(max(int(raw), 2), 4)
-        self._active: dict[str, int] = {}
 
-    # -- Track active count around task tool executions --
-
-    async def awrap_tool_call(self, request, handler):
-        """Increment/decrement active count around task tool calls."""
-        tool_name = request.tool_call.get("name", "")
-        if tool_name != "task":
-            return await handler(request)
-
-        thread_id = request.state.get("thread_id", "default")
-        self._active[thread_id] = self._active.get(thread_id, 0) + 1
-        try:
-            result = await handler(request)
-            return result
-        finally:
-            self._active[thread_id] = max(0, self._active.get(thread_id, 0) - 1)
-
-    # -- Strip excess task calls before model sees them --
-
+    @override
     async def abefore_model(
         self,
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
-        thread_id = state.get("thread_id", "default")
-        current = self._active.get(thread_id, 0)
-        if current < self._max_concurrent:
-            return None
-
         messages = list(state.get("messages", []))
+
         # Find the last AIMessage with tool_calls
+        ai_idx = None
         ai_msg = None
-        for m in reversed(messages):
+        for i, m in enumerate(reversed(messages)):
             if isinstance(m, AIMessage) and m.tool_calls:
+                ai_idx = len(messages) - 1 - i
                 ai_msg = m
                 break
 
         if ai_msg is None:
             return None
 
-        filtered: list[dict] = []
+        task_calls = [tc for tc in ai_msg.tool_calls if tc.get("name") == "task"]
+        if len(task_calls) <= self._max_concurrent:
+            return None
+
+        # Build a new AIMessage that keeps only the first max_concurrent task calls
+        # plus any non-task calls.
+        kept_tool_calls: list[dict] = []
+        task_seen = 0
         blocked = 0
         for tc in ai_msg.tool_calls:
-            if tc["name"] == "task" and current >= self._max_concurrent:
-                blocked += 1
+            if tc.get("name") == "task":
+                if task_seen < self._max_concurrent:
+                    kept_tool_calls.append(tc)
+                    task_seen += 1
+                else:
+                    blocked += 1
             else:
-                filtered.append(tc)
+                kept_tool_calls.append(tc)
 
         if blocked == 0:
             return None
 
-        ai_msg.tool_calls = filtered
+        new_messages = list(messages)
+        new_messages[ai_idx] = ai_msg.model_copy(update={"tool_calls": kept_tool_calls})
         warning = SystemMessage(
             content=(
-                f"[系统提示] 当前已有 {current} 个子 Agent 在运行，"
-                f"达到最大并发限制 ({self._max_concurrent})。"
-                f"请等待部分任务完成后再创建新的子 Agent。"
+                f"[系统提示] 当前助手一次最多发起 {self._max_concurrent} 个子 Agent 任务，"
+                f"已自动忽略超出的 {blocked} 个任务。"
+                f"请等待这些任务完成后再创建新的子 Agent。"
             )
         )
-        messages.append(warning)
-        logger.info("SubagentLimit blocked %d task call(s) for thread=%s", blocked, thread_id)
-        return {"messages": messages}
+        new_messages.append(warning)
+        logger.info("SubagentLimit blocked %d task call(s) for thread=%s", blocked, state.get("thread_id"))
+        return {"messages": new_messages}

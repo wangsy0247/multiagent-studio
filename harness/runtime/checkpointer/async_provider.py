@@ -103,17 +103,13 @@ class AsyncCheckpointerProvider:
             elif backend == "postgres":
                 self._saver = await self._create_postgres()
             else:
-                logger.warning(
-                    "Unknown checkpointer backend=%r, falling back to memory",
-                    backend,
-                )
-                self._saver = self._create_memory()
+                raise ValueError(f"Unknown checkpointer backend: {backend}")
         except Exception:
             logger.exception(
-                "Failed to create checkpointer backend=%r, falling back to memory",
+                "Failed to create checkpointer backend=%r; refusing silent fallback",
                 backend,
             )
-            self._saver = self._create_memory()
+            raise
 
         logger.info(
             "Checkpointer ready: backend=%s type=%s",

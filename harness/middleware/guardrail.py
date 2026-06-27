@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import override
 
 from langgraph.runtime import Runtime
 
@@ -24,6 +25,7 @@ class GuardrailMiddleware(HarnessAgentMiddleware):
     def __init__(self, config: dict | None = None):
         super().__init__(config)
 
+    @override
     async def abefore_agent(
         self,
         state: HarnessState,

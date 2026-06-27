@@ -116,7 +116,7 @@ summarization:
 
 # --- Title ---
 title:
-  enabled: false
+  enabled: true
 
 # --- Loop Detection ---
 loop_detection:

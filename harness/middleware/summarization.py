@@ -133,7 +133,7 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
                 hook_name = getattr(hook, "__name__", None) or type(hook).__name__
                 logger.exception("before_summarization hook %s failed", hook_name)
 
-    # Override the summarization trigger to fire hooks
+    @override
     def _maybe_summarize(self, state: AgentState, runtime: Runtime) -> dict | None:
         """Override to fire hooks before summarization."""
         messages = list(state["messages"])
@@ -153,6 +153,7 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         # Call parent implementation for actual summarization
         return super()._maybe_summarize(state, runtime)
 
+    @override
     async def _amaybe_summarize(self, state: AgentState, runtime: Runtime) -> dict | None:
         """Async override to fire hooks before summarization."""
         messages = list(state["messages"])

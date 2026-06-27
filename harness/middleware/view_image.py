@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import logging
 from pathlib import Path
+from typing import override
 
 from langchain_core.messages import ToolMessage
 
@@ -24,6 +25,7 @@ class ViewImageMiddleware(HarnessAgentMiddleware):
     def __init__(self, config: dict | None = None):
         super().__init__(config)
 
+    @override
     async def awrap_tool_call(self, request, handler):
         """Wrap view_image tool calls to resolve image paths."""
         tool_name = request.tool_call.get("name", "")
@@ -38,10 +40,10 @@ class ViewImageMiddleware(HarnessAgentMiddleware):
         image_path = str(result.content).strip() if hasattr(result, "content") else ""
         if image_path:
             resolved = self._resolve(image_path)
-            if not hasattr(result, "additional_kwargs"):
-                result.additional_kwargs = {}
-            result.additional_kwargs["image_url"] = resolved
-            result.additional_kwargs["hide_from_ui"] = True
+            additional_kwargs = dict(getattr(result, "additional_kwargs", {}) or {})
+            additional_kwargs["image_url"] = resolved
+            additional_kwargs["hide_from_ui"] = True
+            result = result.model_copy(update={"additional_kwargs": additional_kwargs})
 
         return result
 

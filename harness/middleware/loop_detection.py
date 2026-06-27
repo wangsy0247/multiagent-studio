@@ -1,10 +1,13 @@
-"""LoopDetectionMiddleware — detect and break agent execution loops."""
+"""LoopDetectionMiddleware — detect and break agent execution loops.
+
+Loop-detection history is stored in ``HarnessState.loop_history`` so it
+survives restarts and remains deterministic for a given checkpoint.
+"""
 from __future__ import annotations
 
 import hashlib
 import logging
-from collections import deque
-from typing import Any
+from typing import Any, override
 
 from langchain_core.messages import AIMessage, SystemMessage
 from langgraph.runtime import Runtime
@@ -20,6 +23,8 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
 
     Runs before each model call (``abefore_model``) to check whether the
     same sequence of messages has appeared repeatedly, indicating a loop.
+    The per-thread detection history lives in ``HarnessState.loop_history``
+    and is checkpointed by LangGraph.
     """
 
     name = "loop_detection"
@@ -30,42 +35,35 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         self._window = int(self.config.get("window_size", 20))
         self._threshold = int(self.config.get("warn_threshold", self.config.get("threshold", 5)))
         self._hard_limit = int(self.config.get("hard_limit", 10))
-        self._histories: dict[str, deque] = {}
 
-    def cleanup_thread(self, thread_id: str) -> None:
-        """Remove per-thread state to prevent memory leaks (#9)."""
-        self._histories.pop(thread_id, None)
-
+    @override
     async def abefore_model(
         self,
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
-        thread_id = state.get("thread_id", "default")
         messages = list(state.get("messages", []))
 
         window = messages[-self._window:] if len(messages) >= self._window else messages
         seq_hash = self._hash_sequence(window)
 
-        if thread_id not in self._histories:
-            self._histories[thread_id] = deque(maxlen=self._window * self._threshold)
-
-        history = self._histories[thread_id]
+        history = list(state.get("loop_history", []))
         match_count = sum(1 for h in history if h == seq_hash)
 
-        if match_count >= self._threshold:
-            logger.warning("Loop detected for thread=%s — breaking", thread_id)
-            messages = self._break_loop(messages)
-            history.append(seq_hash)
-            return {"messages": messages, "loop_detected": True}
+        updates: dict[str, Any] = {"loop_history": [seq_hash]}
 
-        history.append(seq_hash)
-        return None
+        if match_count >= self._threshold:
+            logger.warning("Loop detected for thread=%s — breaking", state.get("thread_id"))
+            updates["messages"] = self._break_loop(messages)
+            updates["loop_detected"] = True
+
+        return updates
 
     # ------------------------------------------------------------------
     # awrap_model_call — onion model wrapper (spec: drain queue)
     # ------------------------------------------------------------------
 
+    @override
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         """Drain pending loop warnings before the actual model call."""
         # In the onion model, this runs between LLMErrorHandling (outer) and
@@ -86,11 +84,18 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
 
     @staticmethod
     def _break_loop(messages: list) -> list:
-        """Strip pending tool_calls and inject guidance."""
+        """Return a new message list with pending tool_calls stripped and guidance injected."""
+        new_messages = []
+        cleared = False
         for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                msg.tool_calls = []
-                break
+            if not cleared and isinstance(msg, AIMessage) and msg.tool_calls:
+                new_messages.append(
+                    msg.model_copy(update={"tool_calls": []})
+                )
+                cleared = True
+            else:
+                new_messages.append(msg)
+        new_messages.reverse()
 
         loop_msg = SystemMessage(
             content=(
@@ -99,5 +104,5 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
                 "如果陷入困境，可以尝试简化问题或请求用户帮助。"
             )
         )
-        messages.append(loop_msg)
-        return messages
+        new_messages.append(loop_msg)
+        return new_messages

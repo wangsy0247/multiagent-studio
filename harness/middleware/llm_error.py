@@ -1,19 +1,22 @@
-"""LLMErrorHandlingMiddleware — wrap model calls with retry + circuit breaker.
+"""LLMErrorHandlingMiddleware — wrap model calls with retry.
 
 Matches DeerFlow spec: wrap_model_call stage, onion-model nested.
 Retries failed LLM calls with exponential backoff, then falls back to
 an error message injected into the conversation.
+
+This implementation is intentionally stateless: it does not keep a per-thread
+circuit-breaker counter in instance memory, so behaviour is fully determined by
+the LangGraph checkpoint.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, override
 
 from langchain_core.messages import AIMessage
 
 from harness.middleware.base import HarnessAgentMiddleware
-from harness.models import HarnessState
 
 logger = logging.getLogger(__name__)
 
@@ -37,53 +40,26 @@ class LLMErrorHandlingMiddleware(HarnessAgentMiddleware):
 
     name = "llm_error_handling"
 
-    # circuit breaker threshold — skip retries after this many failures
-    CIRCUIT_BREAKER_THRESHOLD = 5
-
     def __init__(self, config: dict | None = None):
         super().__init__(config)
         self.max_retries: int = self.config.get("max_retries", 3)
         self.base_delay: float = self.config.get("base_delay", 1.0)
-        self._failure_count: dict[str, int] = {}  # per-thread circuit breaker
-
-    # ------------------------------------------------------------------
-    # cleanup
-    # ------------------------------------------------------------------
-
-    def cleanup_thread(self, thread_id: str) -> None:
-        """Remove per-thread state to prevent memory leaks (#9)."""
-        self._failure_count.pop(thread_id, None)
 
     # ------------------------------------------------------------------
     # awrap_model_call — the core hook
     # ------------------------------------------------------------------
 
+    @override
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         """Wrap the model call with retry + error handling.
 
         On failure after all retries, inject an error AIMessage instead of
         crashing the entire agent run.
         """
-        thread_id = getattr(request, "thread_id", "default") if hasattr(request, "thread_id") else "default"
-
-        # ── 修复 #8: 断路器 — 连续失败过多时跳过重试直接返回错误 ──
-        if self._failure_count.get(thread_id, 0) >= self.CIRCUIT_BREAKER_THRESHOLD:
-            logger.error(
-                "Circuit breaker open for thread=%s (failures=%d), skipping retries",
-                thread_id, self._failure_count[thread_id],
-            )
-            return AIMessage(
-                content="模型服务暂时不可用，请稍后重试。",
-                additional_kwargs={"llm_error": True, "circuit_breaker": True},
-            )
-
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                result = await handler(request)
-                # Success — reset circuit breaker
-                self._failure_count[thread_id] = 0
-                return result
+                return await handler(request)
             except Exception as exc:
                 last_error = exc
                 if attempt < self.max_retries and self._is_retryable(exc):
@@ -97,10 +73,9 @@ class LLMErrorHandlingMiddleware(HarnessAgentMiddleware):
                     break
 
         # All retries exhausted — graceful fallback
-        self._failure_count[thread_id] = self._failure_count.get(thread_id, 0) + 1
         logger.error(
-            "LLM call failed after %d retries (thread=%s, failures=%d): %s",
-            self.max_retries + 1, thread_id, self._failure_count[thread_id], last_error,
+            "LLM call failed after %d retries: %s",
+            self.max_retries + 1, last_error,
         )
 
         # Return a synthetic error AIMessage so the agent can recover

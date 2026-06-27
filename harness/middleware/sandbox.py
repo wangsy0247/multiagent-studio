@@ -8,7 +8,7 @@ configured sandbox provider on demand.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from langgraph.runtime import Runtime
 
@@ -40,6 +40,7 @@ class SandboxMiddleware(HarnessAgentMiddleware):
     def __init__(self, config: dict | None = None):
         super().__init__(config)
 
+    @override
     async def abefore_agent(
         self,
         state: HarnessState,
@@ -50,6 +51,7 @@ class SandboxMiddleware(HarnessAgentMiddleware):
         logger.debug("Sandbox context set for agent run")
         return None
 
+    @override
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         """Re-inject sandbox context before each tool call.
 

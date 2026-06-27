@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime
 from hashlib import sha256
+from typing import override
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -39,11 +40,6 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
 
     def __init__(self, config: dict | None = None):
         super().__init__(config)
-        self._asked: dict[str, set[str]] = {}
-
-    def cleanup_thread(self, thread_id: str) -> None:
-        """Remove per-thread state to prevent memory leaks (#9)."""
-        self._asked.pop(thread_id, None)
 
     def _stable_message_id(self, tool_call_id: str, formatted_message: str) -> str:
         """Build a deterministic message ID so retries replace, not append."""
@@ -152,6 +148,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             goto=END,
         )
 
+    @override
     async def abefore_agent(
         self,
         state: HarnessState,
@@ -184,6 +181,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             "pending_clarification": None,
         }
 
+    @override
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -194,6 +192,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             return handler(request)
         return self._handle_clarification(request)
 
+    @override
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -204,6 +203,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             return await handler(request)
         return self._handle_clarification(request)
 
+    @override
     async def aafter_agent(
         self,
         state: HarnessState,

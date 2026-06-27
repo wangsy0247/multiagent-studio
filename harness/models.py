@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
@@ -141,36 +141,133 @@ class ValidationResult(BaseModel):
     issues: list[str] = []
 
 
-class HarnessState(TypedDict, total=False):
+# ---------------------------------------------------------------------------
+# Custom LangGraph reducers for HarnessState fields
+# ---------------------------------------------------------------------------
+
+
+def _todo_id(t: TodoItem | dict[str, Any]) -> str:
+    if isinstance(t, TodoItem):
+        return str(t.id)
+    return str(t.get("id", ""))
+
+
+def merge_todos(left: list[TodoItem], right: list[TodoItem]) -> list[TodoItem]:
+    """Merge todo lists by id; later updates override earlier ones."""
+    if not right:
+        return left
+    merged: dict[str, TodoItem] = {}
+    for t in left:
+        tid = _todo_id(t)
+        if tid:
+            merged[tid] = t
+    for t in right:
+        tid = _todo_id(t)
+        if tid:
+            merged[tid] = t
+    return list(merged.values())
+
+
+def merge_subagent_results(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Merge subagent result dictionaries."""
+    if not right:
+        return left
+    return {**left, **right}
+
+
+def merge_metadata(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-merge metadata updates."""
+    if not right:
+        return left
+    return {**left, **right}
+
+
+def add_token_usage(left: TokenUsage, right: TokenUsage | dict[str, Any]) -> TokenUsage:
+    """Add token usage counters."""
+    if isinstance(right, dict):
+        right = TokenUsage(**right)
+    return TokenUsage(
+        prompt_tokens=left.prompt_tokens + right.prompt_tokens,
+        completion_tokens=left.completion_tokens + right.completion_tokens,
+        total_tokens=left.total_tokens + right.total_tokens,
+        cost_usd=left.cost_usd + right.cost_usd,
+    )
+
+
+def append_pending_task_calls(
+    left: list[dict[str, Any]], right: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Append new pending task calls."""
+    if not right:
+        return left
+    return list(left) + list(right)
+
+
+def append_loop_history(left: list[str], right: list[str]) -> list[str]:
+    """Append loop-detection sequence hashes and cap the history length."""
+    if not right:
+        return left
+    combined = list(left) + list(right)
+    # Cap at a generous number to prevent unbounded growth while still
+    # giving loop detection enough context across restarts.
+    return combined[-200:]
+
+
+def merge_artifacts(left: list[str], right: list[str]) -> list[str]:
+    """Merge artifact path lists and deduplicate while preserving order."""
+    if not right:
+        return left
+    combined = list(left) + [a for a in right if isinstance(a, str)]
+    return list(dict.fromkeys(combined))
+
+
+class HarnessState(TypedDict):
     """LangGraph state definition — compatible with create_agent() as state_schema.
 
     Used for both the inner create_agent() subgraph and the outer orchestration
-    graph. The ``messages`` key with ``add_messages`` reducer is required by
-    create_agent(); all other fields are carried through transparently.
+    graph.
+
+    Core fields (``messages``, ``thread_id``, ``user_id``) are required.
+    All extension fields are marked ``NotRequired`` so middlewares and nodes can
+    safely omit them until they are first produced, while still giving the type
+    checker enough information to distinguish mandatory keys from optional ones.
     """
 
+    # ------------------------------------------------------------------
+    # Core required fields
+    # ------------------------------------------------------------------
     messages: Annotated[list[AnyMessage], add_messages]
     thread_id: str
     user_id: str
-    plan_mode: bool
-    todos: list[TodoItem]
-    memory_context: str
-    pending_clarification: ClarificationRequest | None
-    pending_task_calls: list[dict[str, Any]]  # subagent dispatch queue
-    subagent_results: dict[str, Any]
-    token_usage: TokenUsage
-    is_finished: bool
-    metadata: dict[str, Any]
+
+    # ------------------------------------------------------------------
+    # Optional business state
+    # ------------------------------------------------------------------
+    plan_mode: NotRequired[bool]
+    todos: NotRequired[Annotated[list[TodoItem], merge_todos]]
+    memory_context: NotRequired[str]
+    pending_clarification: NotRequired[ClarificationRequest | None]
+    pending_task_calls: NotRequired[Annotated[list[dict[str, Any]], append_pending_task_calls]]
+    subagent_results: NotRequired[Annotated[dict[str, Any], merge_subagent_results]]
+    token_usage: NotRequired[Annotated[TokenUsage, add_token_usage]]
+    is_finished: NotRequired[bool]
+    metadata: NotRequired[Annotated[dict[str, Any], merge_metadata]]
+
+    # ------------------------------------------------------------------
     # Runtime injected fields
-    workspace: str
-    sandbox: Any
-    agent_type: str
-    loop_detected: bool
-    context_lost: bool
-    plan_mode_exit: bool
-    suggested_title: str
-    last_error: dict[str, Any]
-    evaluation: EvaluationResult
+    # ------------------------------------------------------------------
+    workspace: NotRequired[str]
+    sandbox: NotRequired[Any]
+    agent_type: NotRequired[str]
+    loop_detected: NotRequired[bool]
+    loop_history: NotRequired[Annotated[list[str], append_loop_history]]
+    context_lost: NotRequired[bool]
+    artifacts: NotRequired[Annotated[list[str], merge_artifacts]]
+    plan_mode_exit: NotRequired[bool]
+    suggested_title: NotRequired[str]
+    title_generated: NotRequired[bool]
+    last_error: NotRequired[dict[str, Any]]
+    evaluation: NotRequired[EvaluationResult]
 
 
 def _human_message_with_files(message: str, files: list[dict] | None = None) -> HumanMessage:
@@ -200,6 +297,9 @@ def initial_state(
         token_usage=TokenUsage(),
         is_finished=False,
         metadata={},
+        title_generated=False,
+        loop_history=[],
+        artifacts=[],
     )
 
 
