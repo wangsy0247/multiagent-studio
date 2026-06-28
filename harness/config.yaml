@@ -109,7 +109,7 @@ summarization:
   enabled: True
   trigger:
     - type: tokens
-      value: 32000
+      value: 100000
   keep:
     type: messages
     value: 10

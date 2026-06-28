@@ -129,8 +129,13 @@ class AsyncCheckpointerProvider:
 
     async def _create_sqlite(self) -> BaseCheckpointSaver:
         """File-based async SQLite checkpointer."""
-        import aiosqlite
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        try:
+            import aiosqlite
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        except ImportError:
+            logger.error(SQLITE_INSTALL)
+            raise ImportError(SQLITE_INSTALL)
+
         from harness.config.checkpointer_config import get_checkpointer_config
         from harness.config.paths import get_paths
 
@@ -153,7 +158,12 @@ class AsyncCheckpointerProvider:
 
     async def _create_postgres(self) -> BaseCheckpointSaver:
         """Database-backed async Postgres checkpointer."""
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        except ImportError:
+            logger.error(POSTGRES_INSTALL)
+            raise ImportError(POSTGRES_INSTALL)
+
         from harness.config.checkpointer_config import get_checkpointer_config
 
         cfg = get_checkpointer_config()

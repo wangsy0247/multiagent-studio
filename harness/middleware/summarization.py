@@ -14,11 +14,12 @@ from typing import Any, Protocol, override, runtime_checkable
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import SummarizationMiddleware as LangChainSummarizationMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
 from harness.config.summarization_config import get_summarization_config
+from harness.middleware.dynamic_context import is_dynamic_context_reminder
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         self,
         *args,
         before_summarization: list[BeforeSummarizationHook] | None = None,
+        preserve_dynamic_context_reminders: bool = True,
         **kwargs,
     ) -> None:
         """Initialize the summarization middleware.
@@ -93,10 +95,13 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
             *args: Passed through to LangChain's SummarizationMiddleware.
             before_summarization: Optional list of hook callables invoked
                 before each summarization cycle.
+            preserve_dynamic_context_reminders: If True, keep hidden
+                dynamic-context reminders out of summary compression.
             **kwargs: Passed through to LangChain's SummarizationMiddleware.
         """
         super().__init__(*args, **kwargs)
         self._before_summarization_hooks = before_summarization or []
+        self._preserve_dynamic_context_reminders_enabled = preserve_dynamic_context_reminders
 
     @override
     def _build_new_messages(self, summary: str) -> list[HumanMessage]:
@@ -107,6 +112,28 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
                 name="summary",
             )
         ]
+
+    def _preserve_dynamic_context_reminders(
+        self,
+        messages_to_summarize: list[AnyMessage],
+        preserved_messages: list[AnyMessage],
+    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
+        """Keep hidden dynamic-context reminders out of summary compression.
+
+        These reminders carry the current date and optional memory. If
+        summarization removes them, DynamicContextMiddleware can mistake the
+        summary HumanMessage for the first user message and inject the reminder
+        in the wrong place.
+        """
+        if not self._preserve_dynamic_context_reminders_enabled:
+            return messages_to_summarize, preserved_messages
+
+        reminders = [msg for msg in messages_to_summarize if is_dynamic_context_reminder(msg)]
+        if not reminders:
+            return messages_to_summarize, preserved_messages
+
+        remaining = [msg for msg in messages_to_summarize if not is_dynamic_context_reminder(msg)]
+        return remaining, reminders + preserved_messages
 
     def _fire_hooks(
         self,
@@ -148,6 +175,9 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
             return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
+        messages_to_summarize, preserved_messages = self._preserve_dynamic_context_reminders(
+            messages_to_summarize, preserved_messages
+        )
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
 
         # Call parent implementation for actual summarization
@@ -168,6 +198,9 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
             return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
+        messages_to_summarize, preserved_messages = self._preserve_dynamic_context_reminders(
+            messages_to_summarize, preserved_messages
+        )
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
 
         # Call parent implementation for actual summarization
@@ -202,4 +235,5 @@ def create_summarization_middleware(
         summary_prompt=cfg.summary_prompt,
         model=cfg.model_name,
         before_summarization=before_summarization,
+        preserve_dynamic_context_reminders=cfg.preserve_dynamic_context_reminders,
     )

@@ -254,6 +254,14 @@ class MemoryUpdater:
             logger.warning("Failed to parse LLM response for memory update: %s", e)
             return False
         except Exception as e:
+            # ── 静默处理模型平台内容安全审查拒绝 ──
+            error_code = getattr(e, "code", None)
+            if error_code == "data_inspection_failed":
+                logger.warning(
+                    "Memory update skipped: content safety check failed (%s)",
+                    getattr(e, "message", str(e)),
+                )
+                return False
             logger.exception("Memory update failed: %s", e)
             return False
 

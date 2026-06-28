@@ -369,7 +369,6 @@ class HarnessService(_BaseService):
             if isinstance(feat.guardrail, HarnessAgentMiddleware):
                 mws.append(feat.guardrail)
             else:
-                # ── 修复 #12: guardrail=True 使用内置默认实例（与其他中间件一致） ──
                 mws.append(MW[6]())
 
         # --- [7] ToolErrorHandling (always) ---

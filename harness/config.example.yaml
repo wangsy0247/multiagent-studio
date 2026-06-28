@@ -62,6 +62,7 @@ summarization:
   keep:
     type: messages
     value: 10
+  preserve_dynamic_context_reminders: true
 
 # --- Title ---
 title:

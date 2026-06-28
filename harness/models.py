@@ -182,16 +182,18 @@ def merge_metadata(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any
     return {**left, **right}
 
 
-def add_token_usage(left: TokenUsage, right: TokenUsage | dict[str, Any]) -> TokenUsage:
-    """Add token usage counters."""
-    if isinstance(right, dict):
-        right = TokenUsage(**right)
-    return TokenUsage(
-        prompt_tokens=left.prompt_tokens + right.prompt_tokens,
-        completion_tokens=left.completion_tokens + right.completion_tokens,
-        total_tokens=left.total_tokens + right.total_tokens,
-        cost_usd=left.cost_usd + right.cost_usd,
-    )
+def add_token_usage(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Add token usage counters.
+
+    Store token usage as plain dict to avoid serializing custom Pydantic
+    models into LangGraph checkpoints (matches DeerFlow approach).
+    """
+    return {
+        "prompt_tokens": left.get("prompt_tokens", 0) + right.get("prompt_tokens", 0),
+        "completion_tokens": left.get("completion_tokens", 0) + right.get("completion_tokens", 0),
+        "total_tokens": left.get("total_tokens", 0) + right.get("total_tokens", 0),
+        "cost_usd": left.get("cost_usd", 0.0) + right.get("cost_usd", 0.0),
+    }
 
 
 def append_pending_task_calls(
@@ -249,7 +251,7 @@ class HarnessState(TypedDict):
     pending_clarification: NotRequired[ClarificationRequest | None]
     pending_task_calls: NotRequired[Annotated[list[dict[str, Any]], append_pending_task_calls]]
     subagent_results: NotRequired[Annotated[dict[str, Any], merge_subagent_results]]
-    token_usage: NotRequired[Annotated[TokenUsage, add_token_usage]]
+    token_usage: NotRequired[Annotated[dict[str, Any], add_token_usage]]
     is_finished: NotRequired[bool]
     metadata: NotRequired[Annotated[dict[str, Any], merge_metadata]]
 
@@ -294,7 +296,7 @@ def initial_state(
         pending_clarification=None,
         pending_task_calls=[],
         subagent_results={},
-        token_usage=TokenUsage(),
+        token_usage={},
         is_finished=False,
         metadata={},
         title_generated=False,

@@ -19,7 +19,7 @@ class ContextSize(BaseModel):
 class SummarizationConfig(BaseModel):
     """Configuration for automatic conversation summarization."""
 
-    enabled: bool = Field(default=False, description="Whether to enable summarization")
+    enabled: bool = Field(default=True, description="Whether to enable summarization")
     model_name: str | None = Field(default=None, description="Model for summarization (None = lightweight default)")
     trigger: ContextSize | list[ContextSize] | None = Field(
         default=None,
@@ -34,6 +34,10 @@ class SummarizationConfig(BaseModel):
         description="Max tokens when preparing messages for summarization (None = skip trimming)",
     )
     summary_prompt: str | None = Field(default=None, description="Custom prompt for summaries")
+    preserve_dynamic_context_reminders: bool = Field(
+        default=True,
+        description="Keep hidden dynamic-context reminders out of summary compression",
+    )
     preserve_recent_skill_count: int = Field(default=5, ge=0)
     preserve_recent_skill_tokens: int = Field(default=25000, ge=0)
     preserve_recent_skill_tokens_per_skill: int = Field(default=5000, ge=0)
