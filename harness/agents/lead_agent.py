@@ -240,3 +240,124 @@ class LeadAgent:
         except Exception:
             pass
         return tools
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Middleware builder + app factory (added during DeerFlow-aligned refactor)
+# ──────────────────────────────────────────────────────────────────────────────
+
+from harness.config.config_manager import ConfigManager
+from harness.middleware.clarification import ClarificationMiddleware
+from harness.middleware.dangling_tool_call import DanglingToolCallMiddleware
+from harness.middleware.deferred_tool_filter import DeferredToolFilterMiddleware
+from harness.middleware.dynamic_context import DynamicContextMiddleware
+from harness.middleware.guardrail import GuardrailMiddleware
+from harness.middleware.llm_error import LLMErrorHandlingMiddleware
+from harness.middleware.loop_detection import LoopDetectionMiddleware
+from harness.middleware.memory import MemoryMiddleware
+from harness.middleware.safety_finish_reason import SafetyFinishReasonMiddleware
+from harness.middleware.sandbox_audit import SandboxAuditMiddleware
+from harness.middleware.subagent_limit import SubagentLimitMiddleware
+from harness.middleware.summarization import create_summarization_middleware
+from harness.middleware.thread_data import ThreadDataMiddleware
+from harness.middleware.title import TitleMiddleware
+from harness.middleware.todo import TodoMiddleware
+from harness.middleware.token_usage import TokenUsageMiddleware
+from harness.middleware.tool_error import ToolErrorHandlingMiddleware
+from harness.middleware.uploads import UploadsMiddleware
+from harness.middleware.view_image import ViewImageMiddleware
+from harness.middleware.sandbox import SandboxMiddleware
+from harness.models import HarnessState
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.runnables import RunnableConfig
+
+
+def _get_runtime_config(config: RunnableConfig) -> dict:
+    cfg = dict(config.get("configurable", {}) or {})
+    context = config.get("context", {}) or {}
+    if isinstance(context, dict):
+        cfg.update(context)
+    return cfg
+
+
+def _build_middlewares(
+    config: RunnableConfig,
+    *,
+    config_manager: ConfigManager | None = None,
+    agent_name: str | None = None,
+    custom_middlewares: list[AgentMiddleware] | None = None,
+) -> list[AgentMiddleware]:
+    """Build the full 20-middleware chain matching DeerFlow order."""
+    middlewares: list[AgentMiddleware] = []
+    cfg = _get_runtime_config(config)
+    workspace_root = str(cfg.get("workspace_root", ""))
+    is_plan_mode = cfg.get("is_plan_mode", False)
+    subagent_enabled = cfg.get("subagent_enabled", False)
+    max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
+    memory_enabled = True; summarization_enabled = False; guardrail_enabled = False
+    vision_enabled = cfg.get("vision_enabled", False)
+    tool_search_enabled = cfg.get("tool_search_enabled", False)
+    tool_max_retries = cfg.get("tool_max_retries", 3)
+    auto_title_enabled = cfg.get("auto_title", False)
+    title_model = cfg.get("title_model", "gpt-4o-mini")
+    api_key = cfg.get("openai_api_key", ""); base_url = cfg.get("openai_base_url", "")
+    if config_manager is not None:
+        try:
+            mem_cfg = config_manager.get("memory")
+            if isinstance(mem_cfg, dict): memory_enabled = mem_cfg.get("enabled", True)
+        except Exception: pass
+        try:
+            summ_cfg = config_manager.get("summarization")
+            if isinstance(summ_cfg, dict): summarization_enabled = summ_cfg.get("enabled", False)
+        except Exception: pass
+        try:
+            guard_cfg = config_manager.get("guardrails")
+            if isinstance(guard_cfg, dict): guardrail_enabled = guard_cfg.get("enabled", False)
+        except Exception: pass
+        try:
+            ts_cfg = config_manager.get("tool_search")
+            if isinstance(ts_cfg, dict): tool_search_enabled = ts_cfg.get("enabled", False)
+        except Exception: pass
+    middlewares.append(ThreadDataMiddleware({"workspace_root": workspace_root}))
+    middlewares.append(UploadsMiddleware())
+    middlewares.append(SandboxMiddleware())
+    middlewares.append(DanglingToolCallMiddleware())
+    middlewares.append(LLMErrorHandlingMiddleware())
+    if guardrail_enabled: middlewares.append(GuardrailMiddleware())
+    middlewares.append(SandboxAuditMiddleware())
+    middlewares.append(ToolErrorHandlingMiddleware({"max_retries": tool_max_retries}))
+    middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
+    if summarization_enabled:
+        from harness.memory.summarization_hook import memory_flush_hook
+        hooks = [memory_flush_hook] if memory_enabled else []
+        summ_mw = create_summarization_middleware(before_summarization=hooks)
+        if summ_mw is not None: middlewares.append(summ_mw)
+    if is_plan_mode: middlewares.append(TodoMiddleware())
+    middlewares.append(TokenUsageMiddleware())
+    if auto_title_enabled:
+        middlewares.append(TitleMiddleware({"title_model": title_model, "api_key": api_key, "base_url": base_url}))
+    if memory_enabled: middlewares.append(MemoryMiddleware(agent_name=agent_name))
+    if vision_enabled: middlewares.append(ViewImageMiddleware())
+    if tool_search_enabled: middlewares.append(DeferredToolFilterMiddleware())
+    if subagent_enabled: middlewares.append(SubagentLimitMiddleware({"max_concurrent": max_concurrent_subagents}))
+    middlewares.append(LoopDetectionMiddleware())
+    middlewares.append(SafetyFinishReasonMiddleware())
+    if custom_middlewares: middlewares.extend(custom_middlewares)
+    middlewares.append(ClarificationMiddleware())
+    return middlewares
+
+
+def make_lead_agent(config: RunnableConfig, *, config_manager: ConfigManager | None = None):
+    """LangGraph graph factory from config.yaml."""
+    cfg = _get_runtime_config(config)
+    agent_name = cfg.get("agent_name")
+    model_name = cfg.get("model_name") or cfg.get("model", "gpt-4o")
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(model=model_name, api_key=cfg.get("openai_api_key", ""),
+                     base_url=cfg.get("openai_base_url", ""), temperature=0.3)
+    tools = cfg.get("_tools", [])
+    system_prompt = cfg.get("_system_prompt", "You are a helpful assistant.")
+    middlewares = _build_middlewares(config, config_manager=config_manager, agent_name=agent_name)
+    return create_agent(model=llm, tools=tools or None, middleware=middlewares,
+                        system_prompt=system_prompt, state_schema=HarnessState)

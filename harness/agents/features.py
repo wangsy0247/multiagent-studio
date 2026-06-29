@@ -1,58 +1,65 @@
-"""Declarative feature flags for agent middleware activation.
+"""Declarative feature flags and middleware positioning for create_agent.
 
-Matches DeerFlow ``RuntimeFeatures`` — each feature controls whether a
-corresponding middleware is assembled into the chain.
-
-Feature values:
-  - ``True``: use the built-in default middleware
-  - ``False``: disable the middleware entirely
-  - ``HarnessAgentMiddleware`` instance: use this custom implementation
-
-``summarization`` and ``guardrail`` have no built-in default — they only
-accept ``False`` (disable) or a ``HarnessAgentMiddleware`` instance (custom).
+Pure data classes and decorators — no I/O, no side effects.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
-from harness.middleware.base import HarnessAgentMiddleware
+from langchain.agents.middleware import AgentMiddleware
 
 
 @dataclass
 class RuntimeFeatures:
-    """Declarative feature flags for middleware assembly.
+    """Declarative feature flags for ``create_agent``.
 
-    Default values match DeerFlow defaults:
+    Most features accept:
+    - ``True``: use the built-in default middleware
+    - ``False``: disable
+    - An ``AgentMiddleware`` instance: use this custom implementation instead
+
+    ``summarization`` and ``guardrail`` have no built-in default — they only
+    accept ``False`` (disable) or an ``AgentMiddleware`` instance (custom).
     """
 
-    # Sandbox infrastructure (ThreadData + Uploads + Sandbox bundled)
-    sandbox: bool | HarnessAgentMiddleware = True
-    # Always-on repair middlewares
-    dangling_tool_call: bool = True
-    tool_error_handling: bool = True
-    # Guardrail (no built-in default — requires custom instance)
-    guardrail: Literal[False] | HarnessAgentMiddleware = False
-    # Dynamic context (date + memory injection before each model call)
-    dynamic_context: bool = True
-    # Summarization (no built-in default — requires custom instance with model)
-    summarization: Literal[False] | HarnessAgentMiddleware = False
-    # Plan Mode TODO
-    todo: bool | HarnessAgentMiddleware = False
-    # Token usage tracking
-    token_usage: bool = True
-    # Auto title generation
-    auto_title: bool | HarnessAgentMiddleware = False
-    # Memory injection + extraction
-    memory: bool | HarnessAgentMiddleware = True
-    # Image viewing (vision)
-    vision: bool | HarnessAgentMiddleware = False
-    # SubAgent concurrency control
-    subagent: bool | HarnessAgentMiddleware = False
-    # Loop detection
-    loop_detection: bool | HarnessAgentMiddleware = True
-    # Clarification (always last)
-    clarification: bool | HarnessAgentMiddleware = True
-    # Uploads (file upload context injection)
-    uploads: bool | HarnessAgentMiddleware = True
+    sandbox: bool | AgentMiddleware = True
+    memory: bool | AgentMiddleware = True
+    summarization: Literal[False] | AgentMiddleware = False
+    subagent: bool | AgentMiddleware = False
+    vision: bool | AgentMiddleware = False
+    auto_title: bool | AgentMiddleware = False
+    guardrail: Literal[False] | AgentMiddleware = False
+    loop_detection: bool | AgentMiddleware = True
+    dynamic_context: bool | AgentMiddleware = True
+    todo: bool | AgentMiddleware = False
+    token_usage: bool | AgentMiddleware = True
+    tool_search: bool | AgentMiddleware = False
+    tool_error_handling: bool | AgentMiddleware = True
+    clarification: bool | AgentMiddleware = True
+
+
+# ---------------------------------------------------------------------------
+# Middleware positioning decorators
+# ---------------------------------------------------------------------------
+
+
+def Next(anchor: type[AgentMiddleware]):
+    """Declare this middleware should be placed after *anchor* in the chain."""
+
+    def decorator(cls: type[AgentMiddleware]) -> type[AgentMiddleware]:
+        cls._next_anchor = anchor  # type: ignore[attr-defined]
+        return cls
+
+    return decorator
+
+
+def Prev(anchor: type[AgentMiddleware]):
+    """Declare this middleware should be placed before *anchor* in the chain."""
+
+    def decorator(cls: type[AgentMiddleware]) -> type[AgentMiddleware]:
+        cls._prev_anchor = anchor  # type: ignore[attr-defined]
+        return cls
+
+    return decorator

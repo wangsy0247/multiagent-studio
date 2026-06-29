@@ -17,6 +17,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_openai import ChatOpenAI
 
 from harness.agents.lead_agent import LeadAgent
+from harness.agents.lead_agent import _build_middlewares as build_lead_middlewares
 from harness.agents.subagent_manager import SubagentManager
 from harness.agents.features import RuntimeFeatures
 from harness.api.server import HarnessService as _BaseService, set_harness
@@ -35,7 +36,6 @@ from harness.graph_factory import build_harness_graph
 from harness.memory.queue import get_memory_queue
 from harness.memory.storage import FileMemoryStorage, get_memory_storage
 from harness.middleware.base import HarnessAgentMiddleware
-from harness.middleware import AGENT_MIDDLEWARE_ORDER
 from harness.models import (
     AgentNode,
     ClarificationRequest,
@@ -336,137 +336,32 @@ class HarnessService(_BaseService):
     # ------------------------------------------------------------------
 
     def _register_middlewares(self) -> None:
-        """Build the AgentMiddleware list based on RuntimeFeatures.
+        """Build the 20-middleware AgentMiddleware list via lead_agent._build_middlewares.
 
-        Matches DeerFlow ``_assemble_from_features`` — 17-middleware design.
-        Order: [0-2] Sandbox infra → [3] Dangling → [4] Guardrail →
-        [5] ToolError → [6] DynamicContext → [7] Summarization →
-        [8] Todo → [9] TokenUsage → [10] Title → [11] Memory →
-        [12] ViewImage → [13] SubagentLimit → [14] LoopDetection →
-        [15] Clarification (always last).
+        Matches DeerFlow's _build_middlewares — 20-middleware design.
         """
-        feat = self.features
-        cfg = self.config
-        MW = AGENT_MIDDLEWARE_ORDER
-        mws: list[HarnessAgentMiddleware] = []
-
-        # --- [0-2] Sandbox infrastructure (ThreadData → Uploads → Sandbox) ---
-        if feat.sandbox is not False:
-            if isinstance(feat.sandbox, HarnessAgentMiddleware):
-                mws.append(feat.sandbox)
-            else:
-                mws.append(MW[0]({"workspace_root": cfg.workspace_root}))
-                mws.append(MW[1]())
-                mws.append(MW[2]())
-
-        # --- [3-5] wrap_model_call onion ---
-        mws.append(MW[3]())   # LLMErrorHandling (outermost)
-        mws.append(MW[4]())   # LoopDetection (middle: cycle detection)
-        mws.append(MW[5]())   # DanglingToolCall (innermost: closest to LLM)
-
-        # --- [6] Guardrail (custom instance required) ---
-        if feat.guardrail is not False:
-            if isinstance(feat.guardrail, HarnessAgentMiddleware):
-                mws.append(feat.guardrail)
-            else:
-                mws.append(MW[6]())
-
-        # --- [7] ToolErrorHandling (always) ---
-        if feat.tool_error_handling is not False:
-            if isinstance(feat.tool_error_handling, HarnessAgentMiddleware):
-                mws.append(feat.tool_error_handling)
-            else:
-                mws.append(MW[7]({"max_retries": cfg.tool_max_retries}))
-
-        # --- [8] DynamicContext (date + memory injection) ---
-        if feat.dynamic_context is not False:
-            if isinstance(feat.dynamic_context, HarnessAgentMiddleware):
-                mws.append(feat.dynamic_context)
-            else:
-                mws.append(MW[8]())
-
-        # --- [9] Summarization (DeerFlow-aligned, before_summarization hooks) ---
-        if feat.summarization is not False:
-            if isinstance(feat.summarization, HarnessAgentMiddleware):
-                mws.append(feat.summarization)
-            else:
-                from harness.middleware.summarization import create_summarization_middleware
-                from harness.memory.summarization_hook import memory_flush_hook
-
-                hooks = []
-                if feat.memory is not False:
-                    hooks.append(memory_flush_hook)
-
-                summ_mw = create_summarization_middleware(before_summarization=hooks)
-                if summ_mw is not None:
-                    mws.append(summ_mw)
-                # If summarization is disabled in config, skip silently
-
-        # --- [10] Todo (Plan Mode) ---
-        if feat.todo is not False:
-            if isinstance(feat.todo, HarnessAgentMiddleware):
-                mws.append(feat.todo)
-            else:
-                mws.append(MW[10]())
-
-        # --- [11] TokenUsage ---
-        if feat.token_usage is not False:
-            if isinstance(feat.token_usage, HarnessAgentMiddleware):
-                mws.append(feat.token_usage)
-            else:
-                mws.append(MW[11]())
-
-        # --- [12] Auto Title (aafter_model) ---
-        if feat.auto_title is not False:
-            if isinstance(feat.auto_title, HarnessAgentMiddleware):
-                mws.append(feat.auto_title)
-            else:
-                mws.append(MW[12]({
-                    "title_model": cfg.title_model or cfg.default_model,
-                    "api_key": cfg.openai_api_key,
-                    "base_url": cfg.openai_base_url,
-                }))
-
-        # --- [13] Memory (aafter_agent → queue, DeerFlow-aligned) ---
-        # Use the per-user memory path (users/{user_id}/memory.json) instead of
-        # the per-agent path so that dynamic context injection reads from the
-        # same file that memory updates write to.
-        if feat.memory is not False:
-            if isinstance(feat.memory, HarnessAgentMiddleware):
-                mws.append(feat.memory)
-            else:
-                mws.append(MW[13](config=None))
-
-        # --- [14] ViewImage (vision) ---
-        if feat.vision is not False:
-            if isinstance(feat.vision, HarnessAgentMiddleware):
-                mws.append(feat.vision)
-            else:
-                mws.append(MW[14]())
-
-        # --- [15] SubagentLimit ---
-        if feat.subagent is not False:
-            if isinstance(feat.subagent, HarnessAgentMiddleware):
-                mws.append(feat.subagent)
-            else:
-                mws.append(MW[15]({"max_concurrent": cfg.max_concurrent_subagents}))
-
-        # --- [16] Clarification (always last in reverse chain) ---
-        if feat.clarification is not False:
-            if isinstance(feat.clarification, HarnessAgentMiddleware):
-                mws.append(feat.clarification)
-            else:
-                mws.append(MW[16]())
-
-        self.middlewares = mws
-        logger.info(
-            "Registered %d AgentMiddlewares — sandbox=%s memory=%s subagent=%s "
-            "summarization=%s auto_title=%s vision=%s dynamic_ctx=%s token_usage=%s",
-            len(self.middlewares),
-            bool(feat.sandbox), bool(feat.memory), bool(feat.subagent),
-            bool(feat.summarization), bool(feat.auto_title), bool(feat.vision),
-            bool(feat.dynamic_context), bool(feat.token_usage),
+        config = RunnableConfig(configurable={
+            "workspace_root": self.config.workspace_root,
+            "is_plan_mode": self.features.todo is not False,
+            "subagent_enabled": self.features.subagent is not False,
+            "max_concurrent_subagents": self.config.max_concurrent_subagents,
+            "memory_enabled": self.features.memory is not False,
+            "summarization_enabled": self.features.summarization is not False,
+            "guardrail_enabled": self.features.guardrail is not False,
+            "vision_enabled": self.features.vision is not False,
+            "tool_search_enabled": False,
+            "tool_max_retries": self.config.tool_max_retries,
+            "auto_title": self.features.auto_title is not False,
+            "title_model": self.config.title_model or self.config.default_model,
+            "openai_api_key": self.config.openai_api_key,
+            "openai_base_url": self.config.openai_base_url,
+        })
+        self.middlewares = build_lead_middlewares(
+            config,
+            config_manager=self.config_manager,
+            agent_name=None,
         )
+        logger.info("Registered %d AgentMiddlewares (20-middleware DeerFlow-aligned chain)", len(self.middlewares))
 
     # ------------------------------------------------------------------
     # Langfuse
@@ -607,6 +502,9 @@ class HarnessService(_BaseService):
         except Exception:
             logger.warning("Failed to create thread dirs for %s/%s", thread_id, user_id)
 
+        # Make run_id available to middlewares via configurable
+        build_config["configurable"]["run_id"] = run_id
+
         # Bind journal to LangChain callbacks
         journal = RunJournal(thread_id, run_id, user_id, self._event_store) if self._event_store else None
         if journal:
@@ -623,10 +521,10 @@ class HarnessService(_BaseService):
             yield {"type": "error", "content": "Harness graph is not initialized"}
             return
 
-        # Emit start event
+        # Emit start event (run_id available for frontend to query events later)
         yield {
             "type": "message", "content": "", "thread_id": thread_id,
-            "status": "started", "trace_id": trace_id,
+            "status": "started", "trace_id": trace_id, "run_id": run_id,
         }
 
         # Per-run streaming state
@@ -804,7 +702,7 @@ class HarnessService(_BaseService):
                 )
 
             # Emit finished
-            yield {"type": "finished", "thread_id": thread_id}
+            yield {"type": "finished", "thread_id": thread_id, "run_id": run_id}
             if self.observability:
                 self.observability.finalize_trace(trace_id, "success")
 
@@ -1001,6 +899,25 @@ class HarnessService(_BaseService):
             "thread_id": thread_id,
             "status": "suspended" if pending else "running",
         }
+
+    async def get_run_events(
+        self, thread_id: str, run_id: str | None = None, event_types: str | None = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query RunJournal events for a run.
+
+        Args:
+            thread_id: Thread ID.
+            run_id: Run ID. If None, returns the latest run's events.
+            event_types: Comma-separated event types to filter.
+            limit: Max number of events to return.
+        """
+        if self._event_store is None:
+            return []
+        types = event_types.split(",") if event_types else None
+        if run_id is None and types is None:
+            # No filters → return latest messages
+            return await self._event_store.list_messages(thread_id, limit=limit)
+        return await self._event_store.list_events(thread_id, run_id=run_id, event_types=types, limit=limit)
 
     # ------------------------------------------------------------------
     # custom graph builder (frontend canvas support)

@@ -16,6 +16,7 @@ interface ChatStore {
   error: string | null;
   pendingClarification: ClarificationRequest | null;
   _stopClarificationFn: (() => void) | null;
+  currentRunId: string | null;  // from SSE "started" event
 
   // Per-thread message isolation
   threadMessages: Record<string, ChatMessage[]>;
@@ -44,6 +45,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   error: null,
   pendingClarification: null,
   _stopClarificationFn: null,
+  currentRunId: null,
   threadMessages: {},
   activeThreadId: null,
 
@@ -74,6 +76,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     switch (type) {
       case "message":
+        // Capture run_id from the SSE "started" event for audit querying
+        if (event.status === "started" && event.run_id) {
+          set({ currentRunId: event.run_id });
+        }
         if (event.content) {
           // 检查是否已有正在流式输出的 AI 消息
           const lastMsg = s.messages[s.messages.length - 1];
@@ -183,7 +189,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
 
       case "finished":
-        set({ isStreaming: false, _stopClarificationFn: null });
+        set({ isStreaming: false, _stopClarificationFn: null, currentRunId: null });
         break;
     }
   },
@@ -217,6 +223,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       messages: updated[threadId] || [],
       threadMessages: updated,
       isStreaming: false,  // 切换线程时停止流式状态
+      currentRunId: null,
       // 不重置 title — ChatPanel useEffect 会异步加载
       todos: [],
       tokenUsage: null,

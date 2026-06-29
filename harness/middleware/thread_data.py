@@ -89,7 +89,6 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
         super().__init__(config)
 
     @override
-    @override
     async def abefore_agent(
         self,
         state: HarnessState,

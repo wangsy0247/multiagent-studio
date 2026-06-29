@@ -41,9 +41,9 @@ class RunEventStore(ABC):
     async def list_events(
         self,
         thread_id: str,
-        run_id: str,
+        run_id: str | None = None,
         event_types: list[str] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """List events for a specific run, ordered by seq."""
+        """List events for a specific run (or all if run_id is None), ordered by seq."""
         ...

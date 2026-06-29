@@ -29,7 +29,7 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-// 响应拦截器 — 统一错误处理
+// 响应拦截器
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<{ detail: string }>) => {
@@ -44,8 +44,6 @@ apiClient.interceptors.response.use(
 );
 
 export default apiClient;
-
-// ===== 便捷 API 方法 =====
 
 export const authAPI = {
   register: (data: { email: string; username: string; password: string }) =>
@@ -65,8 +63,6 @@ export const threadsAPI = {
   delete: (threadId: string) => apiClient.delete(`/threads/${threadId}`),
   updateTitle: (threadId: string, title: string) =>
     apiClient.patch(`/threads/${threadId}/title`, { title }),
-  updateGraph: (threadId: string, execution_graph: object) =>
-    apiClient.patch(`/threads/${threadId}/graph`, { execution_graph }),
   getMessages: (threadId: string, page = 1) =>
     apiClient.get(`/threads/${threadId}/messages?page=${page}`),
 };
@@ -85,6 +81,40 @@ export const filesAPI = {
   delete: (fileId: string) => apiClient.delete(`/files/${fileId}`),
 };
 
+// ===== Agents API (persistent per-user agents) =====
+export const agentsAPI = {
+  list: (userId = "default") => apiClient.get(`/v1/agents?user_id=${userId}`),
+  get: (name: string, userId = "default") => apiClient.get(`/v1/agents/${name}?user_id=${userId}`),
+  create: (data: {
+    name: string; display_name?: string; description?: string;
+    soul?: string; model?: string; tool_groups?: string[];
+    skills?: string[]; user_id?: string;
+  }) => apiClient.post("/v1/agents", data),
+  update: (name: string, data: object) => apiClient.put(`/v1/agents/${name}`, data),
+  delete: (name: string, userId = "default") => apiClient.delete(`/v1/agents/${name}?user_id=${userId}`),
+  getMemory: (name: string, userId = "default") => apiClient.get(`/v1/agents/${name}/memory?user_id=${userId}`),
+  clearMemory: (name: string, userId = "default") => apiClient.delete(`/v1/agents/${name}/memory?user_id=${userId}`),
+};
+
+// ===== Projects API =====
+export const projectsAPI = {
+  list: (userId = "default") => apiClient.get(`/v1/projects?user_id=${userId}`),
+  get: (id: string, userId = "default") => apiClient.get(`/v1/projects/${id}?user_id=${userId}`),
+  create: (data: { name: string; description?: string; user_id?: string }) =>
+    apiClient.post("/v1/projects", data),
+  update: (id: string, data: object) => apiClient.put(`/v1/projects/${id}`, data),
+  delete: (id: string, userId = "default") => apiClient.delete(`/v1/projects/${id}?user_id=${userId}`),
+  addMember: (id: string, agentName: string, userId = "default") =>
+    apiClient.post(`/v1/projects/${id}/members`, { agent_name: agentName, user_id: userId }),
+  removeMember: (id: string, agentName: string, userId = "default") =>
+    apiClient.delete(`/v1/projects/${id}/members/${agentName}?user_id=${userId}`),
+  // Tasks
+  listTasks: (id: string, userId = "default") => apiClient.get(`/v1/projects/${id}/tasks?user_id=${userId}`),
+  createTask: (id: string, data: object) => apiClient.post(`/v1/projects/${id}/tasks`, data),
+  updateTask: (id: string, taskId: string, data: object) => apiClient.put(`/v1/projects/${id}/tasks/${taskId}`, data),
+  deleteTask: (id: string, taskId: string, userId = "default") => apiClient.delete(`/v1/projects/${id}/tasks/${taskId}?user_id=${userId}`),
+};
+
 export const configsAPI = {
   get: () => apiClient.get("/configs"),
   update: (data: object) => apiClient.put("/configs", data),
@@ -95,4 +125,6 @@ export const configsAPI = {
 export const monitoringAPI = {
   getTrace: (threadId: string) => apiClient.get(`/monitoring/traces/${threadId}`),
   getTokenUsage: (params?: object) => apiClient.get("/monitoring/token-usage", { params }),
+  getRunEvents: (threadId: string, runId?: string, eventTypes?: string, limit = 100) =>
+    apiClient.get(`/v1/runs/${threadId}/events`, { params: { run_id: runId, event_types: eventTypes, limit } }),
 };

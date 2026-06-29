@@ -1,14 +1,13 @@
-"""Agent package — Lead Agent, SubAgent, and SubAgent manager."""
+"""Multiagent-studio agents package — public API."""
 
-from harness.agents.lead_agent import LeadAgent
-from harness.agents.subagent import SubAgent
-from harness.agents.subagent_manager import SubagentManager
-from harness.agents.presets import PRESET_SUBAGENTS, build_subagent_config
+from harness.agents.factory import create_agent
+from harness.agents.features import Next, Prev, RuntimeFeatures
+from harness.agents.lead_agent import make_lead_agent
 
 __all__ = [
-    "LeadAgent",
-    "SubAgent",
-    "SubagentManager",
-    "PRESET_SUBAGENTS",
-    "build_subagent_config",
+    "create_agent",
+    "make_lead_agent",
+    "RuntimeFeatures",
+    "Next",
+    "Prev",
 ]

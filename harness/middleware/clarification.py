@@ -1,24 +1,27 @@
 """ClarificationMiddleware — human-in-the-loop confirmation and approval.
 
-Aligned with DeerFlow's approach: intercept ``ask_clarification`` tool calls
+Matches DeerFlow's design: intercept ``ask_clarification`` tool calls
 before they execute and return a ``Command`` that jumps to ``END`` with the
 formatted question stored as a ``ToolMessage``. This cleanly stops the ReAct
 loop and lets the frontend present the clarification request.
+
+Clarification answer injection and cleanup are handled by the worker layer
+(``main.py::respond_to_clarification()``), not by this middleware.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from hashlib import sha256
 from typing import override
 from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from harness.middleware.base import HarnessAgentMiddleware
@@ -28,12 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 class ClarificationMiddleware(HarnessAgentMiddleware):
-    """Intercept ``ask_clarification`` tool calls and create a pending request.
+    """Intercept ``ask_clarification`` tool calls and interrupt execution.
 
-    - ``abefore_agent``: if a pending clarification has been answered, inject
-      the answer into the message history.
-    - ``awrap_tool_call``: detect ``ask_clarification`` before it runs and
-      interrupt execution with a ``Command(goto=END)``.
+    When the model calls ``ask_clarification``, this middleware intercepts
+    the call before it executes and returns ``Command(goto=END)`` with a
+    ``pending_clarification`` state update. The frontend renders the
+    clarification card, and the worker resumes execution when the user answers.
     """
 
     name = "clarification"
@@ -41,32 +44,28 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
     def __init__(self, config: dict | None = None):
         super().__init__(config)
 
-    def _stable_message_id(self, tool_call_id: str, formatted_message: str) -> str:
-        """Build a deterministic message ID so retries replace, not append."""
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _stable_message_id(tool_call_id: str, formatted_message: str) -> str:
         if tool_call_id:
             return f"clarification:{tool_call_id}"
         digest = sha256(formatted_message.encode("utf-8")).hexdigest()[:16]
         return f"clarification:{digest}"
 
-    def _is_chinese(self, text: str) -> bool:
-        """Check if text contains Chinese characters."""
-        return any("\u4e00" <= char <= "\u9fff" for char in text)
-
     def _format_clarification_message(self, args: dict) -> str:
-        """Format the clarification arguments into a user-friendly message."""
         question = args.get("question", "")
         clarification_type = args.get("clarification_type", "missing_info")
         context = args.get("context")
         options = args.get("options", [])
 
-        # Some models serialize array parameters as JSON strings instead of
-        # native arrays. Deserialize and normalize so ``options`` is always a list.
         if isinstance(options, str):
             try:
                 options = json.loads(options)
             except (json.JSONDecodeError, TypeError):
                 options = [options]
-
         if options is None:
             options = []
         elif not isinstance(options, list):
@@ -96,7 +95,6 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
         return "\n".join(message_parts)
 
     def _build_request(self, args: dict) -> ClarificationRequest:
-        """Create a ``ClarificationRequest`` from tool call arguments."""
         options = args.get("options", [])
         if isinstance(options, str):
             try:
@@ -118,19 +116,14 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
         )
 
     def _handle_clarification(self, request: ToolCallRequest) -> Command:
-        """Interrupt execution and present the clarification question."""
         tool_call = request.tool_call
         args = tool_call.get("args", {})
-        question = args.get("question", "请确认")
         tool_call_id = tool_call.get("id", "")
 
         formatted_message = self._format_clarification_message(args)
         request_obj = self._build_request(args)
 
-        logger.info(
-            "Clarification requested for thread: %s",
-            question[:100],
-        )
+        logger.info("Clarification requested: %s", args.get("question", "")[:100])
 
         tool_message = ToolMessage(
             id=self._stable_message_id(tool_call_id, formatted_message),
@@ -148,38 +141,9 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             goto=END,
         )
 
-    @override
-    async def abefore_agent(
-        self,
-        state: HarnessState,
-        runtime: Runtime,
-    ) -> dict | None:
-        """If a pending clarification has been answered, inject the answer."""
-        pending = state.get("pending_clarification")
-        if pending is None:
-            return None
-
-        # Handle both Pydantic model and plain dict
-        if hasattr(pending, "answer"):
-            answer = pending.answer
-            resolved = pending.resolved_at
-        else:
-            answer = pending.get("answer")
-            resolved = pending.get("resolved_at")
-
-        if not answer:
-            return None  # Still waiting
-
-        # User has responded — inject answer and clear pending
-        answer_msg = HumanMessage(content=answer)
-        messages = list(state.get("messages", []))
-        messages.append(answer_msg)
-
-        logger.debug("Clarification resolved for thread=%s", state.get("thread_id"))
-        return {
-            "messages": messages,
-            "pending_clarification": None,
-        }
+    # ------------------------------------------------------------------
+    # hooks — only wrap_tool_call
+    # ------------------------------------------------------------------
 
     @override
     def wrap_tool_call(
@@ -187,7 +151,6 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Intercept ask_clarification tool calls (sync version)."""
         if request.tool_call.get("name") != "ask_clarification":
             return handler(request)
         return self._handle_clarification(request)
@@ -196,27 +159,8 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """Intercept ask_clarification tool calls (async version)."""
         if request.tool_call.get("name") != "ask_clarification":
             return await handler(request)
         return self._handle_clarification(request)
-
-    @override
-    async def aafter_agent(
-        self,
-        state: HarnessState,
-        runtime: Runtime,
-    ) -> dict | None:
-        """Cleanup after agent turn — clear stale pending clarifications."""
-        pending = state.get("pending_clarification")
-        if pending is not None:
-            # If resolved (has answer), clean up stale state
-            answer = getattr(pending, "answer", None) or (
-                pending.get("answer") if isinstance(pending, dict) else None
-            )
-            if answer:
-                logger.debug("Cleaning resolved clarification for thread=%s", state.get("thread_id"))
-                return {"pending_clarification": None}
-        return None

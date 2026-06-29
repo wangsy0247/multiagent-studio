@@ -38,14 +38,22 @@ class MemoryRunEventStore(RunEventStore):
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for evt in events:
+            # Pass all event fields through (including audit fields: tag, name, hook, action, changes, timestamp)
             rec = await self.put(
                 thread_id=evt.get("thread_id", ""),
                 run_id=evt.get("run_id", ""),
                 event_type=evt.get("event_type", "unknown"),
                 category=evt.get("category", "trace"),
                 content=evt.get("content", ""),
-                metadata=evt.get("metadata", {}),
                 user_id=evt.get("user_id"),
+                # Audit event fields
+                tag=evt.get("tag"),
+                name=evt.get("name"),
+                hook=evt.get("hook"),
+                action=evt.get("action"),
+                changes=evt.get("changes"),
+                timestamp=evt.get("timestamp"),
+                metadata=evt.get("metadata", {}),
             )
             results.append(rec)
         return results
@@ -61,7 +69,7 @@ class MemoryRunEventStore(RunEventStore):
     async def list_events(
         self,
         thread_id: str,
-        run_id: str,
+        run_id: str | None = None,
         event_types: list[str] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
@@ -69,7 +77,7 @@ class MemoryRunEventStore(RunEventStore):
         filtered = [
             e
             for e in thread_events
-            if e.get("run_id") == run_id
+            if (run_id is None or e.get("run_id") == run_id)
             and (event_types is None or e.get("event_type") in event_types)
         ]
         filtered.sort(key=lambda e: e.get("seq", 0))

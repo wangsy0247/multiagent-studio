@@ -212,10 +212,30 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
 def create_summarization_middleware(
     *,
     before_summarization: list[BeforeSummarizationHook] | None = None,
-) -> SummarizationMiddleware:
+) -> SummarizationMiddleware | None:
     """Build a SummarizationMiddleware from SummarizationConfig."""
     cfg = get_summarization_config()
     if not cfg.enabled:
+        return None
+
+    # Create model instance from config
+    model = None
+    if cfg.model_name:
+        try:
+            from langchain_openai import ChatOpenAI
+            from harness.config import load_config
+            hcfg = load_config()
+            model = ChatOpenAI(
+                model=cfg.model_name,
+                api_key=hcfg.openai_api_key,
+                base_url=hcfg.openai_base_url,
+                temperature=0,
+            )
+        except Exception as exc:
+            logger.warning("Failed to create summarization model: %s", exc)
+            return None
+    else:
+        logger.warning("No summarization model configured, disabling summarization")
         return None
 
     # Build trigger and keep args in LangChain format
@@ -233,7 +253,7 @@ def create_summarization_middleware(
         keep=keep,
         trim_tokens_to_summarize=cfg.trim_tokens_to_summarize,
         summary_prompt=cfg.summary_prompt,
-        model=cfg.model_name,
+        model=model,
         before_summarization=before_summarization,
         preserve_dynamic_context_reminders=cfg.preserve_dynamic_context_reminders,
     )

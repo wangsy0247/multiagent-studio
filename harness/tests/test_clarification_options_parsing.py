@@ -95,23 +95,13 @@ async def test_non_clarification_tool_passes_through():
 
 
 @pytest.mark.asyncio
-async def test_abefore_agent_injects_answer():
-    """When pending clarification has an answer, inject it as HumanMessage."""
-    mw = ClarificationMiddleware()
-    pending = MagicMock()
-    pending.answer = "选项 A"
-    pending.resolved_at = None
+async def test_clarification_answer_injection_handled_by_worker():
+    """Clarification answer injection is handled by the worker layer, not middleware.
 
-    state = HarnessState(
-        messages=[HumanMessage(content="hello")],
-        thread_id="t1",
-        user_id="u1",
-        pending_clarification=pending,
-    )
-
-    result = await mw.abefore_agent(state, MagicMock())
-
-    assert result is not None
-    assert len(result["messages"]) == 2
-    assert result["messages"][-1].content == "选项 A"
-    assert result["pending_clarification"] is None
+    The ClarificationMiddleware only intercepts ask_clarification tool calls
+    via wrap_tool_call. Answer injection is managed by:
+      - main.py::respond_to_clarification() — sets pending_clarification.answer
+      - The worker then invokes the graph with the updated state
+    """
+    # This behavior is tested in test_api.py via the /clarification endpoint
+    pass

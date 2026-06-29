@@ -1,13 +1,15 @@
-"""RunJournal — LangChain callback that captures LLM/tool events.
+"""RunJournal — LangChain callback that captures LLM/tool/middleware events.
 
-DeerFlow-aligned: writes lifecycle, message, and trace events to a
-pluggable ``RunEventStore``.
+DeerFlow-aligned: writes lifecycle, message, trace, and middleware audit events
+to a pluggable ``RunEventStore``. Also supports sub-agent token attribution.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,6 +19,28 @@ from langchain_core.messages import BaseMessage
 from harness.runtime.events.store.base import RunEventStore
 
 logger = logging.getLogger(__name__)
+
+# ── Per-run journal registry (for middleware access) ────────────────────────
+_run_journals: dict[str, RunJournal] = {}
+_journal_lock = threading.Lock()
+
+
+def set_run_journal(run_id: str, journal: RunJournal) -> None:
+    """Register a RunJournal instance for middleware audit access."""
+    with _journal_lock:
+        _run_journals[run_id] = journal
+
+
+def get_run_journal(run_id: str) -> RunJournal | None:
+    """Return the RunJournal for *run_id*, or None."""
+    with _journal_lock:
+        return _run_journals.get(run_id)
+
+
+def clear_run_journal(run_id: str) -> None:
+    """Remove a RunJournal after run completion."""
+    with _journal_lock:
+        _run_journals.pop(run_id, None)
 
 
 class RunJournal(BaseCallbackHandler):
@@ -29,9 +53,7 @@ class RunJournal(BaseCallbackHandler):
     user_id : str | None
     event_store : RunEventStore
     track_token_usage : bool
-        Accumulate token counts for later reporting.
     flush_threshold : int
-        Flush the buffer after this many events.
     """
 
     def __init__(
@@ -52,19 +74,21 @@ class RunJournal(BaseCallbackHandler):
         self._track_token_usage = track_token_usage
         self._flush_threshold = flush_threshold
 
-        # buffer
         self._buffer: list[dict[str, Any]] = []
-
-        # token accumulation
         self._total_input_tokens = 0
         self._total_output_tokens = 0
         self._total_tokens = 0
         self._llm_call_count = 0
-
-        # convenience
         self._first_human_message: str | None = None
         self._last_ai_message: str | None = None
         self._message_count = 0
+
+        # ── Sub-agent token attribution ──────────────────────────────────
+        # Maps subagent_name → cumulative token usage
+        self._subagent_tokens: dict[str, dict[str, int]] = {}
+
+        # Register for middleware access
+        set_run_journal(run_id, self)
 
     # ------------------------------------------------------------------
     # LangChain callbacks
@@ -79,7 +103,6 @@ class RunJournal(BaseCallbackHandler):
         parent_run_id: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Capture the first human message from the initial LLM call."""
         if self._first_human_message is not None:
             return
         try:
@@ -102,10 +125,8 @@ class RunJournal(BaseCallbackHandler):
         parent_run_id: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Write LLM response event and accumulate token usage."""
         self._llm_call_count += 1
 
-        # extract content
         content = ""
         try:
             generations = getattr(response, "generations", [[]])
@@ -120,7 +141,6 @@ class RunJournal(BaseCallbackHandler):
             self._last_ai_message = str(content)[:2000]
             self._message_count += 1
 
-        # token usage
         if self._track_token_usage:
             try:
                 usage = (
@@ -152,7 +172,6 @@ class RunJournal(BaseCallbackHandler):
         parent_run_id: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Write tool-result trace event."""
         content = ""
         if hasattr(output, "content"):
             content = str(output.content)
@@ -171,16 +190,83 @@ class RunJournal(BaseCallbackHandler):
         )
 
     # ------------------------------------------------------------------
+    # Middleware audit events (DeerFlow-aligned)
+    # ------------------------------------------------------------------
+
+    def record_middleware(
+        self,
+        tag: str,
+        name: str,
+        hook: str,
+        action: str,
+        changes: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a structured middleware audit event.
+
+        Parameters
+        ----------
+        tag : str
+            Caller tag, e.g. ``"middleware:safety_termination"``.
+        name : str
+            Middleware name, e.g. ``"safety_finish_reason"``.
+        hook : str
+            Which hook triggered this, e.g. ``"aafter_model"``.
+        action : str
+            What happened, e.g. ``"stripped_tool_calls"``.
+        changes : dict | None
+            Structured payload describing what changed.
+        """
+        self._add_event(
+            event_type="middleware.audit",
+            category="audit",
+            tag=tag,
+            name=name,
+            hook=hook,
+            action=action,
+            changes=changes or {},
+        )
+
+    # ------------------------------------------------------------------
+    # Sub-agent token attribution (DeerFlow-aligned)
+    # ------------------------------------------------------------------
+
+    def record_subagent_tokens(
+        self,
+        subagent_name: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        """Record token usage from a sub-agent execution.
+
+        Accumulates per-subagent-name so the lead agent's completion data
+        includes a breakdown of which sub-agent consumed how many tokens.
+        """
+        if subagent_name not in self._subagent_tokens:
+            self._subagent_tokens[subagent_name] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
+        st = self._subagent_tokens[subagent_name]
+        st["input_tokens"] += input_tokens
+        st["output_tokens"] += output_tokens
+        st["total_tokens"] += total_tokens
+
+        # Also add to lead agent totals
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        self._total_tokens += total_tokens
+
+    # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
 
     def set_first_human_message(self, text: str) -> None:
-        """Explicitly set the first human message (pre-LLM hook)."""
         if self._first_human_message is None:
             self._first_human_message = text[:2000]
 
     def get_completion_data(self) -> dict[str, Any]:
-        """Return accumulated token + message data for run completion."""
         return {
             "total_input_tokens": self._total_input_tokens,
             "total_output_tokens": self._total_output_tokens,
@@ -189,10 +275,10 @@ class RunJournal(BaseCallbackHandler):
             "message_count": self._message_count,
             "first_human_message": self._first_human_message,
             "last_ai_message": self._last_ai_message,
+            "subagent_tokens": self._subagent_tokens,
         }
 
     async def flush(self) -> None:
-        """Force-flush remaining buffered events."""
         if self._buffer:
             batch = self._buffer
             self._buffer = []
@@ -210,6 +296,7 @@ class RunJournal(BaseCallbackHandler):
             "thread_id": self._thread_id,
             "run_id": self._run_id,
             "user_id": self._user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             **kwargs,
         }
         self._buffer.append(evt)
@@ -217,7 +304,6 @@ class RunJournal(BaseCallbackHandler):
             self._schedule_flush()
 
     def _schedule_flush(self) -> None:
-        """Schedule an async flush in the background."""
         if self._buffer:
             batch = self._buffer
             self._buffer = []

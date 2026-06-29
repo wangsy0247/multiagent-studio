@@ -61,6 +61,7 @@ export interface SSEEvent {
   title?: string;
   tokens?: TokenUsage;
   trace_id?: string;
+  run_id?: string;
   status?: string;
   duration_ms?: number;
 }

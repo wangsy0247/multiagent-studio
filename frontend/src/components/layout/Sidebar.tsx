@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow } from "lucide-react";
+import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { useChatStore } from "@/lib/chat-store";
 import { ThreadSummary } from "@/lib/types";
@@ -125,6 +125,20 @@ export default function Sidebar() {
         >
           <Plus className="w-4 h-4" />
           新建会话
+        </button>
+      </div>
+
+      {/* Navigation links */}
+      <div className="px-3 py-2 space-y-0.5">
+        <button onClick={() => router.push("/projects")}
+          className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+            pathname.startsWith("/projects") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+          <FolderKanban className="w-4 h-4 text-slate-400" /> 项目
+        </button>
+        <button onClick={() => router.push("/agents")}
+          className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+            pathname.startsWith("/agents") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+          <Bot className="w-4 h-4 text-slate-400" /> Agent
         </button>
       </div>
 
