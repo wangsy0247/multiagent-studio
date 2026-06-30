@@ -17,8 +17,9 @@ interface ChatStore {
   pendingClarification: ClarificationRequest | null;
   _stopClarificationFn: (() => void) | null;
 
-  // Per-thread message isolation
+  // Per-thread isolation
   threadMessages: Record<string, ChatMessage[]>;
+  threadTitles: Record<string, string>;
   activeThreadId: string | null;
 
   addMessage: (msg: Omit<ChatMessage, "id" | "createdAt">) => void;
@@ -45,6 +46,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   pendingClarification: null,
   _stopClarificationFn: null,
   threadMessages: {},
+  threadTitles: {},
   activeThreadId: null,
 
   addMessage: (msg) => {
@@ -154,7 +156,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
 
       case "title_update":
-        if (event.title) set({ title: event.title });
+        if (event.title && event.thread_id) {
+          set((s) => ({
+            title: event.title,
+            threadTitles: { ...s.threadTitles, [event.thread_id]: event.title! },
+          }));
+        }
         break;
 
       case "token_usage":
@@ -212,12 +219,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (s.activeThreadId) {
       updated[s.activeThreadId] = s.messages;
     }
+    // 保存当前线程的 title 再切换
+    const updatedTitles: Record<string, string> = { ...s.threadTitles };
+    if (s.activeThreadId && s.title && s.title !== "新会话") {
+      updatedTitles[s.activeThreadId] = s.title;
+    }
     set({
       activeThreadId: threadId,
       messages: updated[threadId] || [],
       threadMessages: updated,
+      threadTitles: updatedTitles,
+      title: updatedTitles[threadId] || "新会话",
       isStreaming: false,  // 切换线程时停止流式状态
-      // 不重置 title — ChatPanel useEffect 会异步加载
       todos: [],
       tokenUsage: null,
       cumulativeTokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd: 0 },

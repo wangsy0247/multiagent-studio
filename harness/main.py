@@ -400,6 +400,39 @@ class HarnessService(_BaseService):
     # active runs management
     # ------------------------------------------------------------------
 
+    async def delete_thread(self, thread_id: str, user_id: str = "default") -> dict:
+        """Delete all persisted data for a thread.
+
+        Removes the LangGraph checkpoint and the local workspace directory.
+        Called by the App service when a user deletes a conversation.
+        """
+        # 1) Delete LangGraph checkpoint
+        if self._checkpointer is not None:
+            try:
+                await self._checkpointer.adelete_thread(thread_id)
+                logger.info("Deleted LangGraph checkpoint for thread %s", thread_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete checkpoint for thread %s: %s",
+                    thread_id, exc,
+                )
+
+        # 2) Delete local workspace data (sandbox files, uploads, outputs)
+        try:
+            paths = get_paths()
+            paths.delete_thread_dir(thread_id, user_id=user_id)
+            logger.info("Deleted thread workspace for %s (user=%s)", thread_id, user_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete workspace for thread %s: %s",
+                thread_id, exc,
+            )
+
+        # 3) Clean up middleware state (loop detection counters, etc.)
+        self._cleanup_middleware_state(thread_id)
+
+        return {"status": "deleted", "thread_id": thread_id}
+
     def _cleanup_middleware_state(self, thread_id: str) -> None:
         """通知所有中间件清理 per-thread 状态（修复 #9 字典泄漏）。"""
         for mw in self.middlewares:

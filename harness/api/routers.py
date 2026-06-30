@@ -100,6 +100,16 @@ async def get_status(
     return await harness.get_status(thread_id)
 
 
+@router.delete("/threads/{thread_id}")
+async def delete_thread(
+    thread_id: str,
+    user_id: str = "default",
+    harness: HarnessService = Depends(get_harness),
+):
+    """Delete all persisted data for a thread (checkpoint + workspace)."""
+    return await harness.delete_thread(thread_id, user_id=user_id)
+
+
 # ---------------------------------------------------------------------------
 # Agent management (persistent per-user agents with SOUL.md + config.yaml)
 # ---------------------------------------------------------------------------

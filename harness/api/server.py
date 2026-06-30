@@ -51,6 +51,9 @@ class HarnessService:
     async def get_status(self, thread_id: str):
         raise NotImplementedError
 
+    async def delete_thread(self, thread_id: str, user_id: str = "default") -> dict:
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # Application factory

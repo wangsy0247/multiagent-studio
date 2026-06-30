@@ -19,6 +19,8 @@ from app.schemas.thread import (
     ThreadCreate, ThreadResponse, ThreadListResponse,
     ThreadUpdateTitle, ThreadUpdateGraph, MessageResponse,
 )
+from app.services.harness_client import get_harness_client
+from harness.config.paths import get_paths
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -105,12 +107,33 @@ async def delete_thread(
     if thread is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 软删除: 归档
+    thread_id_str = str(thread_id)
+    user_id_str = str(current_user.id)
+
+    # 1) 归档 — App DB 软删除
     thread.is_archived = True
     thread.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await db.flush()
     await db.commit()
-    return {"success": True, "message": "会话已归档"}
+
+    # 2) 直接删除线程工作目录
+    #    路径: {data_root}/users/{user_id}/threads/{thread_id}/
+    paths = get_paths()
+    thread_dir = paths.thread_dir(thread_id_str, user_id=user_id_str)
+    if thread_dir.exists():
+        paths.delete_thread_dir(thread_id_str, user_id=user_id_str)
+        logger.info("已删除线程目录: %s", thread_dir)
+    else:
+        logger.info("线程目录不存在(可能从未执行): %s", thread_dir)
+
+    # 3) 通知 Harness 清理 LangGraph checkpoint (best-effort)
+    try:
+        harness = get_harness_client()
+        await harness.delete_thread(thread_id_str, user_id=user_id_str)
+    except Exception as exc:
+        logger.warning("Harness checkpoint 清理失败 (可忽略): %s", exc)
+
+    return {"success": True, "message": "会话已删除"}
 
 
 @router.patch("/{thread_id}/title", response_model=ThreadResponse)

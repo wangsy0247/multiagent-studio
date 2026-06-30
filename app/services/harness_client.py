@@ -101,6 +101,13 @@ class HarnessClient:
                 elif line.strip():
                     yield line
 
+    async def delete_thread(self, thread_id: str, user_id: str = "default") -> dict:
+        """Delete thread data from Harness (checkpoint + workspace)."""
+        resp = await self._request(
+            "DELETE", f"/api/v1/threads/{thread_id}?user_id={user_id}"
+        )
+        return resp.json()
+
     async def stop_execution(self, thread_id: str) -> dict:
         resp = await self._request("POST", f"/api/v1/stop/{thread_id}")
         return resp.json()
