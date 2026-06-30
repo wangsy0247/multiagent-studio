@@ -92,14 +92,6 @@ class GuardrailMiddleware(HarnessAgentMiddleware):
 
         if not allowed:
             logger.warning("Guardrail denied: tool=%s", tool_name)
-            try:
-                rt = getattr(request, "runtime", None)
-                if rt:
-                    from harness.runtime.middleware_audit import audit
-                    audit(rt, self.name, "awrap_tool_call",
-                          "denied", changes={"tool": tool_name})
-            except Exception:
-                pass
             return self._build_denied_message(request, tool_name)
 
         return await handler(request)

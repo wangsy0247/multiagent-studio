@@ -100,18 +100,6 @@ async def get_status(
     return await harness.get_status(thread_id)
 
 
-@router.get("/runs/{thread_id}/events")
-async def get_run_events(
-    thread_id: str,
-    run_id: str | None = None,
-    event_types: str | None = None,
-    limit: int = 100,
-    harness: HarnessService = Depends(get_harness),
-):
-    """Query RunJournal events. Filter by event_types (comma-separated: llm.ai.response, middleware.audit)."""
-    return await harness.get_run_events(thread_id, run_id=run_id, event_types=event_types, limit=limit)
-
-
 # ---------------------------------------------------------------------------
 # Agent management (persistent per-user agents with SOUL.md + config.yaml)
 # ---------------------------------------------------------------------------

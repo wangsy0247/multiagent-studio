@@ -35,9 +35,16 @@ tools:
     group: search
     use: harness.tools.search:arxiv_search
 
+  # - name: web_fetch
+  #   group: search
+  #   use: harness.tools.search:web_fetch
+
+  # Alternative: SerpAPI-backed web_fetch (requires SERPAPI_API_KEY).
+  # Sign up at https://serpapi.com to get an API key.
+  # To use, comment out the default web_fetch above and uncomment below:
   - name: web_fetch
     group: search
-    use: harness.tools.search:web_fetch
+    use: harness.tools.serpapi_fetch:web_fetch
 
   - name: bash
     group: code

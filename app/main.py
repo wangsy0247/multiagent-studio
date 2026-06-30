@@ -74,23 +74,6 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agent管理"])
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["项目管理"])
 
-    # ── RunJournal 事件查询 ──
-    from fastapi import HTTPException, Query
-
-    @app.get("/api/v1/runs/{thread_id}/events")
-    async def get_run_events(
-        thread_id: str,
-        run_id: str | None = None,
-        event_types: str | None = None,
-        limit: int = Query(default=100, le=500),
-    ):
-        from app.services.harness_client import get_harness_client, HarnessUnavailableError
-        try:
-            harness = get_harness_client()
-            return await harness.get_run_events(thread_id, run_id=run_id, event_types=event_types, limit=limit)
-        except HarnessUnavailableError:
-            raise HTTPException(status_code=503, detail="Harness 服务不可用")
-
     # 健康检查
     @app.get("/health")
     async def health():

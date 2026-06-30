@@ -89,26 +89,6 @@ class SafetyFinishReasonMiddleware(HarnessAgentMiddleware):
             detector, state.get("thread_id"),
         )
 
-        # ── Audit: record safety termination ──────────────────────────
-        run_id = runtime.context.get("run_id", "") if runtime.context else ""
-        if run_id:
-            from harness.runtime.journal import get_run_journal
-            journal = get_run_journal(str(run_id))
-            if journal:
-                journal.record_middleware(
-                    tag="middleware:safety_termination",
-                    name=self.name,
-                    hook="aafter_model",
-                    action="stripped_tool_calls",
-                    changes={
-                        "detector": detector,
-                        "tool_count": len(tool_calls),
-                        "finish_reason": str(
-                            last_msg.response_metadata.get("finish_reason", "")
-                        ) if last_msg.response_metadata else "",
-                    },
-                )
-
         # Strip tool_calls from the AIMessage
         additional_kwargs = dict(getattr(last_msg, "additional_kwargs", {}) or {})
         for key in ("tool_calls", "function_call"):

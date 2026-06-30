@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Zap, ArrowDown, ArrowUp, DollarSign, Activity, Shield, AlertTriangle, Ban, Scissors, Info } from "lucide-react";
+import { Zap, ArrowDown, ArrowUp, DollarSign, Activity } from "lucide-react";
 import { monitoringAPI } from "@/lib/api-client";
 import { TokenUsageStats } from "@/lib/types";
 import TokenChart from "./TokenChart";
@@ -12,45 +12,14 @@ interface MonitoringPanelProps {
   threadId: string;
 }
 
-interface AuditEvent {
-  seq: number;
-  event_type: string;
-  tag: string;
-  name: string;
-  hook: string;
-  action: string;
-  changes: Record<string, unknown>;
-  timestamp: string;
-}
-
-const ACTION_ICONS: Record<string, React.ReactNode> = {
-  high_risk_command: <AlertTriangle className="w-3 h-3 text-red-500" />,
-  medium_risk_command: <AlertTriangle className="w-3 h-3 text-amber-500" />,
-  low_risk_command: <Info className="w-3 h-3 text-slate-400" />,
-  stripped_tool_calls: <Shield className="w-3 h-3 text-amber-500" />,
-  denied: <Ban className="w-3 h-3 text-red-500" />,
-  truncated_task_calls: <Scissors className="w-3 h-3 text-blue-500" />,
-};
-
-const ACTION_LABELS: Record<string, string> = {
-  high_risk_command: "高风险命令",
-  medium_risk_command: "中风险命令",
-  low_risk_command: "沙箱审计",
-  stripped_tool_calls: "安全终止",
-  denied: "工具被拒",
-  truncated_task_calls: "任务截断",
-};
-
 export default function MonitoringPanel({ threadId }: MonitoringPanelProps) {
   const [tokenStats, setTokenStats] = useState<TokenUsageStats | null>(null);
-  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const { cumulativeTokens, tokenUsage, currentRunId } = useChatStore();
+  const { cumulativeTokens, tokenUsage } = useChatStore();
 
   useEffect(() => {
     loadStats();
-    loadAuditEvents();
-  }, [threadId, currentRunId]);
+  }, [threadId]);
 
   async function loadStats() {
     try {
@@ -60,15 +29,6 @@ export default function MonitoringPanel({ threadId }: MonitoringPanelProps) {
       console.error("加载统计失败", err);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function loadAuditEvents() {
-    try {
-      const { data } = await monitoringAPI.getRunEvents(threadId, currentRunId || undefined, "middleware.audit", 50);
-      setAuditEvents(Array.isArray(data) ? data : []);
-    } catch (err) {
-      // 审计事件接口可能尚未就绪，静默处理
     }
   }
 
@@ -112,46 +72,6 @@ export default function MonitoringPanel({ threadId }: MonitoringPanelProps) {
           </div>
         </div>
         <TokenChart tokenStats={tokenStats} currentUsage={cumulativeTokens} />
-      </section>
-
-      {/* Middleware Audit Events */}
-      <section className="bg-white border border-slate-200 rounded-xl p-4">
-        <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">
-          中间件审计 ({auditEvents.length})
-        </h3>
-        {auditEvents.length === 0 ? (
-          <p className="text-xs text-slate-400 text-center py-4">暂无审计事件</p>
-        ) : (
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {auditEvents.map((evt, i) => (
-              <div key={i} className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-lg text-xs">
-                <div className="mt-0.5 flex-shrink-0">
-                  {ACTION_ICONS[evt.action] || <Shield className="w-3 h-3 text-slate-400" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-slate-700">
-                      {ACTION_LABELS[evt.action] || evt.action}
-                    </span>
-                    <span className="text-slate-400">{evt.name}</span>
-                  </div>
-                  {evt.changes && Object.keys(evt.changes).length > 0 && (
-                    <div className="mt-1 text-slate-500 font-mono">
-                      {Object.entries(evt.changes).map(([k, v]) => (
-                        <span key={k} className="mr-2">
-                          {k}={JSON.stringify(v)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div className="mt-0.5 text-[10px] text-slate-400">
-                    {evt.hook}{evt.timestamp ? ` · ${new Date(evt.timestamp).toLocaleTimeString()}` : ""}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </section>
 
       {/* Error Log */}

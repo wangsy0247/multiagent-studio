@@ -99,15 +99,4 @@ class SandboxAuditMiddleware(HarnessAgentMiddleware):
                         tool_name, command,
                     )
 
-                # Record audit event for all sandbox tool calls
-                audit_action = f"{risk}_risk_command"
-                try:
-                    rt = getattr(request, "runtime", None)
-                    if rt:
-                        from harness.runtime.middleware_audit import audit
-                        audit(rt, self.name, "awrap_tool_call", audit_action,
-                              changes={"tool": tool_name, "risk": risk, "cmd": command[:200]})
-                except Exception:
-                    pass
-
         return await handler(request)

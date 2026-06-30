@@ -94,8 +94,4 @@ class SubagentLimitMiddleware(HarnessAgentMiddleware):
             "SubagentLimit blocked %d task call(s) for thread=%s",
             blocked, state.get("thread_id"),
         )
-        # ── Audit ──
-        from harness.runtime.middleware_audit import audit
-        audit(runtime, self.name, "aafter_model", "truncated_task_calls",
-              changes={"blocked": blocked, "kept": task_seen, "limit": self._max_concurrent})
         return {"messages": new_messages}

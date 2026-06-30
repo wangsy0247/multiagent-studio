@@ -109,16 +109,6 @@ class HarnessClient:
         resp = await self._request("GET", f"/api/v1/status/{thread_id}")
         return resp.json()
 
-    async def get_run_events(self, thread_id: str, run_id: str | None = None,
-                              event_types: str | None = None, limit: int = 100) -> dict:
-        params = {"limit": limit}
-        if run_id:
-            params["run_id"] = run_id
-        if event_types:
-            params["event_types"] = event_types
-        resp = await self._request("GET", f"/api/v1/runs/{thread_id}/events", params=params)
-        return resp.json()
-
     async def get_agents(self) -> list:
         resp = await self._request("GET", "/api/v1/agents")
         return resp.json()

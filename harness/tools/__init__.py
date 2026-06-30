@@ -28,6 +28,11 @@ from .search import (
     web_fetch,
     web_search,
 )
+from .serpapi_fetch import (
+    build_serpapi_tools,
+    create_web_fetch_tool as create_serpapi_web_fetch_tool,
+    web_fetch as serpapi_web_fetch,
+)
 
 __all__ = [
     "ToolRegistry",
@@ -39,6 +44,10 @@ __all__ = [
     "create_web_fetch_tool",
     "create_arxiv_search_tool",
     "build_search_tools",
+    # serpapi
+    "serpapi_web_fetch",
+    "create_serpapi_web_fetch_tool",
+    "build_serpapi_tools",
     # sandbox (code + files)
     "bash",
     "file_read",

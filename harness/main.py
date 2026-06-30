@@ -900,25 +900,6 @@ class HarnessService(_BaseService):
             "status": "suspended" if pending else "running",
         }
 
-    async def get_run_events(
-        self, thread_id: str, run_id: str | None = None, event_types: str | None = None, limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Query RunJournal events for a run.
-
-        Args:
-            thread_id: Thread ID.
-            run_id: Run ID. If None, returns the latest run's events.
-            event_types: Comma-separated event types to filter.
-            limit: Max number of events to return.
-        """
-        if self._event_store is None:
-            return []
-        types = event_types.split(",") if event_types else None
-        if run_id is None and types is None:
-            # No filters → return latest messages
-            return await self._event_store.list_messages(thread_id, limit=limit)
-        return await self._event_store.list_events(thread_id, run_id=run_id, event_types=types, limit=limit)
-
     # ------------------------------------------------------------------
     # custom graph builder (frontend canvas support)
     # ------------------------------------------------------------------

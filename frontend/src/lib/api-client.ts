@@ -125,6 +125,4 @@ export const configsAPI = {
 export const monitoringAPI = {
   getTrace: (threadId: string) => apiClient.get(`/monitoring/traces/${threadId}`),
   getTokenUsage: (params?: object) => apiClient.get("/monitoring/token-usage", { params }),
-  getRunEvents: (threadId: string, runId?: string, eventTypes?: string, limit = 100) =>
-    apiClient.get(`/v1/runs/${threadId}/events`, { params: { run_id: runId, event_types: eventTypes, limit } }),
 };

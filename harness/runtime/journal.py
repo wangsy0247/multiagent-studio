@@ -1,7 +1,7 @@
-"""RunJournal — LangChain callback that captures LLM/tool/middleware events.
+"""RunJournal — LangChain callback that captures LLM/tool events.
 
-DeerFlow-aligned: writes lifecycle, message, trace, and middleware audit events
-to a pluggable ``RunEventStore``. Also supports sub-agent token attribution.
+DeerFlow-aligned: writes lifecycle, message, and trace events to a pluggable
+``RunEventStore``. Also supports sub-agent token attribution.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,28 +18,6 @@ from langchain_core.messages import BaseMessage
 from harness.runtime.events.store.base import RunEventStore
 
 logger = logging.getLogger(__name__)
-
-# ── Per-run journal registry (for middleware access) ────────────────────────
-_run_journals: dict[str, RunJournal] = {}
-_journal_lock = threading.Lock()
-
-
-def set_run_journal(run_id: str, journal: RunJournal) -> None:
-    """Register a RunJournal instance for middleware audit access."""
-    with _journal_lock:
-        _run_journals[run_id] = journal
-
-
-def get_run_journal(run_id: str) -> RunJournal | None:
-    """Return the RunJournal for *run_id*, or None."""
-    with _journal_lock:
-        return _run_journals.get(run_id)
-
-
-def clear_run_journal(run_id: str) -> None:
-    """Remove a RunJournal after run completion."""
-    with _journal_lock:
-        _run_journals.pop(run_id, None)
 
 
 class RunJournal(BaseCallbackHandler):
@@ -86,9 +63,6 @@ class RunJournal(BaseCallbackHandler):
         # ── Sub-agent token attribution ──────────────────────────────────
         # Maps subagent_name → cumulative token usage
         self._subagent_tokens: dict[str, dict[str, int]] = {}
-
-        # Register for middleware access
-        set_run_journal(run_id, self)
 
     # ------------------------------------------------------------------
     # LangChain callbacks
@@ -187,43 +161,6 @@ class RunJournal(BaseCallbackHandler):
             event_type="llm.tool.result",
             category="trace",
             content=str(content)[:2000],
-        )
-
-    # ------------------------------------------------------------------
-    # Middleware audit events (DeerFlow-aligned)
-    # ------------------------------------------------------------------
-
-    def record_middleware(
-        self,
-        tag: str,
-        name: str,
-        hook: str,
-        action: str,
-        changes: dict[str, Any] | None = None,
-    ) -> None:
-        """Record a structured middleware audit event.
-
-        Parameters
-        ----------
-        tag : str
-            Caller tag, e.g. ``"middleware:safety_termination"``.
-        name : str
-            Middleware name, e.g. ``"safety_finish_reason"``.
-        hook : str
-            Which hook triggered this, e.g. ``"aafter_model"``.
-        action : str
-            What happened, e.g. ``"stripped_tool_calls"``.
-        changes : dict | None
-            Structured payload describing what changed.
-        """
-        self._add_event(
-            event_type="middleware.audit",
-            category="audit",
-            tag=tag,
-            name=name,
-            hook=hook,
-            action=action,
-            changes=changes or {},
         )
 
     # ------------------------------------------------------------------
