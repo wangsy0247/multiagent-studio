@@ -95,52 +95,6 @@ class SubAgentResult(BaseModel):
     iterations: int = 0
 
 
-class EvaluationCriteria(BaseModel):
-    """Evaluation criterion for Judge."""
-
-    name: str
-    display_name: str
-    description: str
-    weight: float
-    rubric: str
-
-
-class EvaluationResult(BaseModel):
-    """Judge evaluation result."""
-
-    scores: dict[str, dict[str, Any]] = {}
-    overall_score: float = 0.0
-    strengths: list[str] = []
-    weaknesses: list[str] = []
-    suggestions: list[str] = []
-    summary: str = ""
-
-
-class SubAgentEvaluation(BaseModel):
-    """SubAgent result evaluation."""
-
-    completeness: float = 0.0
-    accuracy: float = 0.0
-    instruction_following: float = 0.0
-    overall: float = 0.0
-    feedback: str = ""
-
-
-class MemorySignal(BaseModel):
-    """Memory signal extracted from conversation."""
-
-    type: Literal["correction", "affirmation", "fact"]
-    content: str
-    timestamp: datetime = Field(default_factory=datetime.now)
-
-
-class ValidationResult(BaseModel):
-    """Output validation result."""
-
-    valid: bool
-    issues: list[str] = []
-
-
 # ---------------------------------------------------------------------------
 # Custom LangGraph reducers for HarnessState fields
 # ---------------------------------------------------------------------------
@@ -269,7 +223,6 @@ class HarnessState(TypedDict):
     suggested_title: NotRequired[str]
     title_generated: NotRequired[bool]
     last_error: NotRequired[dict[str, Any]]
-    evaluation: NotRequired[EvaluationResult]
 
 
 def _human_message_with_files(message: str, files: list[dict] | None = None) -> HumanMessage:

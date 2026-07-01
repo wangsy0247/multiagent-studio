@@ -320,33 +320,6 @@ class MemoryUpdater:
             logger.exception("Memory update failed: %s", e)
             return False
 
-    def _do_update_memory_sync(self, messages, thread_id=None, agent_name=None,
-                               correction_detected=False, reinforcement_detected=False,
-                               user_id=None) -> bool:
-        """Sync bridge — uses asyncio.run() for callers without event loop.
-        When the queue is converted to async (P1-3), this path becomes unused.
-        """
-        return asyncio.run(self._do_update_memory(
-            messages=messages, thread_id=thread_id, agent_name=agent_name,
-            correction_detected=correction_detected,
-            reinforcement_detected=reinforcement_detected,
-            user_id=user_id,
-        ))
-
-    def update_memory(self, messages, thread_id=None, agent_name=None,
-                      correction_detected=False, reinforcement_detected=False,
-                      user_id=None) -> bool:
-        """Sync entry point for callers without event loop (queue timer thread).
-        
-        When the queue is converted to async (P1-3), this method becomes
-        unused in favor of aupdate_memory().
-        """
-        return self._do_update_memory_sync(
-            messages=messages, thread_id=thread_id, agent_name=agent_name,
-            correction_detected=correction_detected,
-            reinforcement_detected=reinforcement_detected,
-            user_id=user_id,
-        )
 
     def _apply_updates(self, current_memory, update_data, thread_id=None):
         config = get_memory_config()
@@ -418,14 +391,3 @@ class MemoryUpdater:
             )[:config.max_facts]
 
         return current_memory
-
-
-def update_memory_from_conversation(
-    messages, thread_id=None, agent_name=None,
-    correction_detected=False, reinforcement_detected=False, user_id=None,
-) -> bool:
-    updater = MemoryUpdater()
-    return updater.update_memory(
-        messages, thread_id, agent_name,
-        correction_detected, reinforcement_detected, user_id=user_id,
-    )

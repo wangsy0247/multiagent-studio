@@ -22,7 +22,6 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from harness.config.checkpointer_config import CheckpointerConfig, CheckpointerBackend
 from harness.models import (
     ClarificationRequest,
-    EvaluationResult,
     SubAgentResult,
     TodoItem,
     TokenUsage,
@@ -33,7 +32,6 @@ logger = logging.getLogger(__name__)
 # Harness Pydantic models that may appear directly in HarnessState checkpoints.
 HARNESS_MSGPACK_TYPES = [
     ClarificationRequest,
-    EvaluationResult,
     SubAgentResult,
     TodoItem,
     TokenUsage,

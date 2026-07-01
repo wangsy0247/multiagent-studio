@@ -31,7 +31,6 @@ from harness.config.config_manager import ConfigManager
 from harness.config.memory_config import MemoryConfig, set_memory_config, get_memory_config
 from harness.config.paths import Paths, get_paths, set_paths
 from harness.config.yaml_config import DatabaseConfig
-from harness.evaluation.judge import JudgeEvaluator
 from harness.graph_factory import build_harness_graph
 from harness.memory.queue import get_memory_queue
 from harness.memory.storage import FileMemoryStorage, get_memory_storage
@@ -54,7 +53,6 @@ from harness.runtime.events.store.base import RunEventStore
 from harness.runtime.journal import RunJournal
 from harness.runtime.runs.store import make_run_store
 from harness.runtime.runs.store.base import RunStore
-from harness.services.message_bus import MessageBus
 from harness.tools.registry import ToolRegistry
 
 logging.basicConfig(
@@ -98,11 +96,9 @@ class HarnessService(_BaseService):
         self.tool_registry = ToolRegistry()
         self.middlewares: list[HarnessAgentMiddleware] = []
         self.observability: ObservabilityManager | None = None
-        self.judge: JudgeEvaluator | None = None
         self.subagent_manager: SubagentManager | None = None
         self.graph: Any = None
         self.sandbox: Any | None = None
-        self.message_bus = MessageBus()
         self._active_runs: dict[str, dict[str, Any]] = {}  # 仅保留 cancelled 等运行期标记
         self._active_runs_max: int = 1000                   # 并发容量上限
         self._checkpointer: BaseCheckpointSaver | None = None
@@ -197,11 +193,7 @@ class HarnessService(_BaseService):
         # 5. Observability
         self.observability = ObservabilityManager(cfg)
 
-        # 6. Judge
-        judge_llm = self._init_llm(cfg.judge_model)
-        self.judge = JudgeEvaluator(judge_llm=judge_llm)
-
-        # 7. Register middlewares (AgentMiddleware list)
+        # 6. Register middlewares (AgentMiddleware list)
         self._register_middlewares()
 
         # 8. SubAgent manager (receives middleware list for SubAgent create_agent())

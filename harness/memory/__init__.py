@@ -30,21 +30,17 @@ from harness.memory.updater import (
     MemoryUpdater,
     clear_memory_data,
     get_memory_data,
-    reload_memory_data,
-    update_memory_from_conversation,
 )
 
 __all__ = [
     # Prompt
     "MEMORY_UPDATE_PROMPT",
-    "FACT_EXTRACTION_PROMPT",
     "format_memory_for_injection",
     "format_conversation_for_update",
     # Queue
     "ConversationContext",
     "MemoryUpdateQueue",
     "get_memory_queue",
-    "reset_memory_queue",
     # Storage
     "MemoryStorage",
     "FileMemoryStorage",
@@ -53,6 +49,4 @@ __all__ = [
     "MemoryUpdater",
     "clear_memory_data",
     "get_memory_data",
-    "reload_memory_data",
-    "update_memory_from_conversation",
 ]
