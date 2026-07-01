@@ -264,6 +264,21 @@ class HarnessService(_BaseService):
 
     def _init_llm(self, model: str | None = None) -> BaseChatModel:
         model = model or self.config.default_model
+        extra_body: dict[str, Any] | None = None
+        if self.config.enable_thinking:
+            extra_body = {"enable_thinking": True}
+
+        # Qwen3 / DeepSeek 思考模式 — 使用子类保留 reasoning_content
+        if extra_body:
+            from harness.llm.thinking import ChatOpenAIWithReasoning
+            return ChatOpenAIWithReasoning(
+                model=model,
+                api_key=self.config.openai_api_key or os.getenv("OPENAI_API_KEY", ""),
+                base_url=self.config.openai_base_url,
+                temperature=0.3,
+                extra_body=extra_body,
+            )
+
         return ChatOpenAI(
             model=model,
             api_key=self.config.openai_api_key or os.getenv("OPENAI_API_KEY", ""),
@@ -581,6 +596,19 @@ class HarnessService(_BaseService):
                     chunk: Any = evt_data.get("chunk")
                     if chunk is None:
                         continue
+
+                    # ── 思考过程（Qwen3 / DeepSeek reasoning_content）──
+                    reasoning = (
+                        getattr(chunk, "reasoning_content", None)
+                        or getattr(chunk, "additional_kwargs", {}).get("reasoning_content", "")
+                    )
+                    if reasoning and isinstance(reasoning, str):
+                        yield {
+                            "type": "thinking",
+                            "content": reasoning,
+                            "thread_id": thread_id,
+                        }
+
                     content = getattr(chunk, "content", "")
                     if not content:
                         continue
@@ -826,6 +854,19 @@ class HarnessService(_BaseService):
                     chunk: Any = evt_data.get("chunk")
                     if chunk is None:
                         continue
+
+                    # ── 思考过程（Qwen3 / DeepSeek reasoning_content）──
+                    reasoning = (
+                        getattr(chunk, "reasoning_content", None)
+                        or getattr(chunk, "additional_kwargs", {}).get("reasoning_content", "")
+                    )
+                    if reasoning and isinstance(reasoning, str):
+                        yield {
+                            "type": "thinking",
+                            "content": reasoning,
+                            "thread_id": thread_id,
+                        }
+
                     content = getattr(chunk, "content", "")
                     if not content:
                         continue

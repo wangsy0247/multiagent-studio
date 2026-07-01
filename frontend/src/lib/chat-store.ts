@@ -101,6 +101,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
         break;
 
+      case "thinking":
+        if (event.content) {
+          const lastMsg = s.messages[s.messages.length - 1];
+          if (lastMsg && lastMsg.role === "ai" && lastMsg.msgType === "thinking" && s.isStreaming) {
+            // 追加内容到最后一个 thinking 消息
+            const newMessages = s.messages.map((m, i) =>
+              i === s.messages.length - 1 ? { ...m, content: m.content + event.content! } : m
+            );
+            const tid = s.activeThreadId;
+            set({
+              messages: newMessages,
+              ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
+            });
+          } else {
+            get().addMessage({
+              role: "ai",
+              content: event.content,
+              msgType: "thinking",
+              metadata: {},
+              tokenCount: 0,
+            });
+          }
+        }
+        break;
+
       case "tool_call":
         get().addMessage({
           role: "tool",

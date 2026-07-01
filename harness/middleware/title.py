@@ -71,7 +71,8 @@ class TitleMiddleware(HarnessAgentMiddleware):
         model_name = self.config.get("title_model", "gpt-4o-mini")
         llm = ChatOpenAI(
             model=model_name,
-            temperature=0.3,
+            temperature=0.2,
+            max_tokens=1024,
             api_key=self.config.get("api_key"),
             base_url=self.config.get("base_url"),
         )

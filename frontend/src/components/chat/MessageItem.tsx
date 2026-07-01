@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Bot, User, Wrench, Network, AlertTriangle } from "lucide-react";
+import { Bot, User, Wrench, Network, AlertTriangle, Brain, ChevronDown, ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 // 按需加载语言 — 避免完整 Prism (300+ 语言) 拖慢编译
@@ -84,7 +84,7 @@ const markdownComponents: Record<string, React.FC<any>> = {
       );
     }
     return (
-      <code className="px-1.5 py-0.5 bg-slate-100 text-slate-800 rounded text-[0.82em] font-mono" {...props}>
+      <code className="px-1.5 py-0.5 bg-slate-100 text-slate-800 rounded text-[0.88em] font-mono" {...props}>
         {children}
       </code>
     );
@@ -102,10 +102,10 @@ const markdownComponents: Record<string, React.FC<any>> = {
     return <thead className="bg-slate-50 border-b border-slate-200">{children}</thead>;
   },
   th({ children }: any) {
-    return <th className="px-3 py-2 text-xs font-semibold text-slate-600 border-r border-slate-100 last:border-r-0">{children}</th>;
+    return <th className="px-3 py-2 text-sm font-semibold text-slate-600 border-r border-slate-100 last:border-r-0">{children}</th>;
   },
   td({ children }: any) {
-    return <td className="px-3 py-2 text-xs text-slate-700 border-r border-slate-50 last:border-r-0 border-b border-slate-50">{children}</td>;
+    return <td className="px-3 py-2 text-sm text-slate-700 border-r border-slate-50 last:border-r-0 border-b border-slate-50">{children}</td>;
   },
   tr({ children }: any) {
     return <tr className="even:bg-slate-50/50">{children}</tr>;
@@ -142,12 +142,12 @@ const markdownComponents: Record<string, React.FC<any>> = {
     return <ol className="my-2 pl-5 space-y-0.5 list-decimal text-slate-700">{children}</ol>;
   },
   li({ children }: any) {
-    return <li className="text-sm leading-relaxed pl-1">{children}</li>;
+    return <li className="text-base leading-relaxed pl-1">{children}</li>;
   },
 
   // Paragraph
   p({ children }: any) {
-    return <p className="text-sm text-slate-700 leading-relaxed my-1.5 first:mt-0 last:mb-0">{children}</p>;
+    return <p className="text-base text-slate-700 leading-relaxed my-1.5 first:mt-0 last:mb-0">{children}</p>;
   },
 
   // Links
@@ -178,6 +178,37 @@ const markdownComponents: Record<string, React.FC<any>> = {
   },
 };
 
+// ── 思考过程卡片（折叠）───────────────────────────────────────────
+const ThinkingCard = React.memo(function ThinkingCard({ message }: { message: ChatMessage }) {
+  const [expanded, setExpanded] = React.useState(true);
+  return (
+    <div className="flex gap-3 animate-fade-in-up">
+      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm bg-purple-500/10">
+        <Brain className="w-4 h-4 text-purple-500" />
+      </div>
+      <div className="max-w-[80%] min-w-[200px] rounded-xl border border-purple-200 bg-purple-50/50 overflow-hidden">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-purple-100/50 transition-colors"
+        >
+          {expanded ? (
+            <ChevronDown className="w-3.5 h-3.5 text-purple-400" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 text-purple-400" />
+          )}
+          <Brain className="w-3.5 h-3.5 text-purple-400" />
+          <span className="text-sm font-medium text-purple-600">思考过程</span>
+        </button>
+        {expanded && (
+          <div className="px-4 py-2 text-base text-slate-600 leading-relaxed whitespace-pre-wrap border-t border-purple-100">
+            {message.content}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
 const MessageItem = React.memo(function MessageItem({ message }: MessageItemProps) {
   const config = roleConfig[message.role] || roleConfig.system;
   const Icon = config.icon;
@@ -188,6 +219,11 @@ const MessageItem = React.memo(function MessageItem({ message }: MessageItemProp
 
   if (message.msgType === "subagent_start" || message.msgType === "subagent_end") {
     return <SubAgentCard message={message} />;
+  }
+
+  // 思考过程 — 折叠显示
+  if (message.msgType === "thinking") {
+    return <ThinkingCard message={message} />;
   }
 
   const isAi = message.role === "ai";
@@ -204,7 +240,7 @@ const MessageItem = React.memo(function MessageItem({ message }: MessageItemProp
       </div>
 
       <div className={cn(
-        "max-w-[80%] rounded-xl px-4 py-3 text-sm shadow-sm",
+        "max-w-[80%] rounded-xl px-4 py-3 text-base shadow-sm",
         isHuman
           ? "bg-slate-900 text-white rounded-br-md"
           : isSystem

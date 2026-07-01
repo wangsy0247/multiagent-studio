@@ -57,6 +57,7 @@ class HarnessConfig(BaseSettings):
     judge_model: str = "gpt-4o"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+    enable_thinking: bool = False  # 启用 Qwen3/DeepSeek 思考模式（reasoning_content）
 
     # Middleware
     sandbox_use: str = ""  # e.g. harness.services.open_sandbox_provider:OpenSandboxProvider
