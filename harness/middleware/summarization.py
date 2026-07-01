@@ -220,17 +220,27 @@ def create_summarization_middleware(
 
     # Create model instance from config
     model = None
-    if cfg.model_name:
+    # Resolve model name: config.yaml > HarnessConfig.summary_model (env) > None
+    model_name = cfg.model_name
+    if not model_name:
+        try:
+            from harness.config import load_config
+            hcfg = load_config()
+            model_name = hcfg.summary_model
+        except Exception:
+            pass
+    if model_name:
         try:
             from langchain_openai import ChatOpenAI
             from harness.config import load_config
             hcfg = load_config()
             model = ChatOpenAI(
-                model=cfg.model_name,
+                model=model_name,
                 api_key=hcfg.openai_api_key,
                 base_url=hcfg.openai_base_url,
                 temperature=0,
             )
+            logger.info("Summarization enabled using model=%s", model_name)
         except Exception as exc:
             logger.warning("Failed to create summarization model: %s", exc)
             return None

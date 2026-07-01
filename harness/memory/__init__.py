@@ -1,7 +1,8 @@
 """Harness memory package — DeerFlow-aligned.
 
 Memory is a global singleton system:
-- ``FileMemoryStorage`` — single JSON file per user
+- ``FileMemoryStorage`` — single JSON file per user (file backend)
+- ``mem0_client`` — mem0 + Chroma vector store (mem0 backend)
 - ``MemoryUpdateQueue`` — debounced update queue (threading.Timer)
 - ``MemoryUpdater`` — LLM-driven memory extraction and persistence
 - ``DynamicContextMiddleware`` — reads + injects memory at ``abefore_agent``

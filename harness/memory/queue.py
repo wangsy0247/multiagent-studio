@@ -31,6 +31,7 @@ class ConversationContext:
     user_id: str | None = None
     correction_detected: bool = False
     reinforcement_detected: bool = False
+    metadata: dict | None = None  # mem0 backend: event_time, thread_id, etc.
 
 
 class MemoryUpdateQueue:
@@ -71,6 +72,7 @@ class MemoryUpdateQueue:
         user_id: str | None = None,
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
+        metadata: dict | None = None,
     ) -> None:
         """Add a conversation to the update queue (debounced)."""
         config = get_memory_config()
@@ -83,6 +85,7 @@ class MemoryUpdateQueue:
                 agent_name=agent_name, user_id=user_id,
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
+                metadata=metadata,
             )
             self._ensure_task()
 
@@ -96,6 +99,7 @@ class MemoryUpdateQueue:
         user_id: str | None = None,
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
+        metadata: dict | None = None,
     ) -> None:
         """Add a conversation and process immediately (zero debounce)."""
         config = get_memory_config()
@@ -108,6 +112,7 @@ class MemoryUpdateQueue:
                 agent_name=agent_name, user_id=user_id,
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
+                metadata=metadata,
             )
             self._ensure_task(delay=0)
 
@@ -143,7 +148,7 @@ class MemoryUpdateQueue:
     # ── Internal ─────────────────────────────────────────────────────────
 
     def _enqueue_locked(self, *, thread_id, messages, agent_name, user_id,
-                        correction_detected, reinforcement_detected) -> None:
+                        correction_detected, reinforcement_detected, metadata=None) -> None:
         queue_key = self._queue_key(thread_id, user_id, agent_name)
         existing_context = next(
             (c for c in self._queue
@@ -154,11 +159,16 @@ class MemoryUpdateQueue:
             existing_context.correction_detected if existing_context else False)
         merged_reinforcement = reinforcement_detected or (
             existing_context.reinforcement_detected if existing_context else False)
+        # Merge metadata: new overrides existing on conflicts
+        merged_metadata = (existing_context.metadata or {}) if existing_context else {}
+        if metadata:
+            merged_metadata.update(metadata)
         context = ConversationContext(
             thread_id=thread_id, messages=messages,
             agent_name=agent_name, user_id=user_id,
             correction_detected=merged_correction,
             reinforcement_detected=merged_reinforcement,
+            metadata=merged_metadata or None,
         )
         self._queue = [c for c in self._queue
                        if self._queue_key(c.thread_id, c.user_id, c.agent_name) != queue_key]
@@ -219,6 +229,7 @@ class MemoryUpdateQueue:
                         correction_detected=context.correction_detected,
                         reinforcement_detected=context.reinforcement_detected,
                         user_id=context.user_id,
+                        metadata=context.metadata,
                     )
                     if success:
                         logger.info("Memory updated successfully for thread %s", context.thread_id)

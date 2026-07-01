@@ -105,11 +105,42 @@ sandbox:
 # --- Memory ---
 memory:
   enabled: True
+  backend: mem0                # file | mem0
   debounce_seconds: 120
+  # ── file backend 配置（向后兼容）──
   max_facts: 100
   fact_confidence_threshold: 0.8
   injection_enabled: true
   max_injection_tokens: 1000
+  # ── mem0 backend 配置 ──
+  mem0_search_top_k: 5
+  mem0_general_query: "用户的偏好、习惯、背景和重要信息"
+  mem0_enable_time_filter: false
+  mem0_recent_days: 90
+  mem0_config:
+    vector_store:
+      provider: pgvector
+      config:
+        dbname: multiagent_studio
+        collection_name: memories
+        embedding_model_dims: 1024   # text-embedding-v4 = 2560 维
+        user: harness
+        password: harness
+        host: localhost
+        port: 5432
+        hnsw: true
+    llm:
+      provider: openai
+      config:
+        model: qwen3.6-plus
+        openai_base_url: ${HARNESS_OPENAI_BASE_URL}
+        api_key: ${HARNESS_OPENAI_API_KEY}
+    embedder:
+      provider: openai
+      config:
+        model: text-embedding-v4
+        openai_base_url: ${DASHSCOPE_EMBEDDING_BASE_URL}
+        api_key: ${DASHSCOPE_API_KEY}
 
 # --- Summarization ---
 summarization:

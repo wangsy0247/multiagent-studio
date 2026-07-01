@@ -7,6 +7,7 @@ Memory reading/injection is handled by DynamicContextMiddleware.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, override
 
 from langgraph.config import get_config
@@ -35,7 +36,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
     1. After each agent execution, queues the conversation for memory update
     2. Only includes user inputs and final assistant responses (ignores tool calls)
     3. The queue uses debouncing to batch multiple updates together
-    4. Memory is updated asynchronously via LLM summarization
+    4. Memory is updated asynchronously via LLM summarization (file) or mem0.add()
     """
 
     name = "memory"
@@ -83,6 +84,11 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         reinforcement_detected = not correction_detected and detect_reinforcement(filtered)
 
         user_id = state.get("user_id", "")
+
+        # 时间 metadata（mem0 backend 用）
+        current_time_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        metadata = {"event_time": current_time_iso, "thread_id": thread_id}
+
         queue = get_memory_queue()
         queue.add(
             thread_id=thread_id,
@@ -91,6 +97,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
             user_id=user_id,
             correction_detected=correction_detected,
             reinforcement_detected=reinforcement_detected,
+            metadata=metadata,
         )
 
         return None

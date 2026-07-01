@@ -220,14 +220,69 @@ class MemoryUpdater:
 
     async def aupdate_memory(self, messages, thread_id=None, agent_name=None,
                              correction_detected=False, reinforcement_detected=False,
-                             user_id=None) -> bool:
-        """Async entry point — uses ainvoke for LLM call, no thread offloading."""
+                             user_id=None, metadata=None) -> bool:
+        """Async entry point — routes to mem0 or file backend."""
+        from harness.memory.mem0_client import get_mem0, is_mem0_enabled
+
+        # ── mem0 backend ──
+        if is_mem0_enabled():
+            return await self._update_mem0(
+                messages, user_id, agent_name, thread_id,
+                correction_detected, reinforcement_detected, metadata,
+            )
+
+        # ── file backend（保留原有逻辑）──
         return await self._do_update_memory(
             messages=messages, thread_id=thread_id, agent_name=agent_name,
             correction_detected=correction_detected,
             reinforcement_detected=reinforcement_detected,
             user_id=user_id,
         )
+
+    async def _update_mem0(self, messages, user_id, agent_name, thread_id,
+                           correction_detected, reinforcement_detected, metadata) -> bool:
+        """mem0 backend：直接调 mem0.add()，内部含 LLM 提取+冲突检测。"""
+        import asyncio
+
+        from harness.memory.mem0_client import get_mem0
+
+        mem0 = get_mem0()
+        if mem0 is None:
+            logger.error("mem0 backend enabled but client not initialized")
+            return False
+
+        # 转换消息格式为 mem0 期望的 [{"role":..., "content":...}]
+        mem0_messages = []
+        for m in messages:
+            role = "user" if getattr(m, "type", None) == "human" else "assistant"
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            if content.strip():
+                mem0_messages.append({"role": role, "content": content})
+
+        if not mem0_messages:
+            return False
+
+        # 构建 metadata
+        mem_metadata: dict = {"thread_id": thread_id or ""}
+        if metadata:
+            mem_metadata.update(metadata)
+
+        try:
+            await asyncio.to_thread(
+                mem0.add,
+                mem0_messages,
+                user_id=user_id or "default",
+                agent_id=agent_name,
+                metadata=mem_metadata,
+            )
+            logger.info(
+                "mem0 add succeeded for user=%s agent=%s thread=%s",
+                user_id, agent_name, thread_id,
+            )
+            return True
+        except Exception as e:
+            logger.error("mem0 add failed: %s", e)
+            return False
 
     async def _do_update_memory(self, messages, thread_id=None, agent_name=None,
                                 correction_detected=False, reinforcement_detected=False,

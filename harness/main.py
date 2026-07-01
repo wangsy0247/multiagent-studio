@@ -170,13 +170,29 @@ class HarnessService(_BaseService):
             ),
             injection_enabled=memory_cfg_dict.get("injection_enabled", True),
             max_injection_tokens=int(memory_cfg_dict.get("max_injection_tokens", 2000)),
+            # ── mem0 配置 ──
+            backend=memory_cfg_dict.get("backend", "file"),
+            mem0_config=memory_cfg_dict.get("mem0_config", {}),
+            mem0_search_top_k=int(memory_cfg_dict.get("mem0_search_top_k", 5)),
+            mem0_general_query=memory_cfg_dict.get(
+                "mem0_general_query", "用户的偏好、习惯、背景和重要信息",
+            ),
+            mem0_enable_time_filter=memory_cfg_dict.get("mem0_enable_time_filter", False),
+            mem0_recent_days=int(memory_cfg_dict.get("mem0_recent_days", 90)),
         )
         set_memory_config(mem_cfg)
         # Ensure storage singleton is initialized with our root
         FileMemoryStorage(memory_root=cfg.memory_root)
         # Pre-warm the queue singleton
         get_memory_queue()
-        logger.info("Memory system initialized (DeerFlow-aligned): root=%s", cfg.memory_root)
+        # Pre-warm mem0 client if backend is mem0
+        if mem_cfg.backend == "mem0":
+            from harness.memory.mem0_client import get_mem0
+            get_mem0()
+        logger.info(
+            "Memory system initialized (DeerFlow-aligned): root=%s backend=%s",
+            cfg.memory_root, mem_cfg.backend,
+        )
 
         # 5. Observability
         self.observability = ObservabilityManager(cfg)
