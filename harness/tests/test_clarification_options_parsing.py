@@ -4,11 +4,14 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
-from harness.middleware.clarification import ClarificationMiddleware
-from harness.models import HarnessState
+from harness.middleware.clarification import (
+    ClarificationMiddleware,
+    extract_clarification_from_tool_message,
+    get_pending_clarification,
+)
 
 
 def _make_request(*, name: str = "ask_clarification", args: dict, tool_call_id: str = "tc-1"):
@@ -38,8 +41,9 @@ async def test_options_json_string_is_parsed():
 
     result = await mw.awrap_tool_call(request, lambda req: MagicMock())
 
-    assert isinstance(result.update["pending_clarification"].options, list)
-    assert result.update["pending_clarification"].options == [
+    metadata = result.update["messages"][0].additional_kwargs["clarification"]
+    assert isinstance(metadata["options"], list)
+    assert metadata["options"] == [
         "生成 ABACUS 输入",
         "查看 POSCAR 文件的差异",
     ]
@@ -53,7 +57,8 @@ async def test_options_list_passes_through():
 
     result = await mw.awrap_tool_call(request, lambda req: MagicMock())
 
-    assert result.update["pending_clarification"].options == ["A", "B"]
+    metadata = result.update["messages"][0].additional_kwargs["clarification"]
+    assert metadata["options"] == ["A", "B"]
 
 
 @pytest.mark.asyncio
@@ -64,7 +69,8 @@ async def test_invalid_options_string_becomes_list():
 
     result = await mw.awrap_tool_call(request, lambda req: MagicMock())
 
-    assert result.update["pending_clarification"].options == ["not valid json"]
+    metadata = result.update["messages"][0].additional_kwargs["clarification"]
+    assert metadata["options"] == ["not valid json"]
 
 
 @pytest.mark.asyncio
@@ -76,10 +82,13 @@ async def test_clarification_interruption_goes_to_end():
     result = await mw.awrap_tool_call(request, lambda req: MagicMock())
 
     assert result.goto == "__end__"
-    assert result.update["is_finished"] is True
-    assert result.update["pending_clarification"].question == "确认继续？"
+    assert "messages" in result.update
     assert len(result.update["messages"]) == 1
-    assert result.update["messages"][0].content.startswith("❓")
+    tool_message = result.update["messages"][0]
+    assert tool_message.content.startswith("❓")
+    metadata = tool_message.additional_kwargs["clarification"]
+    assert metadata["question"] == "确认继续？"
+    assert metadata["required"] is True
 
 
 @pytest.mark.asyncio
@@ -94,14 +103,52 @@ async def test_non_clarification_tool_passes_through():
     handler.assert_called_once_with(request)
 
 
-@pytest.mark.asyncio
-async def test_clarification_answer_injection_handled_by_worker():
-    """Clarification answer injection is handled by the worker layer, not middleware.
+def test_extract_clarification_from_tool_message():
+    """Metadata can be recovered from an ask_clarification ToolMessage."""
+    from langchain_core.messages import ToolMessage
 
-    The ClarificationMiddleware only intercepts ask_clarification tool calls
-    via wrap_tool_call. Answer injection is managed by:
-      - main.py::respond_to_clarification() — sets pending_clarification.answer
-      - The worker then invokes the graph with the updated state
-    """
-    # This behavior is tested in test_api.py via the /clarification endpoint
-    pass
+    tool_message = ToolMessage(
+        content="❓ Which language?",
+        name="ask_clarification",
+        tool_call_id="tc-1",
+        additional_kwargs={
+            "clarification": {
+                "question": "Which language?",
+                "options": ["Python", "Go"],
+                "required": True,
+            }
+        },
+    )
+    metadata = extract_clarification_from_tool_message(tool_message)
+    assert metadata["question"] == "Which language?"
+    assert metadata["options"] == ["Python", "Go"]
+    assert metadata["required"] is True
+
+
+def test_get_pending_clarification_detects_unanswered_question():
+    """A pending clarification is detected when no human message follows it."""
+    messages = [
+        HumanMessage(content="write a script"),
+        AIMessage(content="", tool_calls=[{"name": "ask_clarification", "args": {"question": "Which language?"}, "id": "tc-1"}]),
+        ToolMessage(
+            content="❓ Which language?",
+            name="ask_clarification",
+            tool_call_id="tc-1",
+            additional_kwargs={"clarification": {"question": "Which language?", "options": []}},
+        ),
+    ]
+    pending = get_pending_clarification(messages)
+    assert pending is not None
+    assert pending["question"] == "Which language?"
+
+
+def test_get_pending_clarification_returns_none_after_answer():
+    """Once the user answers, there is no pending clarification."""
+    messages = [
+        HumanMessage(content="write a script"),
+        AIMessage(content="", tool_calls=[{"name": "ask_clarification", "args": {"question": "Which language?"}, "id": "tc-1"}]),
+        ToolMessage(content="❓ Which language?", name="ask_clarification", tool_call_id="tc-1"),
+        HumanMessage(content="Python"),
+    ]
+    pending = get_pending_clarification(messages)
+    assert pending is None

@@ -211,10 +211,12 @@ class TestV2ClarificationMiddleware:
         from langgraph.types import Command
         assert isinstance(result, Command)
         assert result.goto == END
-        assert "pending_clarification" in result.update
-        pending = result.update["pending_clarification"]
-        assert pending.question == "Are you sure?"
-        assert pending.required is True
+        assert "messages" in result.update
+        tool_message = result.update["messages"][0]
+        metadata = tool_message.additional_kwargs["clarification"]
+        assert metadata["question"] == "Are you sure?"
+        assert metadata["required"] is True
+        assert metadata["context"] == "This will delete files"
 
     @pytest.mark.asyncio
     async def test_non_clarification_passes_through(self):

@@ -5,8 +5,9 @@ before they execute and return a ``Command`` that jumps to ``END`` with the
 formatted question stored as a ``ToolMessage``. This cleanly stops the ReAct
 loop and lets the frontend present the clarification request.
 
-Clarification answer injection and cleanup are handled by the worker layer
-(``main.py::respond_to_clarification()``), not by this middleware.
+Clarification metadata is attached to the ``ToolMessage`` via
+``additional_kwargs["clarification"]`` so it can be recovered later without
+relying on a custom LangGraph state key.
 """
 
 from __future__ import annotations
@@ -14,9 +15,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from hashlib import sha256
-from typing import override
+from typing import Any, override
 from uuid import uuid4
 
 from langchain_core.messages import ToolMessage
@@ -25,9 +25,46 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from harness.middleware.base import HarnessAgentMiddleware
-from harness.models import ClarificationRequest, HarnessState
 
 logger = logging.getLogger(__name__)
+
+
+def extract_clarification_from_tool_message(msg: Any) -> dict[str, Any] | None:
+    """Extract structured clarification metadata from an ask_clarification ToolMessage.
+
+    The metadata is stored in ``additional_kwargs["clarification"]`` when the
+    middleware creates the message. If it is missing, a best-effort fallback
+    returns the message content as the question.
+    """
+    msg_type = getattr(msg, "type", None)
+    if msg_type != "tool":
+        return None
+    if getattr(msg, "name", None) != "ask_clarification":
+        return None
+
+    additional = getattr(msg, "additional_kwargs", None) or {}
+    clarification = additional.get("clarification")
+    if clarification and isinstance(clarification, dict):
+        return clarification
+
+    content = getattr(msg, "content", "")
+    return {"question": content, "context": "", "options": [], "required": False}
+
+
+def get_pending_clarification(messages: list[Any]) -> dict[str, Any] | None:
+    """Return the pending clarification if the conversation is waiting for one.
+
+    Walks backwards through ``messages``. If the last non-human message is an
+    ``ask_clarification`` ``ToolMessage`` and there is no ``HumanMessage`` after
+    it, the clarification is still pending. Otherwise returns ``None``.
+    """
+    for msg in reversed(messages):
+        msg_type = getattr(msg, "type", None)
+        if msg_type == "human":
+            return None
+        if msg_type == "tool" and getattr(msg, "name", None) == "ask_clarification":
+            return extract_clarification_from_tool_message(msg)
+    return None
 
 
 class ClarificationMiddleware(HarnessAgentMiddleware):
@@ -35,8 +72,13 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
 
     When the model calls ``ask_clarification``, this middleware intercepts
     the call before it executes and returns ``Command(goto=END)`` with a
-    ``pending_clarification`` state update. The frontend renders the
-    clarification card, and the worker resumes execution when the user answers.
+    ``ToolMessage`` containing the formatted question. The frontend renders
+    the clarification card, and the worker resumes execution when the user
+    answers.
+
+    This follows DeerFlow's message-based state management: no custom
+    ``pending_clarification`` state key is used. The pending clarification is
+    inferred directly from the message history.
     """
 
     name = "clarification"
@@ -94,7 +136,8 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
 
         return "\n".join(message_parts)
 
-    def _build_request(self, args: dict) -> ClarificationRequest:
+    def _build_clarification_metadata(self, args: dict) -> dict[str, Any]:
+        """Build the structured clarification payload stored on the ToolMessage."""
         options = args.get("options", [])
         if isinstance(options, str):
             try:
@@ -106,14 +149,14 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
         elif not isinstance(options, list):
             options = [options]
 
-        return ClarificationRequest(
-            id=str(uuid4()),
-            question=args.get("question", "请确认"),
-            context=args.get("context", ""),
-            options=options,
-            required=args.get("required", False),
-            created_at=datetime.now(),
-        )
+        return {
+            "id": str(uuid4()),
+            "question": args.get("question", "请确认"),
+            "context": args.get("context", ""),
+            "options": options,
+            "required": args.get("required", False),
+            "clarification_type": args.get("clarification_type", "missing_info"),
+        }
 
     def _handle_clarification(self, request: ToolCallRequest) -> Command:
         tool_call = request.tool_call
@@ -121,7 +164,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
         tool_call_id = tool_call.get("id", "")
 
         formatted_message = self._format_clarification_message(args)
-        request_obj = self._build_request(args)
+        metadata = self._build_clarification_metadata(args)
 
         logger.info("Clarification requested: %s", args.get("question", "")[:100])
 
@@ -130,19 +173,16 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             content=formatted_message,
             tool_call_id=tool_call_id,
             name="ask_clarification",
+            additional_kwargs={"clarification": metadata},
         )
 
         return Command(
-            update={
-                "messages": [tool_message],
-                "pending_clarification": request_obj,
-                "is_finished": True,
-            },
+            update={"messages": [tool_message]},
             goto=END,
         )
 
     # ------------------------------------------------------------------
-    # hooks — only wrap_tool_call
+    # hooks — wrap_tool_call interrupts
     # ------------------------------------------------------------------
 
     @override

@@ -25,12 +25,13 @@ class FakeHarness(HarnessService):
     async def shutdown(self):
         pass
 
-    async def execute(self, thread_id, user_id, message, graph=None):
+    async def execute(self, thread_id, user_id, message, graph=None, files=None):
         yield {"type": "message", "content": "Hello!", "thread_id": thread_id}
         yield {"type": "finished", "thread_id": thread_id}
 
-    async def respond_to_clarification(self, thread_id, clarification_id, answer):
-        return {"status": "resumed", "thread_id": thread_id}
+    async def respond_to_clarification(self, thread_id, answer):
+        yield {"type": "message", "content": "", "thread_id": thread_id, "status": "resumed"}
+        yield {"type": "finished", "thread_id": thread_id}
 
     async def stop(self, thread_id):
         pass
@@ -77,11 +78,12 @@ class TestExecutionAPI:
 
     def test_respond_clarification(self, client):
         response = client.post("/api/v1/execute/t1/respond", json={
-            "clarification_id": "clar-001",
             "answer": "yes",
         })
         assert response.status_code == 200
-        assert response.json()["status"] == "resumed"
+        assert "text/event-stream" in response.headers["content-type"]
+        assert "resumed" in response.text
+        assert "finished" in response.text
 
 
 class TestAgentManagementAPI:

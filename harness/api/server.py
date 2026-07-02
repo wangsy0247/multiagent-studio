@@ -40,9 +40,7 @@ class HarnessService:
         raise NotImplementedError
         yield  # type: ignore[unreachable]
 
-    async def respond_to_clarification(
-        self, thread_id: str, clarification_id: str, answer: str
-    ):
+    async def respond_to_clarification(self, thread_id: str, answer: str):
         raise NotImplementedError
 
     async def stop(self, thread_id: str):

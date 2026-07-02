@@ -202,11 +202,9 @@ class HarnessState(TypedDict):
     plan_mode: NotRequired[bool]
     todos: NotRequired[Annotated[list[TodoItem], merge_todos]]
     memory_context: NotRequired[str]
-    pending_clarification: NotRequired[ClarificationRequest | None]
     pending_task_calls: NotRequired[Annotated[list[dict[str, Any]], append_pending_task_calls]]
     subagent_results: NotRequired[Annotated[dict[str, Any], merge_subagent_results]]
     token_usage: NotRequired[Annotated[dict[str, Any], add_token_usage]]
-    is_finished: NotRequired[bool]
     metadata: NotRequired[Annotated[dict[str, Any], merge_metadata]]
 
     # ------------------------------------------------------------------
@@ -246,11 +244,9 @@ def initial_state(
         plan_mode=False,
         todos=[],
         memory_context="",
-        pending_clarification=None,
         pending_task_calls=[],
         subagent_results={},
         token_usage={},
-        is_finished=False,
         metadata={},
         title_generated=False,
         loop_history=[],
@@ -268,7 +264,6 @@ class ExecuteRequest(BaseModel):
 
 
 class ClarificationResponse(BaseModel):
-    clarification_id: str
     answer: str
 
 

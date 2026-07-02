@@ -122,8 +122,6 @@ class TestHarnessState:
         assert len(state["messages"]) == 1
         assert isinstance(state["messages"][0], HumanMessage)
         assert state["plan_mode"] is False
-        assert state["pending_clarification"] is None
-        assert state["is_finished"] is False
 
     def test_mutable_state(self, empty_state):
         empty_state["plan_mode"] = True

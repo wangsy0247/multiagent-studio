@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -13,9 +13,7 @@ from harness.agents.presets import PRESET_SUBAGENTS
 from harness.api.server import HarnessService, get_harness
 from harness.models import (
     ClarificationResponse,
-    CreateAgentRequest,
     ExecuteRequest,
-    SubAgentConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +64,6 @@ async def respond_clarification(
     async def event_stream():
         async for event in harness.respond_to_clarification(
             thread_id=thread_id,
-            clarification_id=request.clarification_id,
             answer=request.answer,
         ):
             yield f"data: {json.dumps(event, default=str)}\n\n"

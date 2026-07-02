@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -28,16 +27,15 @@ from harness.config.checkpointer_config import (
     load_checkpointer_config_from_dict,
 )
 from harness.config.config_manager import ConfigManager
-from harness.config.memory_config import MemoryConfig, set_memory_config, get_memory_config
+from harness.config.memory_config import MemoryConfig, set_memory_config
 from harness.config.paths import Paths, get_paths, set_paths
 from harness.config.yaml_config import DatabaseConfig
 from harness.graph_factory import build_harness_graph
 from harness.memory.queue import get_memory_queue
-from harness.memory.storage import FileMemoryStorage, get_memory_storage
+from harness.memory.storage import FileMemoryStorage
 from harness.middleware.base import HarnessAgentMiddleware
+from harness.middleware.clarification import get_pending_clarification
 from harness.models import (
-    AgentNode,
-    ClarificationRequest,
     ExecutionGraph,
     HarnessState,
     SubAgentConfig,
@@ -599,7 +597,6 @@ class HarnessService(_BaseService):
                 kind = event["event"]
                 evt_name = event.get("name", "")
                 evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
-                evt_tags: list[str] = event.get("tags", []) or []  # type: ignore[assignment]
 
                 # ── Token-level streaming ──────────────────────────
                 if kind == "on_chat_model_stream":
@@ -747,9 +744,13 @@ class HarnessService(_BaseService):
                     "title": suggested_title,
                 }
 
-            # Emit pending clarification if any
-            pending: Any = final_state.get("pending_clarification")
-            if pending:
+            # Emit pending clarification if the last non-human message is an
+            # ask_clarification ToolMessage. This follows DeerFlow's message-based
+            # state management and avoids a custom pending_clarification state key.
+            pending_clarification = get_pending_clarification(
+                final_state.get("messages", [])
+            )
+            if pending_clarification:
                 # Write run as suspended (awaiting clarification)
                 if self._run_store:
                     completion = journal.get_completion_data() if journal else {}
@@ -758,7 +759,7 @@ class HarnessService(_BaseService):
                     )
                 yield {
                     "type": "clarification",
-                    "request": pending if isinstance(pending, dict) else pending.model_dump(),
+                    "request": pending_clarification,
                     "thread_id": thread_id,
                 }
                 if self.observability:
@@ -794,24 +795,27 @@ class HarnessService(_BaseService):
             if journal:
                 await journal.flush()
             # ── 清理中间件线程状态（修复 #9 字典泄漏） ──
-            pending_in_final = final_state.get("pending_clarification") if final_state else None
-            if not pending_in_final:
+            has_pending_clarification = get_pending_clarification(
+                final_state.get("messages", [])
+            ) is not None if final_state else False
+            if not has_pending_clarification:
                 self._cleanup_middleware_state(thread_id)
-            # 正常完成（无 pending_clarification）时清理运行期标记
-            # 有 pending_clarification 时保留标记，以便 stop() 可取消
-            if not pending_in_final:
+            # 正常完成（无待处理 clarification）时清理运行期标记
+            # 有待处理 clarification 时保留标记，以便 stop() 可取消
+            if not has_pending_clarification:
                 self._active_runs.pop(thread_id, None)
 
     async def respond_to_clarification(
         self,
         thread_id: str,
-        clarification_id: str,
         answer: str,
     ) -> AsyncIterator[dict[str, Any]]:
         """Resume execution after a clarification answer, streaming results.
 
-        Reads the suspended state from LangGraph checkpoint (via ``aget_state``)
-        instead of the old in-memory ``_active_runs`` dict.
+        DeerFlow-style message-based HITL: the user's answer is appended as a
+        regular ``HumanMessage`` and the graph resumes from the checkpoint. No
+        custom ``pending_clarification`` state key is used; pending status is
+        inferred directly from the message history.
         """
         build_config = self._build_config(thread_id)
 
@@ -828,24 +832,19 @@ class HarnessService(_BaseService):
             return
 
         state = dict(state_snapshot.values)
-        pending = state.get("pending_clarification")
+        messages = list(state.get("messages", []))
+
+        # Verify the conversation is actually waiting for a clarification.
+        pending = get_pending_clarification(messages)
         if pending is None:
             yield {"type": "error", "content": "no pending clarification", "thread_id": thread_id}
             return
 
-        # Update pending clarification with the answer — create a new object
-        # instead of mutating the checkpoint-deserialized value.
-        if isinstance(pending, ClarificationRequest):
-            pending = pending.model_copy(
-                update={"answer": answer, "resolved_at": datetime.now()}
-            )
-        else:
-            pending = {
-                **pending,
-                "answer": answer,
-                "resolved_at": datetime.now().isoformat(),
-            }
-        state["pending_clarification"] = pending
+        # Inject the user's answer into the message history so the model sees it
+        # when execution resumes. Without this, the model only sees its own
+        # clarification question and will ask again.
+        messages.append(HumanMessage(content=answer))
+        state["messages"] = messages
 
         # ── 注册运行期取消标记 ──
         self._active_runs[thread_id] = {"cancelled": False}
@@ -926,21 +925,19 @@ class HarnessService(_BaseService):
                     if isinstance(result, dict):
                         final_state = result
 
-            # Post-stream: check for new clarifications
-            new_pending = final_state.get("pending_clarification")
-            if new_pending and not (
-                hasattr(new_pending, "answer") and new_pending.answer
-            ):
-                # State is auto-checkpointed by LangGraph — no manual save needed
+            # Post-stream: check for new clarifications from the message history.
+            new_pending = get_pending_clarification(final_state.get("messages", []))
+            if new_pending is not None:
                 yield {
                     "type": "clarification",
-                    "request": new_pending if isinstance(new_pending, dict) else new_pending.model_dump(),
+                    "request": new_pending,
                     "thread_id": thread_id,
                 }
                 return
 
             # Success — clean up runtime flag only (checkpoint persists)
             self._active_runs.pop(thread_id, None)
+            self._cleanup_middleware_state(thread_id)
             yield {"type": "finished", "thread_id": thread_id}
 
         except Exception as exc:
@@ -972,7 +969,8 @@ class HarnessService(_BaseService):
             return {"thread_id": thread_id, "status": "inactive"}
 
         state = state_snapshot.values
-        pending = state.get("pending_clarification")
+        messages = state.get("messages", [])
+        is_pending = get_pending_clarification(messages) is not None
 
         # Check runtime cancelled marker
         active_run = self._active_runs.get(thread_id)
@@ -981,7 +979,7 @@ class HarnessService(_BaseService):
 
         return {
             "thread_id": thread_id,
-            "status": "suspended" if pending else "running",
+            "status": "suspended" if is_pending else "running",
         }
 
     # ------------------------------------------------------------------
