@@ -99,6 +99,51 @@ def _build_working_directory_section() -> str:
 </working_directory>"""
 
 
+def _build_memory_tool_section(mem0_tool_enabled: bool) -> str:
+    """Build the memory tool guidance section for the system prompt.
+
+    Only included when mem0_tool_enabled=True. Explains to the Agent:
+    - What memory_search tool does
+    - Basic context is already injected (don't search for that)
+    - When to use the tool (specific scenarios)
+    - When not to use it
+    - Default behavior: when in doubt, search once
+    """
+    if not mem0_tool_enabled:
+        return ""
+    return """
+<memory_tool_guidance>
+You have a `memory_search` tool to look up facts and preferences the user
+shared in past conversations.
+
+**Two memory layers:**
+1. **Passive injection**: Basic context (general preferences, background) is
+   already injected into your <system-reminder> at conversation start.
+   You DON'T need to search for those.
+2. **Active query**: Use `memory_search` for specific details NOT in the
+   injected context.
+
+**When to use `memory_search`:**
+- User references past info: "continue last time", "like before", "remember when"
+- Need specific details for personalization (e.g., user's tech stack before recommending a library)
+- User asks "do you remember..." or about their own history
+- Current context is missing information the user likely shared before
+
+**When NOT to use:**
+- The injected <memory> block already has what you need
+- Current conversation has all required information
+- Brand new topic unrelated to user history
+- User uploaded files or gave complete specifications
+
+**Guidelines:**
+- When in doubt, search once — one query (~50ms) costs less than a wrong answer
+- If search returns "No relevant memories found", do NOT repeat the same query
+- Frame queries naturally: "user's preferred programming language" (good) vs "Python" (too vague)
+- Results are extracted facts, not raw conversation transcripts
+</memory_tool_guidance>
+"""
+
+
 def _build_response_style_section() -> str:
     return """<response_style>
 - Clear and Concise: Avoid over-formatting unless requested
@@ -138,6 +183,8 @@ You are {agent_name}, an AI assistant with multi-agent orchestration capabilitie
 
 {working_directory_section}
 
+{memory_tool_section}
+
 <response_style>
 - Clear and Concise: Avoid over-formatting unless requested
 - Natural Tone: Use paragraphs and prose, not bullet points by default
@@ -158,11 +205,20 @@ def apply_prompt_template(
     agent_name: str = "Multi-Agent Orchestrator",
     max_concurrent_subagents: int = 3,
     subagent_enabled: bool = True,
+    mem0_tool_enabled: bool = False,
 ) -> str:
-    """Assemble the full Lead Agent system prompt from sections."""
+    """Assemble the full Lead Agent system prompt from sections.
+
+    Args:
+        agent_name: Display name for the agent
+        max_concurrent_subagents: Max parallel task calls
+        subagent_enabled: Whether subagent orchestration is available
+        mem0_tool_enabled: Whether memory_search tool is registered
+    """
     subagent_section = _build_subagent_section(max_concurrent_subagents) if subagent_enabled else ""
     clarification_section = _build_clarification_section()
     working_directory_section = _build_working_directory_section()
+    memory_tool_section = _build_memory_tool_section(mem0_tool_enabled)
 
     n = max_concurrent_subagents
     subagent_reminder = (
@@ -178,6 +234,7 @@ def apply_prompt_template(
         clarification_section=clarification_section,
         subagent_section=subagent_section,
         working_directory_section=working_directory_section,
+        memory_tool_section=memory_tool_section,
         subagent_reminder=subagent_reminder,
     )
 
@@ -219,10 +276,13 @@ class LeadAgent:
 
     def get_system_prompt(self) -> str:
         """Build the complete system prompt using the DeerFlow-style template."""
+        from harness.config.memory_config import get_memory_config
+        mem_cfg = get_memory_config()
         return apply_prompt_template(
             agent_name=self.agent_name,
             max_concurrent_subagents=self.max_concurrent,
             subagent_enabled=self.subagent_manager is not None,
+            mem0_tool_enabled=mem_cfg.enabled and getattr(mem_cfg, "mem0_tool_enabled", False),
         )
 
     # ------------------------------------------------------------------

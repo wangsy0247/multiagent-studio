@@ -221,23 +221,49 @@ class MemoryUpdater:
     async def aupdate_memory(self, messages, thread_id=None, agent_name=None,
                              correction_detected=False, reinforcement_detected=False,
                              user_id=None, metadata=None) -> bool:
-        """Async entry point — routes to mem0 or file backend."""
-        from harness.memory.mem0_client import get_mem0, is_mem0_enabled
+        """Async entry point — may write to file, mem0, or both (dual-write).
 
-        # ── mem0 backend ──
-        if is_mem0_enabled():
-            return await self._update_mem0(
-                messages, user_id, agent_name, thread_id,
-                correction_detected, reinforcement_detected, metadata,
-            )
+        Routing logic:
+        - backend=file + mem0_tool_enabled=false → only file (original behavior)
+        - backend=file + mem0_tool_enabled=true  → BOTH file and mem0 (dual-write)
+        - backend=mem0 + mem0_tool_enabled=false → only mem0 (original behavior)
+        - backend=mem0 + mem0_tool_enabled=true  → only mem0 (no need for file)
+        """
+        from harness.config.memory_config import get_memory_config
 
-        # ── file backend（保留原有逻辑）──
-        return await self._do_update_memory(
-            messages=messages, thread_id=thread_id, agent_name=agent_name,
-            correction_detected=correction_detected,
-            reinforcement_detected=reinforcement_detected,
-            user_id=user_id,
-        )
+        cfg = get_memory_config()
+        mem0_tool_enabled = getattr(cfg, "mem0_tool_enabled", False)
+
+        results: list[bool] = []
+
+        # ── file 写入（当 backend=file 时）──
+        if cfg.backend == "file":
+            try:
+                file_result = await self._do_update_memory(
+                    messages=messages, thread_id=thread_id, agent_name=agent_name,
+                    correction_detected=correction_detected,
+                    reinforcement_detected=reinforcement_detected,
+                    user_id=user_id,
+                )
+                results.append(file_result)
+            except Exception as e:
+                logger.error("file memory update failed: %s", e)
+                results.append(False)
+
+        # ── mem0 写入（当 backend=mem0 或 mem0_tool_enabled=true 时）──
+        if cfg.backend == "mem0" or mem0_tool_enabled:
+            try:
+                mem0_result = await self._update_mem0(
+                    messages, user_id, agent_name, thread_id,
+                    correction_detected, reinforcement_detected, metadata,
+                )
+                results.append(mem0_result)
+            except Exception as e:
+                logger.error("mem0 update failed: %s", e)
+                results.append(False)
+
+        # 至少一个成功就算成功
+        return any(results) if results else False
 
     async def _update_mem0(self, messages, user_id, agent_name, thread_id,
                            correction_detected, reinforcement_detected, metadata) -> bool:

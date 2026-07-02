@@ -8,6 +8,7 @@ from typing import Any, Literal
 from langchain_core.tools import BaseTool, tool
 
 from harness.agents.presets import PRESET_SUBAGENTS, build_subagent_config
+from harness.tools.builtins.memory_tools import create_memory_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,31 @@ def ask_clarification_tool() -> BaseTool:
 
 
 def build_lead_tools(manager: Any | None = None) -> list[BaseTool]:
-    """Return all built-in tools required by the Lead Agent."""
-    return [
+    """Return all built-in tools required by the Lead Agent.
+
+    Tools included:
+    - create_subagent: Create specialized SubAgents
+    - task: Delegate tasks to SubAgents
+    - ask_clarification: Ask user for clarification
+    - memory_search: Query mem0 long-term memory (if mem0_tool_enabled)
+    """
+    tools: list[BaseTool] = [
         create_subagent_tool(manager),
         task_tool(manager),
         ask_clarification_tool(),
     ]
+
+    # mem0 主动查询工具（如果启用）
+    # mem0_tool_enabled 与 backend 独立：
+    #   - backend=file + mem0_tool_enabled=true → 双轨制（file 注入 + mem0 工具）
+    #   - backend=mem0 + mem0_tool_enabled=true → mem0 模式 + 工具
+    try:
+        from harness.config.memory_config import get_memory_config
+        mem_cfg = get_memory_config()
+        if mem_cfg.enabled and getattr(mem_cfg, "mem0_tool_enabled", False):
+            tools.append(create_memory_search_tool())
+            logger.info("memory_search tool registered")
+    except Exception as e:
+        logger.warning("Failed to register memory_search tool: %s", e)
+
+    return tools

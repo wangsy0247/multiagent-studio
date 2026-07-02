@@ -175,14 +175,16 @@ class HarnessService(_BaseService):
             ),
             mem0_enable_time_filter=memory_cfg_dict.get("mem0_enable_time_filter", False),
             mem0_recent_days=int(memory_cfg_dict.get("mem0_recent_days", 90)),
+            mem0_general_token_budget=int(memory_cfg_dict.get("mem0_general_token_budget", 400)),
+            mem0_tool_enabled=memory_cfg_dict.get("mem0_tool_enabled", False),
         )
         set_memory_config(mem_cfg)
         # Ensure storage singleton is initialized with our root
         FileMemoryStorage(memory_root=cfg.memory_root)
         # Pre-warm the queue singleton
         get_memory_queue()
-        # Pre-warm mem0 client if backend is mem0
-        if mem_cfg.backend == "mem0":
+        # Pre-warm mem0 client if backend is mem0 or mem0 tool is enabled
+        if mem_cfg.backend == "mem0" or mem_cfg.mem0_tool_enabled:
             from harness.memory.mem0_client import get_mem0
             get_mem0()
         logger.info(

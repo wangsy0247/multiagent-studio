@@ -105,18 +105,17 @@ sandbox:
 # --- Memory ---
 memory:
   enabled: True
-  backend: mem0                # file | mem0
+  backend: file                 # ← file 模式：DynamicContextMiddleware 用 memory.json 被动注入
   debounce_seconds: 120
-  # ── file backend 配置（向后兼容）──
+  # ── file backend 配置 ──
   max_facts: 100
-  fact_confidence_threshold: 0.8
+  fact_confidence_threshold: 0.9
   injection_enabled: true
   max_injection_tokens: 1000
-  # ── mem0 backend 配置 ──
-  mem0_search_top_k: 5
-  mem0_general_query: "用户的偏好、习惯、背景和重要信息"
-  mem0_enable_time_filter: false
-  mem0_recent_days: 90
+  # ── mem0 工具配置（与 backend 独立）──
+  mem0_tool_enabled: true       # ← 启用 memory_search 工具
+  mem0_search_top_k: 5          # 工具查询的 top_k（精准查询不需要太多）
+  # ── 以下 mem0 配置在写入路径和工具查询时使用 ──
   mem0_config:
     vector_store:
       provider: pgvector
@@ -147,7 +146,7 @@ summarization:
   enabled: True
   trigger:
     - type: tokens
-      value: 100000
+      value: 20000
   keep:
     type: messages
     value: 10

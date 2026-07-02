@@ -58,11 +58,20 @@ def _expand_config(config: dict) -> dict:
 
 
 def is_mem0_enabled() -> bool:
-    """Check if mem0 backend is enabled."""
+    """Check if mem0 is used (either as backend or as tool).
+
+    Returns True when:
+    - backend='mem0' (mem0 as primary memory backend), OR
+    - mem0_tool_enabled=True (mem0 as active query tool, even with file backend)
+
+    This ensures get_mem0() initializes the mem0 client in both scenarios.
+    """
     from harness.config.memory_config import get_memory_config
 
     cfg = get_memory_config()
-    return cfg.enabled and cfg.backend == "mem0"
+    if not cfg.enabled:
+        return False
+    return cfg.backend == "mem0" or getattr(cfg, "mem0_tool_enabled", False)
 
 
 def get_mem0() -> Any:
@@ -79,7 +88,7 @@ def get_mem0() -> Any:
 
     cfg = get_memory_config()
 
-    if not cfg.enabled or cfg.backend != "mem0":
+    if not cfg.enabled or not is_mem0_enabled():
         _initialized = True
         return None
 

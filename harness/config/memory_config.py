@@ -70,6 +70,18 @@ class MemoryConfig(BaseModel):
         default=90, ge=1, le=365,
         description="Only retrieve memories created within this many days (when time filter enabled)",
     )
+    mem0_general_token_budget: int = Field(
+        default=400, ge=100, le=4000,
+        description="Token budget for fixed general query results on first turn. Remainder of max_injection_tokens goes to specific query.",
+    )
+    mem0_tool_enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether to register memory_search tool for Agent to proactively query mem0. "
+            "Independent of backend — can be True even when backend='file', "
+            "enabling dual-track: file for passive injection + mem0 for active query."
+        ),
+    )
 
 
 # Global configuration instance
