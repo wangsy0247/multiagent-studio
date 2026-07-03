@@ -32,7 +32,7 @@ def create_empty_memory() -> dict[str, Any]:
             "topOfMind": {"summary": "", "updatedAt": ""},
         },
         "history": {
-            "recentMonths": {"summary": "", "updatedAt": ""},
+            "recentWeeks": {"summary": "", "updatedAt": ""},
             "earlierContext": {"summary": "", "updatedAt": ""},
             "longTermBackground": {"summary": "", "updatedAt": ""},
         },

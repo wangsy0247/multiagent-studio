@@ -94,8 +94,8 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
-        thread_id = state.get("thread_id", "unknown")
-        user_id = state.get("user_id", "anonymous")
+        thread_id = state.get("thread_id") or "unknown"
+        user_id = state.get("user_id") or "anonymous"
 
         from harness.config.paths import get_paths
         paths_obj = get_paths()

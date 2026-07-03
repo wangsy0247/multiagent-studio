@@ -3,7 +3,6 @@ Harness 服务 HTTP 客户端 — 代理所有执行相关请求
 """
 
 import os
-import json
 import logging
 from typing import AsyncGenerator, Optional
 
@@ -71,24 +70,23 @@ class HarnessClient:
                 elif line.strip():
                     yield line
 
-    async def respond_to_clarification(self, thread_id: str, clarification_id: str, answer: str) -> dict:
+    async def respond_to_clarification(self, thread_id: str, answer: str) -> dict:
         """@deprecated — use stream_respond_clarification for streaming results."""
         resp = await self._request(
             "POST",
             f"/api/v1/execute/{thread_id}/respond",
-            json={"clarification_id": clarification_id, "answer": answer},
+            json={"answer": answer},
         )
         return resp.json()
 
     async def stream_respond_clarification(
-        self, thread_id: str, clarification_id: str, answer: str
+        self, thread_id: str, answer: str
     ) -> AsyncGenerator[str, None]:
         """Stream the resumed execution after a clarification answer."""
         client = await self._get_client()
         url = f"{self.base_url}/api/v1/execute/{thread_id}/respond"
 
         async with client.stream("POST", url, json={
-            "clarification_id": clarification_id,
             "answer": answer,
         }) as response:
             if response.status_code != 200:

@@ -282,8 +282,8 @@ def build_harness_graph(llm, tools, middlewares, system_prompt, checkpointer):
 
 ```text
 1. aget_state(thread_id) 读取暂停状态
-2. 检查 pending_clarification 是否存在
-3. 更新 pending_clarification.answer
+2. 通过 get_pending_clarification(messages) 检查是否存在待回答的 clarification
+3. 将用户回答追加为 HumanMessage
 4. self._active_runs[thread_id] = {"cancelled": False}
 5. astream_events(state, build_config, version="v2")
 6. 若仍有新 clarification → yield clarification
@@ -492,8 +492,9 @@ wrap_model_call 洋葱（外层 → 内层）
 
 **文件**：`middleware/clarification.py`
 
-- `aafter_model()`：检测是否需要用户澄清
-- 生成 `pending_clarification` 并暂停执行
+- `wrap_tool_call()` / `awrap_tool_call()`：拦截 `ask_clarification`，生成 `ToolMessage` 并 `Command(goto=END)` 暂停执行
+- 结构化 clarification 元数据保存在 `ToolMessage.additional_kwargs["clarification"]` 中
+- pending 状态通过扫描消息历史推断，不依赖自定义 state key
 
 ---
 
@@ -533,7 +534,7 @@ wrap_model_call 洋葱（外层 → 内层）
     "topOfMind": {"summary": "...", "updatedAt": "..."}
   },
   "history": {
-    "recentMonths": {"summary": "...", "updatedAt": "..."},
+    "recentWeeks": {"summary": "...", "updatedAt": "..."},
     "earlierContext": {"summary": "...", "updatedAt": "..."},
     "longTermBackground": {"summary": "...", "updatedAt": "..."}
   },
@@ -964,9 +965,10 @@ def _create_harness_serde():
 - `thread_id` / `user_id`
 - `plan_mode` / `todos`
 - `memory_context`
-- `pending_clarification`
+- `pending_task_calls`
 - `subagent_results`
 - `token_usage`
+- `metadata`
 - `suggested_title`
 - `loop_history`
 - `artifacts`

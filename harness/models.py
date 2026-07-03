@@ -56,6 +56,7 @@ class SubAgentConfig(BaseModel):
         disallowed_tools: Tools to deny even when tools=None.
         temperature: LLM temperature.
         max_turns: Maximum agent turns before stopping.
+        timeout_seconds: Wall-clock timeout in seconds (default: 900 = 15 min).
     """
 
     name: str
@@ -67,6 +68,7 @@ class SubAgentConfig(BaseModel):
     disallowed_tools: list[str] = ["task", "ask_clarification", "present_files"]
     temperature: float = 0.3
     max_turns: int = 50
+    timeout_seconds: int = 900
 
 
 class AgentNode(BaseModel):
@@ -88,11 +90,34 @@ class ExecutionGraph(BaseModel):
 
 
 class SubAgentResult(BaseModel):
-    """SubAgent execution result."""
+    """SubAgent execution result — DeerFlow-aligned.
 
-    status: Literal["success", "error", "max_iterations_reached"]
-    output: str
+    Attributes:
+        task_id: Unique identifier for this execution.
+        trace_id: Trace ID linking parent and subagent logs.
+        status: Terminal status — success / error / max_iterations_reached /
+            cancelled / timed_out.
+        output: Final text result (if completed).
+        error: Error message (if failed / cancelled / timed_out).
+        iterations: Number of AIMessage turns executed.
+        ai_messages: Complete AI messages as dicts (for upstream consumers).
+        token_usage_records: Per-LLM-call token usage records.
+        started_at: ISO timestamp when execution started.
+        completed_at: ISO timestamp when execution completed.
+    """
+
+    task_id: str = ""
+    trace_id: str = ""
+    status: Literal[
+        "success", "error", "max_iterations_reached", "cancelled", "timed_out"
+    ] = "success"
+    output: str = ""
+    error: str | None = None
     iterations: int = 0
+    ai_messages: list[dict[str, Any]] = []
+    token_usage_records: list[dict[str, Any]] = []
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -196,11 +196,10 @@ class HarnessService(_BaseService):
         # 6. Register middlewares (AgentMiddleware list)
         self._register_middlewares()
 
-        # 8. SubAgent manager (receives middleware list for SubAgent create_agent())
+        # 8. SubAgent manager (uses stripped-down subagent middlewares internally)
         self.subagent_manager = SubagentManager(
             llm_factory=self._init_llm,
             tool_registry=self.tool_registry,
-            middlewares=self.middlewares,
             max_concurrent=cfg.max_concurrent_subagents,
         )
 

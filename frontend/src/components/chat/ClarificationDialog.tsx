@@ -69,7 +69,6 @@ export default function ClarificationDialog({ threadId }: ClarificationDialogPro
 
     try {
       await sse.connect(`/api/execute/${threadId}/respond`, {
-        clarification_id: pendingClarification.id,
         answer: answer.trim(),
       });
     } catch (err: any) {

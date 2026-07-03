@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Any, Literal
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 
 from harness.agents.presets import PRESET_SUBAGENTS, build_subagent_config
@@ -48,6 +49,18 @@ def create_subagent_tool(manager: Any | None = None) -> BaseTool:
     return create_subagent
 
 
+def _extract_parent_state(config: RunnableConfig | None) -> dict | None:
+    """Extract thread_id / user_id from the runtime config for SubAgent inheritance."""
+    if config is None:
+        return None
+    cfg = config.get("configurable", {}) or {}
+    thread_id = cfg.get("thread_id", "")
+    user_id = cfg.get("user_id", "")
+    if not thread_id and not user_id:
+        return None
+    return {"thread_id": thread_id, "user_id": user_id}
+
+
 def task_tool(manager: Any | None = None) -> BaseTool:
     """Create the ``task`` tool used by the Lead Agent."""
 
@@ -56,6 +69,7 @@ def task_tool(manager: Any | None = None) -> BaseTool:
         agent_name: str,
         instruction: str,
         context: str = "",
+        config: RunnableConfig = None,  # auto-injected by LangChain at call time
     ) -> str:
         """Delegate a task to a SubAgent for execution.
 
@@ -70,7 +84,11 @@ def task_tool(manager: Any | None = None) -> BaseTool:
         if manager is None:
             return "Error: SubAgent manager not initialized"
         try:
-            result = await manager.execute(agent_name, instruction, context)
+            parent_state = _extract_parent_state(config)
+            result = await manager.execute(
+                agent_name, instruction, context,
+                parent_state=parent_state,
+            )
             return json.dumps(result.model_dump(), ensure_ascii=False)
         except Exception as exc:
             return f"Error: {exc}"

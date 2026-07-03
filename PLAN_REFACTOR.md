@@ -157,21 +157,13 @@ async def aafter_model(self, state, runtime):
 
 **文件**: `harness/middleware/clarification.py`
 
-**当前钩子**（4 个）:
-```python
-# abefore_agent  — 如果有已回答的 pending_clarification，注入答案
-# wrap_tool_call — 拦截 ask_clarification → Command(goto=END)
-# awrap_tool_call — 同上 async
-# aafter_agent   — 清理已解决的 pending_clarification
-```
-
-**改为**（2 个）:
+**当前钩子**（2 个）:
 ```python
 # wrap_tool_call — 拦截 ask_clarification → Command(goto=END)
 # awrap_tool_call — 同上 async
 ```
 
-**关键变更**: 移除 `abefore_agent` 和 `aafter_agent`。澄清回复注入由 worker 层（`main.py::respond_to_clarification()`）处理——它已经在修改 state 中的 `pending_clarification`，中间件不需要再做。
+**关键变更**: 对齐 DeerFlow 的消息驱动 HITL，不再使用自定义 `pending_clarification` 状态键。澄清请求被转换成 `ToolMessage`，结构化元数据保存在 `additional_kwargs["clarification"]` 中；pending 状态通过扫描消息历史（`get_pending_clarification`）推断。用户回答由 `main.py::respond_to_clarification()` 直接作为 `HumanMessage` 追加到消息列表后恢复执行。
 
 ---
 

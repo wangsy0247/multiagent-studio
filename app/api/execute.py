@@ -5,9 +5,8 @@
 import json
 import logging
 from typing import Optional
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +17,7 @@ from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.thread import Thread
 from app.models.message import Message
-from app.services.harness_client import get_harness_client, HarnessUnavailableError, HarnessAPIError
+from app.services.harness_client import get_harness_client, HarnessUnavailableError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,7 +32,6 @@ class ExecuteRequest(BaseModel):
 
 
 class ClarificationResponse(BaseModel):
-    clarification_id: str
     answer: str
 
 
@@ -207,7 +205,6 @@ async def respond_to_clarification(
         try:
             async for event_json in harness.stream_respond_clarification(
                 thread_id=thread_id,
-                clarification_id=req.clarification_id,
                 answer=req.answer,
             ):
                 try:

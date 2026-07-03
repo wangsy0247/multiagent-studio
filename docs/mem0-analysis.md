@@ -207,7 +207,7 @@ memory = Memory.from_config(config)
     "topOfMind": {"summary": "", "updatedAt": ""}
   },
   "history": {
-    "recentMonths": {"summary": "", "updatedAt": ""},
+    "recentWeeks": {"summary": "", "updatedAt": ""},
     "earlierContext": {"summary": "", "updatedAt": ""},
     "longTermBackground": {"summary": "", "updatedAt": ""}
   },

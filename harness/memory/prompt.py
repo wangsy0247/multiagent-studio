@@ -47,7 +47,7 @@ Memory Section Guidelines:
 - topOfMind: Multiple ongoing focus areas and priorities (3-5 sentences, detailed paragraph)
 
 **History** (Temporal context - rich paragraphs):
-- recentMonths: Detailed summary of recent activities (4-6 sentences or 1-2 paragraphs)
+- recentWeeks: Detailed summary of activities in the past few weeks (4-6 sentences or 1-2 paragraphs)
 - earlierContext: Important historical patterns (3-5 sentences or 1 paragraph)
 - longTermBackground: Persistent background and foundational context (2-4 sentences)
 
@@ -65,7 +65,7 @@ Output Format (JSON):
     "topOfMind": {{ "summary": "...", "shouldUpdate": true/false }}
   }},
   "history": {{
-    "recentMonths": {{ "summary": "...", "shouldUpdate": true/false }},
+    "recentWeeks": {{ "summary": "...", "shouldUpdate": true/false }},
     "earlierContext": {{ "summary": "...", "shouldUpdate": true/false }},
     "longTermBackground": {{ "summary": "...", "shouldUpdate": true/false }}
   }},
@@ -150,7 +150,7 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
     history_data = memory_data.get("history", {})
     if history_data:
         history_sections = []
-        recent = history_data.get("recentMonths", {})
+        recent = history_data.get("recentWeeks", {})
         if recent.get("summary"):
             history_sections.append(f"Recent: {recent['summary']}")
         earlier = history_data.get("earlierContext", {})

@@ -36,7 +36,7 @@ When you complete the task, provide:
 - All file operations should use workspace-relative paths
 </working_directory>
 """,
-    tools=["web_search", "arxiv_search", "paper_download"],
+    tools=["web_search", "arxiv_search", "web_fetch"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
     max_turns=60,
@@ -72,7 +72,7 @@ For each task:
 - Output files should be saved to the workspace
 </working_directory>
 """,
-    tools=["python", "bash", "file_read", "file_write"],
+    tools=["bash", "file_read", "file_write", "list_files", "glob_tool", "grep_tool", "str_replace"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
     max_turns=60,
@@ -107,7 +107,7 @@ For each task:
 - Save charts and outputs to the workspace
 </working_directory>
 """,
-    tools=["python", "data_query", "chart_generate"],
+    tools=["bash", "file_read", "file_write", "web_search"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
     max_turns=60,
@@ -141,7 +141,7 @@ For each task:
 - Use descriptive file names reflecting the content
 </working_directory>
 """,
-    tools=["file_write", "template_render"],
+    tools=["file_read", "file_write", "str_replace", "list_files"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
     max_turns=40,
@@ -175,7 +175,7 @@ For each review:
 - Review files are in the workspace or specified paths
 </working_directory>
 """,
-    tools=["file_read", "code_check"],
+    tools=["file_read", "list_files", "glob_tool", "grep_tool"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
     max_turns=30,

@@ -362,7 +362,7 @@ class MemoryUpdater:
 
         # Update history sections
         history_updates = update_data.get("history", {})
-        for section in ["recentMonths", "earlierContext", "longTermBackground"]:
+        for section in ["recentWeeks", "earlierContext", "longTermBackground"]:
             section_data = history_updates.get(section, {})
             if section_data.get("shouldUpdate") and section_data.get("summary"):
                 current_memory["history"][section] = {

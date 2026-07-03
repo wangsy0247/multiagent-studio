@@ -1,30 +1,29 @@
-"""SubAgent — independent agent instance for delegated tasks.
+"""SubAgent — backward-compatible thin wrapper around SubagentExecutor.
 
-Each SubAgent uses ``create_agent()`` internally for its ReAct loop,
-with a subset of middlewares appropriate for isolated task execution.
+Prefer using ``SubagentExecutor`` directly for new code.  This module is kept
+for backward compatibility with code that instantiates ``SubAgent`` and calls
+``execute()`` directly.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 
-from harness.middleware.base import HarnessAgentMiddleware
+from harness.agents.subagent_executor import SubagentExecutor
+from harness.agents.subagent_middleware import build_subagent_middlewares
 from harness.models import HarnessState, SubAgentConfig, SubAgentResult
 
 logger = logging.getLogger(__name__)
 
 
 class SubAgent:
-    """Independent agent with its own system prompt, tools, and model.
+    """Legacy SubAgent — delegates to ``SubagentExecutor`` internally.
 
-    Executes a single delegated task using ``create_agent()`` with an
-    optional middleware list.  Each SubAgent gets its own compiled graph.
+    Deprecated: use ``SubagentExecutor`` for new integrations.  This class
+    exists solely for backward compatibility and will be removed in v2.
     """
 
     def __init__(
@@ -32,26 +31,19 @@ class SubAgent:
         config: SubAgentConfig,
         llm: BaseChatModel,
         tools: list[BaseTool],
-        middlewares: list[HarnessAgentMiddleware] | None = None,
+        middlewares: list[Any] | None = None,
     ):
         self.config = config
-        # Filter out disallowed tools
-        disallowed = set(config.disallowed_tools or [])
-        filtered_tools = [t for t in tools if t.name not in disallowed]
-
-        # Build the sub-agent graph via create_agent
-        self._graph = create_agent(
-            model=llm,
-            tools=filtered_tools,
-            system_prompt=config.system_prompt,
-            middleware=middlewares or [],
-            state_schema=HarnessState,
-        )
-        logger.debug("SubAgent '%s' compiled with %d tools", config.name, len(filtered_tools))
-
-    # ------------------------------------------------------------------
-    # execution
-    # ------------------------------------------------------------------
+        self.llm = llm
+        self.tools = tools
+        # middlewares parameter is ignored — the executor uses its own
+        # stripped-down middleware chain via build_subagent_middlewares()
+        if middlewares:
+            logger.debug(
+                "SubAgent '%s': middlewares parameter is deprecated and ignored. "
+                "SubagentExecutor uses a stripped-down middleware chain automatically.",
+                config.name,
+            )
 
     async def execute(
         self,
@@ -59,66 +51,21 @@ class SubAgent:
         context: str = "",
         parent_state: HarnessState | None = None,
     ) -> SubAgentResult:
-        """Execute the delegated task using create_agent().
+        """Execute via SubagentExecutor in a thread (backward-compatible).
 
-        Parameters
-        ----------
-        instruction : str
-            The task description for this SubAgent.
-        context : str
-            Additional background information.
-        parent_state : HarnessState | None
-            The invoking Lead Agent's state for thread / user id inheritance.
+        Uses ``execute()`` (sync, on isolated loop) wrapped in
+        ``asyncio.to_thread`` to avoid blocking the event loop.
         """
-        messages: list[AnyMessage] = []
+        import asyncio
 
+        full_instruction = instruction
         if context:
-            messages.append(SystemMessage(content=f"[上下文]\n{context}"))
+            full_instruction = f"[上下文]\n{context}\n\n[任务]\n{instruction}"
 
-        messages.append(HumanMessage(content=instruction))
-
-        thread_id = (
-            parent_state.get("thread_id", "")
-            if parent_state
-            else ""
+        executor = SubagentExecutor(
+            config=self.config,
+            llm=self.llm,
+            tools=self.tools,
+            parent_state=parent_state,
         )
-        user_id = (
-            parent_state.get("user_id", "")
-            if parent_state
-            else ""
-        )
-
-        state: HarnessState = HarnessState(
-            messages=messages,
-            thread_id=thread_id,
-            user_id=user_id,
-        )
-
-        try:
-            result = await self._graph.ainvoke(state, RunnableConfig())
-            msgs = result.get("messages", [])
-            from langchain_core.messages import AIMessage
-
-            # ── 修复 #13: 统计实际 AIMessage 数量作为迭代计数 ──
-            iterations = sum(1 for m in msgs if isinstance(m, AIMessage))
-
-            if msgs:
-                last_msg = msgs[-1]
-                if isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
-                    return SubAgentResult(
-                        status="success",
-                        output=str(last_msg.content),
-                        iterations=iterations,
-                    )
-                # If last message is AIMessage with tool_calls, it means
-                # create_agent stopped before completing (e.g. max turns)
-                return SubAgentResult(
-                    status="max_iterations_reached",
-                    output=str(last_msg.content) if hasattr(last_msg, "content") else "",
-                    iterations=self.config.max_turns,
-                )
-
-            return SubAgentResult(status="success", output="", iterations=0)
-        except Exception as exc:
-            logger.exception("SubAgent '%s' execution failed", self.config.name)
-            return SubAgentResult(status="error", output=str(exc), iterations=0)
+        return await asyncio.to_thread(executor.execute, full_instruction)
