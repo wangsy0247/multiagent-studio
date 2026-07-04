@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
+from langgraph.prebuilt import InjectedState
 
 from harness.agents.presets import PRESET_SUBAGENTS, build_subagent_config
 from harness.tools.builtins.memory_tools import create_memory_search_tool
@@ -49,16 +50,44 @@ def create_subagent_tool(manager: Any | None = None) -> BaseTool:
     return create_subagent
 
 
-def _extract_parent_state(config: RunnableConfig | None) -> dict | None:
-    """Extract thread_id / user_id from the runtime config for SubAgent inheritance."""
-    if config is None:
+def _extract_parent_state(
+    config: RunnableConfig | None = None,
+    state: dict | None = None,
+) -> dict | None:
+    """Extract parent context for SubAgent inheritance.
+
+    Merges two sources:
+    1. ``config`` (RunnableConfig auto-injected by LangChain) — provides
+       ``thread_id`` from ``configurable``.
+    2. ``state`` (graph state via InjectedState) — provides ``user_id``,
+       ``thread_data`` path mappings, and ``workspace`` path.
+
+    Returns None when no meaningful inheritance data is available.
+    """
+    result: dict[str, Any] = {}
+
+    # ── from RunnableConfig: thread identity ──
+    if config is not None:
+        cfg = config.get("configurable", {}) or {}
+        thread_id = cfg.get("thread_id", "")
+        if thread_id:
+            result["thread_id"] = thread_id
+
+    # ── from graph state: user_id + path mappings (DeerFlow-aligned) ──
+    if state is not None:
+        # user_id is NOT in config.configurable — extract from state
+        user_id = state.get("user_id")
+        if user_id:
+            result["user_id"] = user_id
+
+        for key in ("thread_data", "workspace"):
+            val = state.get(key)
+            if val is not None:
+                result[key] = val
+
+    if not result:
         return None
-    cfg = config.get("configurable", {}) or {}
-    thread_id = cfg.get("thread_id", "")
-    user_id = cfg.get("user_id", "")
-    if not thread_id and not user_id:
-        return None
-    return {"thread_id": thread_id, "user_id": user_id}
+    return result
 
 
 def task_tool(manager: Any | None = None) -> BaseTool:
@@ -70,6 +99,7 @@ def task_tool(manager: Any | None = None) -> BaseTool:
         instruction: str,
         context: str = "",
         config: RunnableConfig = None,  # auto-injected by LangChain at call time
+        state: Annotated[dict, InjectedState] = None,  # parent graph state (sandbox, thread_data)
     ) -> str:
         """Delegate a task to a SubAgent for execution.
 
@@ -84,7 +114,7 @@ def task_tool(manager: Any | None = None) -> BaseTool:
         if manager is None:
             return "Error: SubAgent manager not initialized"
         try:
-            parent_state = _extract_parent_state(config)
+            parent_state = _extract_parent_state(config, state)
             result = await manager.execute(
                 agent_name, instruction, context,
                 parent_state=parent_state,

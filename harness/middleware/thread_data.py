@@ -81,12 +81,22 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
             workspace/    — working directory
             uploads/      — user uploads
             outputs/      — final deliverables
+
+    Parameters
+    ----------
+    lazy_init : bool
+        When True and ``thread_data`` is already present in state (injected
+        by the SubAgent executor from the parent Lead Agent), skip directory
+        creation and path computation entirely — the SubAgent reuses the
+        parent's sandbox.  This is the DeerFlow-aligned behaviour for
+        SubAgents.
     """
 
     name = "thread_data"
 
-    def __init__(self, config: dict | None = None):
+    def __init__(self, config: dict | None = None, *, lazy_init: bool = False):
         super().__init__(config)
+        self._lazy_init = lazy_init
 
     @override
     async def abefore_agent(
@@ -94,6 +104,14 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
+        # ── DeerFlow-aligned: skip when parent state is already injected ──
+        if self._lazy_init and state.get("thread_data"):
+            logger.debug(
+                "ThreadDataMiddleware lazy_init — reusing parent thread_data "
+                "(thread=%s)", state.get("thread_id", "unknown"),
+            )
+            return None
+
         thread_id = state.get("thread_id") or "unknown"
         user_id = state.get("user_id") or "anonymous"
 

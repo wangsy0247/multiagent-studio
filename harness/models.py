@@ -341,6 +341,7 @@ class HarnessState(TypedDict):
     # Runtime injected fields
     # ------------------------------------------------------------------
     workspace: NotRequired[str]
+    thread_data: NotRequired[dict[str, str]]
     sandbox: NotRequired[Any]
     agent_type: NotRequired[str]
     loop_detected: NotRequired[bool]

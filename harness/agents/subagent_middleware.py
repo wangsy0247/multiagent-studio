@@ -42,7 +42,7 @@ def build_subagent_middlewares(
         Passed to ToolErrorHandlingMiddleware.
     """
     middlewares: list[AgentMiddleware] = [
-        ThreadDataMiddleware(),
+        ThreadDataMiddleware(lazy_init=True),
         SandboxMiddleware(),
         DanglingToolCallMiddleware(),
         LLMErrorHandlingMiddleware(),
