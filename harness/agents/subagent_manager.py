@@ -22,7 +22,7 @@ from harness.agents.subagent_executor import (
     cleanup_background_task,
     get_background_result,
 )
-from harness.models import HarnessState, SubAgentConfig, SubAgentResult
+from harness.models import HarnessState, SubAgentConfig, SubAgentResult, SubagentStatus
 from harness.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,12 @@ class SubagentManager:
             str, tuple[SubAgentConfig, list[BaseTool], BaseChatModel]
         ] = {}
 
+        # ── Last-result cache (for SSE handler retrieval) ──
+        # Keyed by subagent name; consumed by main.py's on_tool_end
+        # to build the subagent_end SSE event without exposing internal
+        # details (ai_messages) to the Lead Agent's tool result.
+        self._last_results: dict[str, SubAgentResult] = {}
+
     # ------------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------------
@@ -126,6 +132,15 @@ class SubagentManager:
         """Remove a SubAgent."""
         self._agents.pop(name, None)
 
+    def pop_last_result(self, name: str) -> SubAgentResult | None:
+        """Retrieve and consume the last execution result for *name*.
+
+        Used by the SSE handler (main.py) to build the ``subagent_end``
+        event with full metadata without exposing internal details
+        (ai_messages) to the Lead Agent's tool result text.
+        """
+        return self._last_results.pop(name, None)
+
     # ------------------------------------------------------------------
     # execution — synchronous (waits for completion)
     # ------------------------------------------------------------------
@@ -143,12 +158,17 @@ class SubagentManager:
         the persistent isolated event loop, decoupled from the parent
         HTTP request lifecycle.
 
+        P1 improvement (DeerFlow-aligned): catches ``asyncio.CancelledError``
+        from the parent agent, signals cooperative cancellation to the
+        subagent thread via ``executor.request_cancel()``, and performs a
+        brief shielded wait before re-raising.
+
         Returns a completed ``SubAgentResult``.
         """
         entry = self._agents.get(name)
         if entry is None:
             return SubAgentResult(
-                status="error",
+                status=SubagentStatus.ERROR,
                 output=f"SubAgent '{name}' 不存在",
             )
 
@@ -166,8 +186,33 @@ class SubagentManager:
                 tools=tools,
                 parent_state=parent_state,
             )
-            # execute() is blocking on the isolated loop — run in thread
-            return await asyncio.to_thread(executor.execute, full_instruction)
+            try:
+                # execute() is blocking on the isolated loop — run in thread
+                result = await asyncio.to_thread(executor.execute, full_instruction)
+                # ── Cache the full result for the SSE handler ──
+                # main.py's on_tool_end retrieves this to build the
+                # subagent_end event with full metadata (ai_messages, etc.).
+                self._last_results[name] = result
+                return result
+            except asyncio.CancelledError:
+                # Parent agent is being cancelled — signal the subagent thread
+                # to stop cooperatively at the next astream boundary.
+                logger.info(
+                    "SubAgent '%s' cancelled by parent — signalling stop",
+                    name,
+                )
+                executor.request_cancel()
+
+                # Brief shielded wait so the subagent thread has a chance to
+                # reach a terminal state (and capture token usage).  The thread
+                # continues running after CancelledError propagates; this wait
+                # just gives it a head-start on noticing the cancel_event.
+                try:
+                    await asyncio.shield(asyncio.sleep(1))
+                except asyncio.CancelledError:
+                    pass
+
+                raise
 
     # ------------------------------------------------------------------
     # execution — background (returns task_id immediately)

@@ -89,7 +89,14 @@ def task_tool(manager: Any | None = None) -> BaseTool:
                 agent_name, instruction, context,
                 parent_state=parent_state,
             )
-            return json.dumps(result.model_dump(), ensure_ascii=False)
+            # ── 只返回 output 文本, 不暴露内部细节 ──
+            # 内部消息 (ai_messages / token_usage_records) 通过 SubagentManager.
+            # pop_last_result() → subagent_end SSE 事件 → 前端右侧详情面板获取。
+            # Lead Agent 不接触这些细节, 避免主聊天流污染。
+            output = result.output or ""
+            if result.error:
+                output = f"[{result.status}] {result.error}\n{output}"
+            return output
         except Exception as exc:
             return f"Error: {exc}"
 

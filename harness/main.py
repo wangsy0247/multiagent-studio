@@ -689,6 +689,14 @@ class HarnessService(_BaseService):
                 evt_name = event.get("name", "")
                 evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
 
+                # ── 过滤子代理内部事件 ──
+                # LangChain 回调继承导致子代理的工具调用/思考被外层
+                # astream_events 捕获。通过 tags 中的 "subagent:" 前缀
+                # 识别并跳过，避免在主会话中重复显示。
+                _event_tags: list[str] = event.get("tags", []) or []
+                if any(t.startswith("subagent:") for t in _event_tags):
+                    continue
+
                 # ── Token-level streaming ──────────────────────────
                 if kind == "on_chat_model_stream":
                     chunk: Any = evt_data.get("chunk")
@@ -756,12 +764,19 @@ class HarnessService(_BaseService):
                     if tool_name == "task" and isinstance(tool_input, dict):
                         sub_name = tool_input.get("agent_name", "unknown")
                         active_subagents[run_id] = str(sub_name)
+                        # ── 查找 SubAgent 配置获取 max_turns ──
+                        _max_turns = 50
+                        if self.subagent_manager is not None:
+                            _cfg = self.subagent_manager.get(str(sub_name))
+                            if _cfg is not None:
+                                _max_turns = getattr(_cfg, "max_turns", 50)
                         yield {
                             "type": "subagent_start",
                             "thread_id": thread_id,
                             "subagent_name": str(sub_name),
                             "instruction": str(tool_input.get("instruction", "")),
                             "context": str(tool_input.get("context", "")),
+                            "max_turns": _max_turns,
                         }
                     elif tool_name not in ("task",):
                         yield {
@@ -780,25 +795,24 @@ class HarnessService(_BaseService):
                     if tool_name == "task":
                         # SubAgent completion
                         sub_name = active_subagents.pop(run_id, "unknown")
-                        # Prefer ToolMessage content when available
-                        output_str = ""
+                        # ── 从 SubagentManager 获取完整结果 (含 ai_messages) ──
+                        # task 工具返回值现在只含 output 文本，内部细节通过
+                        # Manager.pop_last_result() 获取，避免数据泄露到 Lead Agent。
                         subagent_result: dict[str, Any] | None = None
+                        output_str = ""
                         if hasattr(tool_output, "content"):
                             output_str = str(tool_output.content)
                         elif isinstance(tool_output, str):
                             output_str = tool_output
-                        else:
-                            output_str = str(tool_output)
-                        # Try to parse the JSON result from the task tool
-                        try:
-                            subagent_result = json.loads(output_str)
-                        except (json.JSONDecodeError, TypeError):
-                            subagent_result = None
-                        # Build a clean summary for the card content — use the
-                        # subagent's output text, not the raw JSON envelope.
-                        summary = ""
+                        if self.subagent_manager is not None:
+                            full_result = self.subagent_manager.pop_last_result(sub_name)
+                            if full_result is not None:
+                                subagent_result = full_result.model_dump()
+                        # Build a clean summary for the card content
+                        summary = output_str[:2000] if output_str else ""
                         if subagent_result:
-                            summary = subagent_result.get("output", "") or ""
+                            if not summary:
+                                summary = subagent_result.get("output", "") or ""
                             if subagent_result.get("error"):
                                 summary = f"[{subagent_result['status']}] {subagent_result['error']}"
                         yield {
@@ -809,9 +823,9 @@ class HarnessService(_BaseService):
                             "status": subagent_result.get("status", "success") if subagent_result else "done",
                             "subagent_result": subagent_result,
                             "duration_ms": (
-                                                                int((datetime.now(timezone.utc) - datetime.fromisoformat(subagent_result["started_at"])).total_seconds() * 1000)
-                                                                if subagent_result and subagent_result.get("started_at")
-                                                                else None
+                                int((datetime.now(timezone.utc) - datetime.fromisoformat(subagent_result["started_at"])).total_seconds() * 1000)
+                                if subagent_result and subagent_result.get("started_at")
+                                else None
                             ),
                         }
                     elif tool_name not in ("task",):
@@ -984,6 +998,11 @@ class HarnessService(_BaseService):
                 kind = event["event"]
                 evt_name = event.get("name", "")
                 evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
+
+                # ── 过滤子代理内部事件 ──
+                _tags: list[str] = event.get("tags", []) or []
+                if any(t.startswith("subagent:") for t in _tags):
+                    continue
 
                 if kind == "on_chat_model_stream":
                     chunk: Any = evt_data.get("chunk")

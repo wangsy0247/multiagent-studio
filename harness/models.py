@@ -1,13 +1,15 @@
 """Pydantic models and LangGraph state definitions."""
 from __future__ import annotations
 
+import threading
 import uuid
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class TodoItem(BaseModel):
@@ -89,6 +91,32 @@ class ExecutionGraph(BaseModel):
     entry_point: str
 
 
+class SubagentStatus(str, Enum):
+    """Status of a subagent execution — DeerFlow-aligned.
+
+    Terminal states: SUCCESS, ERROR, MAX_ITERATIONS_REACHED, CANCELLED, TIMED_OUT.
+    Non-terminal states: RUNNING (used internally during execution).
+    """
+
+    RUNNING = "running"
+    SUCCESS = "success"
+    ERROR = "error"
+    MAX_ITERATIONS_REACHED = "max_iterations_reached"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+
+    @property
+    def is_terminal(self) -> bool:
+        """Return True for terminal (completed) statuses."""
+        return self in {
+            type(self).SUCCESS,
+            type(self).ERROR,
+            type(self).MAX_ITERATIONS_REACHED,
+            type(self).CANCELLED,
+            type(self).TIMED_OUT,
+        }
+
+
 class SubAgentResult(BaseModel):
     """SubAgent execution result — DeerFlow-aligned.
 
@@ -104,13 +132,20 @@ class SubAgentResult(BaseModel):
         token_usage_records: Per-LLM-call token usage records.
         started_at: ISO timestamp when execution started.
         completed_at: ISO timestamp when execution completed.
+
+    Private (non-serialized) runtime fields:
+        cancel_event: Cooperative cancellation signal set by the caller.
+        _state_lock: Guards terminal-status writes against timeouts racing
+            with the execution worker.
+        _usage_reported: Guard against double-reporting token usage to the
+            parent RunJournal (DeerFlow-aligned).
     """
+
+    model_config = {"arbitrary_types_allowed": True}
 
     task_id: str = ""
     trace_id: str = ""
-    status: Literal[
-        "success", "error", "max_iterations_reached", "cancelled", "timed_out"
-    ] = "success"
+    status: SubagentStatus = SubagentStatus.RUNNING
     output: str = ""
     error: str | None = None
     iterations: int = 0
@@ -118,6 +153,76 @@ class SubAgentResult(BaseModel):
     token_usage_records: list[dict[str, Any]] = []
     started_at: str | None = None
     completed_at: str | None = None
+
+    # ── Private runtime fields (excluded from serialization) ──
+    _cancel_event: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _state_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    _usage_reported: bool = PrivateAttr(default=False)
+
+    # ------------------------------------------------------------------
+    # Single-writer terminal-state protection (DeerFlow-aligned)
+    # ------------------------------------------------------------------
+
+    def try_set_terminal(
+        self,
+        status: SubagentStatus,
+        *,
+        output: str | None = None,
+        error: str | None = None,
+        completed_at: str | None = None,
+        ai_messages: list[dict[str, Any]] | None = None,
+        token_usage_records: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Set a terminal status exactly once — first writer wins.
+
+        Background timeout / cancellation and the execution worker can race
+        on the same result holder.  Only the first terminal transition is
+        honoured; subsequent writes are silently rejected.
+
+        Returns:
+            True if the transition was applied, False if a terminal status
+            was already set.
+        """
+        if not status.is_terminal:
+            raise ValueError(f"Status {status} is not terminal")
+
+        with self._state_lock:
+            if self.status.is_terminal:
+                return False
+
+            if output is not None:
+                self.output = output
+            if error is not None:
+                self.error = error
+            if ai_messages is not None:
+                self.ai_messages = ai_messages
+            if token_usage_records is not None:
+                self.token_usage_records = token_usage_records
+            self.completed_at = completed_at or datetime.now().isoformat()
+            self.status = status
+            return True
+
+    # ------------------------------------------------------------------
+    # Public accessors for private runtime fields
+    # ------------------------------------------------------------------
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        """Cooperative cancellation signal (public read-only access)."""
+        return self._cancel_event
+
+    @property
+    def usage_reported(self) -> bool:
+        """Return True if token usage has already been reported upstream."""
+        return self._usage_reported
+
+    def mark_usage_reported(self) -> None:
+        """Mark that token usage has been reported to the parent.
+
+        Once set, subsequent calls are idempotent — the caller should
+        check ``usage_reported`` before reporting.
+        """
+        self._usage_reported = True
 
 
 # ---------------------------------------------------------------------------
