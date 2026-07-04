@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -208,6 +210,7 @@ class HarnessService(_BaseService):
             tool_registry=self.tool_registry,
             subagent_manager=self.subagent_manager,
             max_concurrent_subagents=cfg.max_concurrent_subagents,
+            config_manager=self.config_manager,
         )
 
         # 10. Checkpointer — load config and create provider
@@ -588,11 +591,100 @@ class HarnessService(_BaseService):
         _collected_token_usage: dict[str, Any] = {}
         _title_emitted = False  # 防止重复发送 title_update
 
+        # ── SubAgent 实时流消费协程 ──
+        _subagent_event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def _drain_subagent_streams():
+            """消费所有活跃 SubAgent 的消息队列, 转为 SSE 事件."""
+            from harness.agents.subagent_executor import (
+                get_subagent_stream,
+                list_active_subagent_names,
+                remove_subagent_stream,
+            )
+            while True:
+                names = list_active_subagent_names()
+                if not names:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                # 轮询所有活跃队列 — 谁有数据先处理谁
+                for name in names:
+                    try:
+                        stream = get_subagent_stream(name)
+                        item = await asyncio.wait_for(stream.get(), timeout=0.05)
+                    except asyncio.TimeoutError:
+                        continue
+
+                    if item is None:
+                        continue
+
+                    msg = item.get("msg", {})
+                    msg_type = msg.get("type", "")
+
+                    # ── sentinel: subagent finished, clean up stream ──
+                    if msg.get("__sentinel__"):
+                        remove_subagent_stream(item["subagent_name"])
+                        continue
+                    iteration = item.get("iteration", 0)
+
+                    # 根据消息类型构建 SSE 事件
+                    if msg_type == "ai":
+                        tool_calls = msg.get("tool_calls", [])
+                        if tool_calls:
+                            for tc in tool_calls:
+                                await _subagent_event_queue.put({
+                                    "type": "subagent_tool_call",
+                                    "thread_id": thread_id,
+                                    "subagent_name": item["subagent_name"],
+                                    "subagent_task_id": item.get("trace_id", ""),
+                                    "tool_name": tc.get("name", "unknown"),
+                                    "tool_args": tc.get("args", {}),
+                                })
+                        content = msg.get("content", "")
+                        if content and isinstance(content, str) and content.strip():
+                            await _subagent_event_queue.put({
+                                "type": "subagent_thinking",
+                                "thread_id": thread_id,
+                                "subagent_name": item["subagent_name"],
+                                "subagent_task_id": item.get("trace_id", ""),
+                                "content": content[:2000],
+                            })
+                    elif msg_type == "tool":
+                        await _subagent_event_queue.put({
+                            "type": "subagent_tool_result",
+                            "thread_id": thread_id,
+                            "subagent_name": item["subagent_name"],
+                            "subagent_task_id": item.get("trace_id", ""),
+                            "tool_name": msg.get("name", "unknown"),
+                            "tool_result": str(msg.get("content", ""))[:2000],
+                        })
+
+                    # 推送进度
+                    await _subagent_event_queue.put({
+                        "type": "subagent_progress",
+                        "thread_id": thread_id,
+                        "subagent_name": item["subagent_name"],
+                        "iterations": iteration,
+                    })
+
+        # 启动 drainer 任务
+        drainer_task = asyncio.create_task(_drain_subagent_streams())
+
         try:
             async for event in runner.astream_events(current_state, build_config, version="v2"):
                 # ── 检查取消标志（支持 stop() 中断执行） ──
                 if self._active_runs.get(thread_id, {}).get("cancelled"):
                     raise asyncio.CancelledError("Execution cancelled by user")
+
+                # ── 在每次迭代中排空 subagent 事件队列 ──
+                while not _subagent_event_queue.empty():
+                    try:
+                        sub_event = _subagent_event_queue.get_nowait()
+                        if sub_event:
+                            yield sub_event
+                    except asyncio.QueueEmpty:
+                        break
+
                 kind = event["event"]
                 evt_name = event.get("name", "")
                 evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
@@ -662,13 +754,14 @@ class HarnessService(_BaseService):
 
                     # Detect SubAgent dispatch (the ``task`` tool)
                     if tool_name == "task" and isinstance(tool_input, dict):
-                        sub_name = tool_input.get("subagent_type", tool_input.get("name", "unknown"))
+                        sub_name = tool_input.get("agent_name", "unknown")
                         active_subagents[run_id] = str(sub_name)
                         yield {
                             "type": "subagent_start",
                             "thread_id": thread_id,
                             "subagent_name": str(sub_name),
-                            "instruction": str(tool_input.get("description", "")),
+                            "instruction": str(tool_input.get("instruction", "")),
+                            "context": str(tool_input.get("context", "")),
                         }
                     elif tool_name not in ("task",):
                         yield {
@@ -689,18 +782,37 @@ class HarnessService(_BaseService):
                         sub_name = active_subagents.pop(run_id, "unknown")
                         # Prefer ToolMessage content when available
                         output_str = ""
+                        subagent_result: dict[str, Any] | None = None
                         if hasattr(tool_output, "content"):
                             output_str = str(tool_output.content)
                         elif isinstance(tool_output, str):
                             output_str = tool_output
                         else:
                             output_str = str(tool_output)
+                        # Try to parse the JSON result from the task tool
+                        try:
+                            subagent_result = json.loads(output_str)
+                        except (json.JSONDecodeError, TypeError):
+                            subagent_result = None
+                        # Build a clean summary for the card content — use the
+                        # subagent's output text, not the raw JSON envelope.
+                        summary = ""
+                        if subagent_result:
+                            summary = subagent_result.get("output", "") or ""
+                            if subagent_result.get("error"):
+                                summary = f"[{subagent_result['status']}] {subagent_result['error']}"
                         yield {
                             "type": "subagent_end",
                             "thread_id": thread_id,
                             "subagent_name": sub_name,
-                            "content": output_str[:2000],  # cap for UI
-                            "status": "done",
+                            "content": summary[:2000],
+                            "status": subagent_result.get("status", "success") if subagent_result else "done",
+                            "subagent_result": subagent_result,
+                            "duration_ms": (
+                                                                int((datetime.now(timezone.utc) - datetime.fromisoformat(subagent_result["started_at"])).total_seconds() * 1000)
+                                                                if subagent_result and subagent_result.get("started_at")
+                                                                else None
+                            ),
                         }
                     elif tool_name not in ("task",):
                         output_str = ""
@@ -791,6 +903,21 @@ class HarnessService(_BaseService):
             if self.observability:
                 self.observability.finalize_trace(trace_id, "error")
         finally:
+            # ── 停止 subagent 流 drainer ──
+            drainer_task.cancel()
+            try:
+                await drainer_task
+            except asyncio.CancelledError:
+                pass
+            # 排空 subagent event queue 中的残留事件
+            while not _subagent_event_queue.empty():
+                try:
+                    sub_event = _subagent_event_queue.get_nowait()
+                    if sub_event:
+                        yield sub_event
+                except asyncio.QueueEmpty:
+                    break
+
             if journal:
                 await journal.flush()
             # ── 清理中间件线程状态（修复 #9 字典泄漏） ──
@@ -890,11 +1017,12 @@ class HarnessService(_BaseService):
                     tool_name = evt_name
                     tool_input: Any = evt_data.get("input", {})
                     if tool_name == "task":
-                        sub_name = tool_input.get("subagent_type", tool_input.get("name", "unknown")) if isinstance(tool_input, dict) else "unknown"
+                        sub_name = tool_input.get("agent_name", "unknown") if isinstance(tool_input, dict) else "unknown"
                         yield {
                             "type": "subagent_start", "thread_id": thread_id,
                             "subagent_name": str(sub_name),
-                            "instruction": str(tool_input.get("description", "")) if isinstance(tool_input, dict) else "",
+                            "instruction": str(tool_input.get("instruction", "")) if isinstance(tool_input, dict) else "",
+                            "context": str(tool_input.get("context", "")) if isinstance(tool_input, dict) else "",
                         }
                     elif tool_name not in ("task",):
                         yield {

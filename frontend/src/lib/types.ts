@@ -14,6 +14,31 @@ export interface SubAgentConfig {
   disallowed_tools: string[];
   temperature: number;
   max_turns: number;
+  /** Wall-clock timeout in seconds (default: 900 = 15 min). Added in v2 refactor. */
+  timeout_seconds: number;
+}
+
+/** SubAgent execution result — aligned with harness/models.py SubAgentResult. */
+export interface SubAgentResultData {
+  task_id: string;
+  trace_id: string;
+  status: "success" | "error" | "max_iterations_reached" | "cancelled" | "timed_out";
+  output: string;
+  error?: string | null;
+  iterations: number;
+  ai_messages: Record<string, unknown>[];
+  token_usage_records: TokenUsageRecord[];
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+/** Per-LLM-call token usage record from SubagentTokenCollector. */
+export interface TokenUsageRecord {
+  source_run_id: string;
+  caller: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
 }
 
 export interface AgentNode {
@@ -36,7 +61,11 @@ export type SSEEventType =
   | "tool_call"
   | "tool_result"
   | "subagent_start"
+  | "subagent_progress"
   | "subagent_end"
+  | "subagent_thinking"
+  | "subagent_tool_call"
+  | "subagent_tool_result"
   | "clarification"
   | "todo_update"
   | "title_update"
@@ -63,6 +92,12 @@ export interface SSEEvent {
   trace_id?: string;
   status?: string;
   duration_ms?: number;
+  /** SubAgentResult fields (populated on subagent_end events). */
+  subagent_result?: SubAgentResultData;
+  /** Progress fields (populated on subagent_progress events). */
+  iterations?: number;
+  max_turns?: number;
+  current_step?: string;
 }
 
 export interface TokenUsage {

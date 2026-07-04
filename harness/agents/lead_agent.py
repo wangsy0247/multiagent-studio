@@ -86,9 +86,7 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 - **Large codebases**: Need to analyze different parts simultaneously
 - **Comprehensive investigations**: Questions requiring thorough coverage from multiple angles
 
-❌ **DO NOT use subagents (execute directly) when:**
-- **Task cannot be decomposed**: If you can't break it into 2+ meaningful parallel sub-tasks, execute directly
-- **Ultra-simple actions**: Read one file, quick edits, single commands
+❌ **DO NOT use subagents when:**
 - **Need immediate clarification**: Must ask user before proceeding
 - **Meta conversation**: Questions about conversation history
 - **Sequential dependencies**: Each step depends on previous results (do steps yourself sequentially)
@@ -142,20 +140,10 @@ task(agent_name="oracle_analyst", instruction="Analyze Oracle Cloud...")
 # Turn 3: Synthesize ALL results from both batches
 ```
 
-**Counter-Example — Direct Execution (NO subagents):**
-
-```python
-# User asks: "Read the README"
-# Thinking: Single straightforward file read
-# → Execute directly
-
-file_read("/mnt/user-data/workspace/README.md")  # Direct execution, not task()
-```
-
 **CRITICAL**:
 - **Max {n} `task` calls per turn** — the system enforces this, excess calls are discarded
-- Only use `task` when you can launch 2+ subagents in parallel
-- Single task = No value from subagents = Execute directly
+- All concrete work (search, code execution, file I/O) must be delegated to subagents
+- You do NOT have direct access to search, file, or code tools — use subagents for everything
 - For >{n} sub-tasks, use sequential batches of {n} across multiple turns
 </subagent_system>"""
 
@@ -493,11 +481,13 @@ class LeadAgent:
         subagent_manager: Any | None = None,
         agent_name: str = "Multi-Agent Orchestrator",
         max_concurrent_subagents: int = 3,
+        config_manager: ConfigManager | None = None,
     ):
         self.tool_registry = tool_registry
         self.subagent_manager = subagent_manager
         self.agent_name = agent_name
         self.max_concurrent = max_concurrent_subagents
+        self.config_manager = config_manager
 
     # ------------------------------------------------------------------
     # system prompt
@@ -521,13 +511,47 @@ class LeadAgent:
     def build_tools(self) -> list[BaseTool]:
         """Return all tools for the Lead Agent.
 
-        Called by ``HarnessService`` to pass to ``create_agent()``.
+        Lead Agent tools are configured in ``config.yaml`` under
+        ``lead_agent.tools``.  Each entry can be either an individual
+        tool name or a tool group name.  Only the orchestration tools
+        (task, create_subagent, ask_clarification) are always present.
+
+        Example config::
+
+            lead_agent:
+              tools:
+                - web_search       # single tool
+                - search           # group → all tools in "search" group
+                - files            # group → all tools in "files" group
         """
         tools: list[BaseTool] = build_lead_tools(self.subagent_manager)
-        try:
-            tools.extend(self.tool_registry.get_core_tools())
-        except Exception:
-            pass
+        seen: set[str] = {t.name for t in tools}
+
+        if self.config_manager:
+            lead_cfg: dict = self.config_manager.get("lead_agent") or {}
+            entries: list[str] = lead_cfg.get("tools", [])
+            if isinstance(entries, list):
+                for entry in entries:
+                    if self.tool_registry.has_tool(entry):
+                        # ── single tool name ──
+                        t = self.tool_registry.get_tool(entry)
+                        if t.name not in seen:
+                            tools.append(t)
+                            seen.add(t.name)
+                    else:
+                        # ── might be a group name ──
+                        group_tools = self.tool_registry.get_tools_by_category(entry)
+                        if group_tools:
+                            for t in group_tools:
+                                if t.name not in seen:
+                                    tools.append(t)
+                                    seen.add(t.name)
+                        else:
+                            logger.warning(
+                                "Lead Agent tool/group '%s' not found in registry",
+                                entry,
+                            )
+
         return tools
 
 

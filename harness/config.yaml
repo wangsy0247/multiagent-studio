@@ -19,8 +19,15 @@ tool_groups:
   #   description: 代码执行工具组
   - name: files
     description: 文件操作工具组
-  # - name: data
-  #   description: 数据分析工具组
+  - name: files_readonly   
+    description: 文件只读工具组
+
+# --- Lead Agent ---
+lead_agent:
+  tools:
+    - search
+    - files
+    - bash
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
@@ -39,19 +46,20 @@ tools:
   #   group: search
   #   use: harness.tools.search:web_fetch
 
-  # Alternative: SerpAPI-backed web_fetch (requires SERPAPI_API_KEY).
-  # Sign up at https://serpapi.com to get an API key.
-  # To use, comment out the default web_fetch above and uncomment below:
+  # - name: web_fetch
+  #   group: search
+  #   use: harness.tools.serpapi_fetch:web_fetch
+
   - name: web_fetch
     group: search
-    use: harness.tools.serpapi_fetch:web_fetch
+    use: harness.tools.fetchurl:web_fetch
 
   - name: bash
     group: code
     use: harness.tools.sandbox_tools:bash
 
   - name: file_read
-    group: files
+    group: files_readonly
     use: harness.tools.sandbox_tools:file_read
 
   - name: file_write
@@ -59,15 +67,15 @@ tools:
     use: harness.tools.sandbox_tools:file_write
 
   - name: list_files
-    group: files
+    group: files_readonly
     use: harness.tools.sandbox_tools:list_files
 
   - name: glob_tool
-    group: files
+    group: files_readonly
     use: harness.tools.sandbox_tools:glob_tool
 
   - name: grep_tool
-    group: files
+    group: files_readonly
     use: harness.tools.sandbox_tools:grep_tool
 
   - name: str_replace

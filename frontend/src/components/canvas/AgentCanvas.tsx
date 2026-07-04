@@ -62,6 +62,7 @@ export default function AgentCanvas({ threadId, initialGraph }: AgentCanvasProps
     (event: React.DragEvent) => {
       event.preventDefault();
       const type = event.dataTransfer.getData("application/reactflow-type") as "lead" | "subagent";
+      const presetKey = event.dataTransfer.getData("application/reactflow-preset") || "";
       if (!type || !reactFlowInstance) return;
 
       const bounds = reactFlowWrapper.current?.getBoundingClientRect();
@@ -69,7 +70,7 @@ export default function AgentCanvas({ threadId, initialGraph }: AgentCanvasProps
         x: event.clientX - (bounds?.left || 0),
         y: event.clientY - (bounds?.top || 0),
       });
-      addNode(type, position);
+      addNode(type, position, presetKey || undefined);
     },
     [reactFlowInstance, addNode]
   );

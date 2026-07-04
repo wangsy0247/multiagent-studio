@@ -10,7 +10,10 @@ Key design decisions:
 - Cooperative cancellation via ``threading.Event`` checked at each ``astream``
   iteration boundary — never uses ``Future.cancel()``.
 - ``SubagentTokenCollector`` callback replaces heavyweight TokenUsageMiddleware.
-- ``astream(stream_mode="values")`` enables real-time AIMessage collection.
+- ``astream(stream_mode="values")`` with incremental message detection collects
+  ALL message types (AIMessage + ToolMessage), not just the last AIMessage.
+- ``asyncio.Queue`` + ``run_coroutine_threadsafe`` bridges subagent messages
+  from the isolated daemon thread to the main event loop for real-time SSE.
 """
 from __future__ import annotations
 
@@ -49,6 +52,50 @@ _isolated_loop_lock = threading.Lock()
 _scheduler_pool = ThreadPoolExecutor(
     max_workers=3, thread_name_prefix="subagent-scheduler-"
 )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Real-time subagent message streams (thread-safe bridge to main event loop)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Per-subagent asyncio.Queue consumed by the SSE handler on the main loop.
+# Keyed by subagent name (e.g. "researcher", "coder").
+# Writes happen via run_coroutine_threadsafe() from the isolated daemon thread.
+_subagent_streams: dict[str, "asyncio.Queue[dict[str, Any]]"] = {}
+_subagent_streams_lock = threading.Lock()
+
+
+def get_subagent_stream(name: str) -> "asyncio.Queue[dict[str, Any]]":
+    """Get or create the real-time message queue for a subagent.
+
+    Called from the main event loop to obtain a consumer handle,
+    and from the isolated daemon thread (via run_coroutine_threadsafe)
+    to push messages.
+    """
+    with _subagent_streams_lock:
+        if name not in _subagent_streams:
+            _subagent_streams[name] = asyncio.Queue()
+        return _subagent_streams[name]
+
+
+def remove_subagent_stream(name: str) -> None:
+    """Remove a subagent's message queue (called after execution completes)."""
+    with _subagent_streams_lock:
+        _subagent_streams.pop(name, None)
+
+
+def list_active_subagent_names() -> list[str]:
+    """Return names of subagents with active message streams."""
+    with _subagent_streams_lock:
+        return list(_subagent_streams.keys())
+
+
+def _msg_to_dict(msg: Any) -> dict[str, Any]:
+    """Convert a LangChain message to a plain dict, handling edge cases."""
+    if isinstance(msg, dict):
+        return msg
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump()
+    return {"content": str(msg), "type": getattr(msg, "type", "unknown")}
 
 
 def _run_isolated_loop(
@@ -217,13 +264,23 @@ class SubagentExecutor:
         # Extract thread_id from parent state
         self.thread_id = self.parent_state.get("thread_id", "")
 
+        # ── capture main event loop for cross-thread message delivery ──
+        try:
+            self._main_loop: asyncio.AbstractEventLoop | None = (
+                asyncio.get_running_loop()
+            )
+        except RuntimeError:
+            # No running loop (e.g. tests, scripts) → skip real-time streaming
+            self._main_loop = None
+
         logger.info(
-            "[trace=%s] SubagentExecutor initialized: name=%s tools=%d max_turns=%d timeout=%ds",
+            "[trace=%s] SubagentExecutor initialized: name=%s tools=%d max_turns=%d timeout=%ds stream=%s",
             self.trace_id,
             config.name,
             len(self._base_tools),
             config.max_turns,
             config.timeout_seconds,
+            "enabled" if self._main_loop else "disabled",
         )
 
     # ------------------------------------------------------------------
@@ -285,6 +342,37 @@ class SubagentExecutor:
         return state
 
     # ------------------------------------------------------------------
+    # real-time stream push (cross-thread safe)
+    # ------------------------------------------------------------------
+
+    def _push_to_stream(self, msg_dict: dict[str, Any], iteration: int) -> None:
+        """Push a subagent message to the main event loop's queue for SSE.
+
+        Safe to call from any thread.  When ``_main_loop`` is None
+        (no running loop at construction time), this is a no-op.
+        """
+        if self._main_loop is None or self._main_loop.is_closed():
+            return
+        try:
+            stream = get_subagent_stream(self.config.name)
+            asyncio.run_coroutine_threadsafe(
+                stream.put({
+                    "subagent_name": self.config.name,
+                    "trace_id": self.trace_id,
+                    "iteration": iteration,
+                    "msg": msg_dict,
+                }),
+                self._main_loop,
+            )
+        except Exception:
+            # Best-effort: never let a stream push failure crash the subagent
+            logger.debug(
+                "[trace=%s] Failed to push subagent message to stream",
+                self.trace_id,
+                exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
     # async execution core
     # ------------------------------------------------------------------
 
@@ -342,7 +430,9 @@ class SubagentExecutor:
                 return result_holder
 
             final_state = None
-            ai_messages: list[dict[str, Any]] = []
+            all_messages: list[dict[str, Any]] = []
+            last_msg_count = 0
+            iteration = 0
 
             async for chunk in agent.astream(
                 state,
@@ -362,36 +452,43 @@ class SubagentExecutor:
                     return result_holder
 
                 final_state = chunk
+                iteration += 1
 
-                # Collect AIMessages for upstream consumers
-                messages = chunk.get("messages", [])
-                if messages and isinstance(messages[-1], AIMessage):
-                    msg_dict = messages[-1].model_dump()
-                    msg_id = msg_dict.get("id")
-                    if msg_id:
-                        is_dup = any(
-                            m.get("id") == msg_id for m in ai_messages
-                        )
-                    else:
-                        is_dup = msg_dict in ai_messages
-                    if not is_dup:
-                        ai_messages.append(msg_dict)
+                # ── incremental message detection ──
+                # stream_mode="values" returns full state snapshots.
+                # New messages = current snapshot messages - previous snapshot messages.
+                current_messages = chunk.get("messages", [])
+                new_msgs = current_messages[last_msg_count:]
+
+                for msg in new_msgs:
+                    msg_dict = _msg_to_dict(msg)
+                    all_messages.append(msg_dict)
+                    # Push to real-time stream for SSE broadcasting
+                    self._push_to_stream(msg_dict, iteration)
+
+                last_msg_count = len(current_messages)
 
             logger.info(
-                "[trace=%s] SubAgent '%s' execution completed",
+                "[trace=%s] SubAgent '%s' execution completed — %d messages collected",
                 self.trace_id,
                 self.config.name,
+                len(all_messages),
             )
+
+            # ── push sentinel to signal completion and trigger cleanup ──
+            self._push_to_stream({"__sentinel__": True}, iteration)
 
             # ── extract final result ──
             final_result = self._extract_final_message(final_state)
             token_records = collector.snapshot_records()
-            iterations = len(ai_messages)
+            iterations = sum(
+                1 for m in all_messages if m.get("type") == "ai"
+            )
 
             result_holder.status = "success"
             result_holder.output = final_result
             result_holder.iterations = iterations
-            result_holder.ai_messages = ai_messages
+            result_holder.ai_messages = all_messages  # 全部消息类型
             result_holder.token_usage_records = token_records
             result_holder.completed_at = datetime.now(timezone.utc).isoformat()
 

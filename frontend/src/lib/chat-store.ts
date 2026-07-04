@@ -1,7 +1,9 @@
 /**
  * 聊天状态管理 — 消息、SSE 流、TODO、Token
+ *
+ * v2: 使用 streaming ID 追踪替代按 msgType 匹配。
+ * 当 thinking / message 交替到达时，各自追加到同一个卡片，不再碎片化。
  */
-
 import { create } from "zustand";
 import { ChatMessage, SSEEvent, TodoItem, TokenUsage, ClarificationRequest } from "./types";
 import { generateId } from "./utils";
@@ -22,6 +24,23 @@ interface ChatStore {
   threadTitles: Record<string, string>;
   activeThreadId: string | null;
 
+  // ── Streaming buffer IDs (v2) ──
+  /** 当前流式 AI 回复的消息 ID（所有 message chunk 都追加到这里） */
+  _streamingMessageId: string | null;
+  /** 当前流式 thinking 卡片的消息 ID（所有 thinking chunk 都追加到这里） */
+  _streamingThinkingId: string | null;
+
+  // ── SubAgent 详情面板 ──
+  /** 当前选中的 SubAgent 消息 ID（右侧详情面板会展示其完整会话）。 */
+  selectedSubagentId: string | null;
+  selectSubagent: (id: string | null) => void;
+
+  // ── SubAgent 子会话存储 (v3) ──
+  /** 每个 SubAgent 的独立会话: subagent_name → 消息列表 */
+  subConversations: Record<string, ChatMessage[]>;
+  /** 追加消息到指定 SubAgent 的子会话 */
+  appendToSubConversation: (name: string, msg: Omit<ChatMessage, "id" | "createdAt">) => void;
+
   addMessage: (msg: Omit<ChatMessage, "id" | "createdAt">) => void;
   handleSSEEvent: (event: SSEEvent) => void;
   setStreaming: (v: boolean) => void;
@@ -33,6 +52,30 @@ interface ChatStore {
   setStopClarificationFn: (fn: (() => void) | null) => void;
   setActiveThread: (threadId: string) => void;
   setThreadMessages: (threadId: string, msgs: ChatMessage[]) => void;
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+/** Append content to a message by ID in the messages array. */
+function _appendToMessage(
+  messages: ChatMessage[],
+  targetId: string,
+  content: string,
+): ChatMessage[] {
+  return messages.map((m) =>
+    m.id === targetId ? { ...m, content: m.content + content } : m,
+  );
+}
+
+/** Update metadata on a message by ID. */
+function _updateMessageMeta(
+  messages: ChatMessage[],
+  targetId: string,
+  meta: Record<string, unknown>,
+): ChatMessage[] {
+  return messages.map((m) =>
+    m.id === targetId ? { ...m, metadata: { ...m.metadata, ...meta } } : m,
+  );
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -48,6 +91,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   threadMessages: {},
   threadTitles: {},
   activeThreadId: null,
+  _streamingMessageId: null,
+  _streamingThinkingId: null,
+  selectedSubagentId: null,
+  subConversations: {},
+
+  selectSubagent: (id) => set({ selectedSubagentId: id }),
+
+  appendToSubConversation: (name, msg) => {
+    const message: ChatMessage = {
+      ...msg,
+      id: generateId(),
+      createdAt: new Date().toISOString(),
+    };
+    set((s) => ({
+      subConversations: {
+        ...s.subConversations,
+        [name]: [...(s.subConversations[name] || []), message],
+      },
+    }));
+  },
 
   addMessage: (msg) => {
     const message: ChatMessage = {
@@ -75,58 +138,79 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
 
     switch (type) {
+      // ── AI 文本消息 ───────────────────────────────────────────────
       case "message":
         if (event.content) {
-          // 检查是否已有正在流式输出的 AI 消息
-          const lastMsg = s.messages[s.messages.length - 1];
-          if (lastMsg && lastMsg.role === "ai" && lastMsg.msgType === "message" && s.isStreaming) {
-            // 追加内容到最后一个 AI 消息 → 同步到 threadMessages
-            const newMessages = s.messages.map((m, i) =>
-              i === s.messages.length - 1 ? { ...m, content: m.content + event.content! } : m
-            );
+          const msgId = s._streamingMessageId;
+          if (msgId && s.isStreaming) {
+            // 追加到已有的流式消息
+            const newMessages = _appendToMessage(s.messages, msgId, event.content);
             const tid = s.activeThreadId;
             set({
               messages: newMessages,
               ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
             });
           } else {
-            get().addMessage({
+            // 第一条 message chunk — 创建新消息并记住 ID
+            const message: ChatMessage = {
+              id: generateId(),
               role: "ai",
               content: event.content,
               msgType: "message",
               metadata: {},
               tokenCount: 0,
+              createdAt: new Date().toISOString(),
+            };
+            const newMessages = [...s.messages, message];
+            const tid = s.activeThreadId;
+            set({
+              messages: newMessages,
+              _streamingMessageId: message.id,
+              ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
             });
           }
         }
         break;
 
+      // ── 思考过程 ──────────────────────────────────────────────────
       case "thinking":
         if (event.content) {
-          const lastMsg = s.messages[s.messages.length - 1];
-          if (lastMsg && lastMsg.role === "ai" && lastMsg.msgType === "thinking" && s.isStreaming) {
-            // 追加内容到最后一个 thinking 消息
-            const newMessages = s.messages.map((m, i) =>
-              i === s.messages.length - 1 ? { ...m, content: m.content + event.content! } : m
-            );
+          const thinkingId = s._streamingThinkingId;
+          if (thinkingId && s.isStreaming) {
+            // 追加到已有的 thinking 卡片
+            const newMessages = _appendToMessage(s.messages, thinkingId, event.content);
             const tid = s.activeThreadId;
             set({
               messages: newMessages,
               ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
             });
           } else {
-            get().addMessage({
+            // 第一条 thinking chunk — 创建新的 thinking 卡片
+            const message: ChatMessage = {
+              id: generateId(),
               role: "ai",
               content: event.content,
               msgType: "thinking",
               metadata: {},
               tokenCount: 0,
+              createdAt: new Date().toISOString(),
+            };
+            const newMessages = [...s.messages, message];
+            const tid = s.activeThreadId;
+            set({
+              messages: newMessages,
+              _streamingThinkingId: message.id,
+              ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
             });
           }
         }
         break;
 
+      // ── 工具调用 ──────────────────────────────────────────────────
       case "tool_call":
+        // 当前 AI 流式消息已完成 (触发工具调用的是完整的 AI 回复), 清除 streaming ID
+        // 以便工具返回后的新 AI 回复创建新消息而不是追加到旧消息
+        set({ _streamingMessageId: null, _streamingThinkingId: null });
         get().addMessage({
           role: "tool",
           content: event.tool_name || "unknown",
@@ -146,30 +230,134 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         });
         break;
 
-      case "subagent_start":
+      // ── SubAgent 事件 ─────────────────────────────────────────────
+      case "subagent_start": {
+        // task 工具调用触发了 subagent — 清除 streaming ID
+        set({ _streamingMessageId: null, _streamingThinkingId: null });
+        const sName = event.subagent_name || "unknown";
+        // 初始化子会话存储
+        if (!s.subConversations[sName]) {
+          set((s2) => ({
+            subConversations: { ...s2.subConversations, [sName]: [] },
+          }));
+        }
         get().addMessage({
           role: "subagent",
-          content: `SubAgent "${event.subagent_name}" 开始执行`,
+          content: `SubAgent "${sName}" 开始执行`,
           msgType: "subagent_start",
-          metadata: { subagent_name: event.subagent_name, instruction: event.instruction },
-          tokenCount: 0,
-        });
-        break;
-
-      case "subagent_end":
-        get().addMessage({
-          role: "subagent",
-          content: event.content || `SubAgent "${event.subagent_name}" 执行完成`,
-          msgType: "subagent_end",
           metadata: {
-            subagent_name: event.subagent_name,
-            status: event.status,
-            duration_ms: event.duration_ms,
+            subagent_name: sName,
+            instruction: event.instruction,
+            max_turns: event.max_turns,
           },
           tokenCount: 0,
         });
         break;
+      }
 
+      case "subagent_progress": {
+        const latestStart = [...s.messages].reverse().find(
+          (m) =>
+            (m.msgType === "subagent_start" || m.msgType === "subagent_progress") &&
+            m.metadata?.subagent_name === event.subagent_name,
+        );
+        if (latestStart) {
+          const newMessages = s.messages.map((m) =>
+            m.id === latestStart.id
+              ? {
+                  ...m,
+                  msgType: "subagent_progress" as ChatMessage["msgType"],
+                  metadata: {
+                    ...m.metadata,
+                    iterations: event.iterations,
+                    max_turns: event.max_turns ?? m.metadata.max_turns,
+                    current_step: event.current_step,
+                  },
+                }
+              : m,
+          );
+          const tid = s.activeThreadId;
+          set({
+            messages: newMessages,
+            ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
+          });
+        }
+        break;
+      }
+
+      case "subagent_end":
+        get().addMessage({
+          role: "subagent",
+          content:
+            event.content ||
+            event.subagent_result?.output ||
+            `SubAgent "${event.subagent_name}" 执行完成`,
+          msgType: "subagent_end",
+          metadata: {
+            subagent_name: event.subagent_name,
+            status: event.status || event.subagent_result?.status,
+            duration_ms: event.duration_ms,
+            subagent_result: event.subagent_result,
+          },
+          tokenCount:
+            event.subagent_result?.token_usage_records?.reduce(
+              (sum: number, r: { total_tokens?: number }) =>
+                sum + (r.total_tokens || 0),
+              0,
+            ) || 0,
+        });
+        break;
+
+      // ── SubAgent 内部事件 (v3) — 只进子会话, 不进主聊天 ────────
+      case "subagent_thinking": {
+        const name = event.subagent_name;
+        if (name && event.content) {
+          get().appendToSubConversation(name, {
+            role: "ai",
+            content: event.content,
+            msgType: "thinking",
+            metadata: {},
+            tokenCount: 0,
+          });
+        }
+        break;
+      }
+
+      case "subagent_tool_call": {
+        const name = event.subagent_name;
+        if (name) {
+          get().appendToSubConversation(name, {
+            role: "tool",
+            content: event.tool_name || "unknown",
+            msgType: "tool_call",
+            metadata: {
+              tool_name: event.tool_name,
+              tool_args: event.tool_args,
+            },
+            tokenCount: 0,
+          });
+        }
+        break;
+      }
+
+      case "subagent_tool_result": {
+        const name = event.subagent_name;
+        if (name && event.tool_result) {
+          get().appendToSubConversation(name, {
+            role: "tool",
+            content: event.tool_result,
+            msgType: "tool_result",
+            metadata: {
+              tool_name: event.tool_name,
+              tool_result: event.tool_result,
+            },
+            tokenCount: 0,
+          });
+        }
+        break;
+      }
+
+      // ── TODO / Title / Token ─────────────────────────────────────
       case "todo_update":
         if (event.todo) {
           set((s) => ({
@@ -195,8 +383,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
         break;
 
+      // ── 错误 / 澄清 / 结束 ───────────────────────────────────────
       case "error":
-        set({ error: event.content || "执行出错", isStreaming: false, pendingClarification: null, _stopClarificationFn: null });
+        set({
+          error: event.content || "执行出错",
+          isStreaming: false,
+          pendingClarification: null,
+          _stopClarificationFn: null,
+          _streamingMessageId: null,
+          _streamingThinkingId: null,
+        });
         get().addMessage({
           role: "system",
           content: `❌ ${event.content || "未知错误"}`,
@@ -207,7 +403,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
 
       case "clarification":
-        // HITL: Agent 暂停等待用户输入
         set({ isStreaming: false });
         if (event.request) {
           set({ pendingClarification: event.request });
@@ -215,14 +410,36 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
 
       case "finished":
-        set({ isStreaming: false, _stopClarificationFn: null });
+        set({
+          isStreaming: false,
+          _stopClarificationFn: null,
+          // ⚠️ 不在这里清除 streaming ID — 历史消息加载时需要保留
+          // 下一次用户发送消息时会通过 addMessage 自然创建新 ID
+        });
         break;
     }
   },
 
-  setStreaming: (v) => set({ isStreaming: v }),
+  setStreaming: (v) =>
+    set({
+      isStreaming: v,
+      // 开始新的一轮流式时清除旧 ID
+      ...(v ? {} : { _streamingMessageId: null, _streamingThinkingId: null }),
+    }),
+
   setTitle: (t) => set({ title: t }),
-  clearMessages: () => set({ messages: [], todos: [], error: null, tokenUsage: null, pendingClarification: null }),
+  clearMessages: () =>
+    set({
+      messages: [],
+      todos: [],
+      error: null,
+      tokenUsage: null,
+      pendingClarification: null,
+      _streamingMessageId: null,
+      _streamingThinkingId: null,
+      selectedSubagentId: null,
+      subConversations: {},
+    }),
   setError: (e) => set({ error: e }),
   setPendingClarification: (req) => set({ pendingClarification: req }),
   setStopClarificationFn: (fn) => set({ _stopClarificationFn: fn }),
@@ -244,7 +461,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (s.activeThreadId) {
       updated[s.activeThreadId] = s.messages;
     }
-    // 保存当前线程的 title 再切换
     const updatedTitles: Record<string, string> = { ...s.threadTitles };
     if (s.activeThreadId && s.title && s.title !== "新会话") {
       updatedTitles[s.activeThreadId] = s.title;
@@ -255,12 +471,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       threadMessages: updated,
       threadTitles: updatedTitles,
       title: updatedTitles[threadId] || "新会话",
-      isStreaming: false,  // 切换线程时停止流式状态
+      isStreaming: false,
       todos: [],
       tokenUsage: null,
       cumulativeTokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd: 0 },
       error: null,
       pendingClarification: null,
+      _streamingMessageId: null,
+      _streamingThinkingId: null,
+      selectedSubagentId: null,
+      subConversations: {},
     });
   },
 

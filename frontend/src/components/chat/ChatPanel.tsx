@@ -10,6 +10,7 @@ import { ChatMessage, AttachedFile } from "@/lib/types";
 import MessageList from "./MessageList";
 import ClarificationDialog from "./ClarificationDialog";
 import InputBar from "./InputBar";
+import SubagentDetailPanel from "./SubagentDetailPanel";
 
 interface ChatPanelProps {
   threadId: string;
@@ -231,31 +232,33 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
   }, [title, threadId]);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* 消息列表 */}
-      <MessageList messages={messages} isStreaming={isStreaming} />
+    <div className="flex h-full">
+      {/* ── 左侧: 主聊天区 ── */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <MessageList messages={messages} isStreaming={isStreaming} />
 
-      {/* 错误横幅 */}
-      {error && (
-        <div className="mx-4 mb-2 p-2 bg-destructive/10 border border-destructive/20 rounded-lg flex items-center gap-2 text-xs text-destructive">
-          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-          <span className="flex-1 truncate">{error}</span>
-          <button onClick={() => setError(null)} className="text-destructive/70">&times;</button>
-        </div>
-      )}
+        {error && (
+          <div className="mx-4 mb-2 p-2 bg-destructive/10 border border-destructive/20 rounded-lg flex items-center gap-2 text-xs text-destructive">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="flex-1 truncate">{error}</span>
+            <button onClick={() => setError(null)} className="text-destructive/70">&times;</button>
+          </div>
+        )}
 
-      {/* 输入栏 */}
-      <InputBar
-        onSend={sendMessage}
-        onStop={stopExecution}
-        isStreaming={isStreaming}
-        attachedFiles={attachedFiles}
-        onAttachFiles={handleAttachFiles}
-        onRemoveFile={handleRemoveFile}
-      />
+        <InputBar
+          onSend={sendMessage}
+          onStop={stopExecution}
+          isStreaming={isStreaming}
+          attachedFiles={attachedFiles}
+          onAttachFiles={handleAttachFiles}
+          onRemoveFile={handleRemoveFile}
+        />
 
-      {/* 澄清弹窗 */}
-      <ClarificationDialog threadId={threadId} />
+        <ClarificationDialog threadId={threadId} />
+      </div>
+
+      {/* ── 右侧: SubAgent 详情面板 ── */}
+      <SubagentDetailPanel />
     </div>
   );
 }

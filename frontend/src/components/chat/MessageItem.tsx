@@ -213,11 +213,20 @@ const MessageItem = React.memo(function MessageItem({ message }: MessageItemProp
   const config = roleConfig[message.role] || roleConfig.system;
   const Icon = config.icon;
 
+  // ── SubAgent 内部事件 → 不渲染 (只存在于 subConversations 中) ──
+  if (
+    message.msgType === "subagent_tool_call" ||
+    message.msgType === "subagent_tool_result" ||
+    message.msgType === "subagent_thinking"
+  ) {
+    return null;
+  }
+
   if (message.msgType === "tool_call" || message.msgType === "tool_result") {
     return <ToolCallCard message={message} />;
   }
 
-  if (message.msgType === "subagent_start" || message.msgType === "subagent_end") {
+  if (message.msgType === "subagent_start" || message.msgType === "subagent_progress" || message.msgType === "subagent_end") {
     return <SubAgentCard message={message} />;
   }
 

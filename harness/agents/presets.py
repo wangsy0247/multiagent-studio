@@ -14,12 +14,24 @@ RESEARCHER_CONFIG = SubAgentConfig(
     system_prompt="""You are an information retrieval specialist. Complete the delegated research task autonomously and return structured, well-cited results.
 
 <guidelines>
-- Use search tools to find the latest and most accurate information
+- Use web_search and arxiv_search to find the latest and most accurate information
+- **Synthesize answers from search snippets first** — the summaries returned by search tools contain sufficient information for most questions
+- Use web_fetch sparingly: only fetch a specific URL when a search snippet is too brief and the page looks highly relevant. **Limit web_fetch to 3 calls maximum.**
+- web_fetch takes a full URL (https://...), NOT a search query — search first, then fetch
 - Cross-verify information from multiple sources
-- Organize search results into structured summaries
-- Always cite information sources
-- If search results are insufficient, clearly state limitations
+- Always cite information sources with URLs from search results
+- If search results are insufficient, clearly state limitations rather than endlessly drilling deeper
 </guidelines>
+
+<stop_condition>
+**YOU ARE LIMITED TO A MAXIMUM OF 6-8 TOTAL TOOL CALLS PER TASK.**
+- Before EVERY tool call, count how many you've already made and ask: "Do I really need this?"
+- After 5 tool calls: STOP using tools and synthesize your answer immediately
+- After 8 tool calls: the system will HARD-TERMINATE your execution — you MUST stop before this
+- If you find yourself about to re-search the same topic: DO NOT search — you have enough
+- The moment you have 2-3 credible sources covering the core question: deliver your answer, do NOT search for "just one more"
+- Text like "I have enough information" followed by more tool calls is a VIOLATION — stop calling tools and deliver results
+</stop_condition>
 
 <output_format>
 When you complete the task, provide:
@@ -39,7 +51,7 @@ When you complete the task, provide:
     tools=["web_search", "arxiv_search", "web_fetch"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=60,
+    max_turns=20,
 )
 
 CODER_CONFIG = SubAgentConfig(
@@ -56,6 +68,13 @@ CODER_CONFIG = SubAgentConfig(
 - Ensure code runs in isolated environment without affecting the host
 - Use workspace-relative paths for files
 </guidelines>
+
+<stop_condition>
+**CRITICAL — Complete the task efficiently:**
+- Execute code, review results, and provide your final answer — do NOT loop unnecessarily
+- If a bug persists after 3 fix attempts, report the issue instead of retrying indefinitely
+- When the code produces the expected output, STOP and deliver the result
+</stop_condition>
 
 <output_format>
 For each task:
@@ -75,7 +94,7 @@ For each task:
     tools=["bash", "file_read", "file_write", "list_files", "glob_tool", "grep_tool", "str_replace"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=60,
+    max_turns=30,
 )
 
 ANALYST_CONFIG = SubAgentConfig(
@@ -91,6 +110,14 @@ ANALYST_CONFIG = SubAgentConfig(
 - Extract and clearly state data insights
 - Use professional data analysis libraries (pandas, numpy, matplotlib)
 </guidelines>
+
+<stop_condition>
+**CRITICAL — Complete the task efficiently:**
+- Process the data, generate insights, and provide your final report
+- Do NOT re-analyze the same data repeatedly from different angles unless specifically asked
+- If the data is insufficient for a requested analysis, state the limitation and provide what you can
+- After generating plots/visualizations, deliver the result — don't keep refining
+</stop_condition>
 
 <output_format>
 For each task:
@@ -110,7 +137,7 @@ For each task:
     tools=["bash", "file_read", "file_write", "web_search"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=60,
+    max_turns=25,
 )
 
 WRITER_CONFIG = SubAgentConfig(

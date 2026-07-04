@@ -27,6 +27,7 @@ const DEFAULT_LEAD_CONFIG: SubAgentConfig = {
   disallowed_tools: [],
   temperature: 0.3,
   max_turns: 20,
+  timeout_seconds: 900,
 };
 
 // 默认 SubAgent 配置
@@ -40,6 +41,51 @@ const DEFAULT_SUB_CONFIG: SubAgentConfig = {
   disallowed_tools: [],
   temperature: 0.3,
   max_turns: 10,
+  timeout_seconds: 900,
+};
+
+// 预设 SubAgent 配置 (与后端 presets.py 对齐)
+const PRESET_CONFIGS: Record<string, Partial<SubAgentConfig>> = {
+  researcher: {
+    name: "researcher",
+    display_name: "信息检索专家",
+    description: "Information retrieval specialist for web search, literature lookup, and data collection.",
+    tools: ["web_search", "arxiv_search", "web_fetch"],
+    max_turns: 60,
+    timeout_seconds: 900,
+  },
+  coder: {
+    name: "coder",
+    display_name: "代码执行专家",
+    description: "Code execution specialist for writing, running, and debugging code.",
+    tools: ["bash", "file_read", "file_write", "list_files", "glob_tool", "grep_tool", "str_replace"],
+    max_turns: 60,
+    timeout_seconds: 600,
+  },
+  analyst: {
+    name: "analyst",
+    display_name: "数据分析专家",
+    description: "Data analysis specialist for cleaning, statistical analysis, and visualization.",
+    tools: ["bash", "file_read", "file_write", "web_search"],
+    max_turns: 60,
+    timeout_seconds: 900,
+  },
+  writer: {
+    name: "writer",
+    display_name: "文档撰写专家",
+    description: "Document writing specialist for structured documents, reports, and config files.",
+    tools: ["file_read", "file_write", "str_replace", "list_files"],
+    max_turns: 40,
+    timeout_seconds: 600,
+  },
+  reviewer: {
+    name: "reviewer",
+    display_name: "审查专家",
+    description: "Review specialist for code review, document proofreading, and quality inspection.",
+    tools: ["file_read", "list_files", "glob_tool", "grep_tool"],
+    max_turns: 30,
+    timeout_seconds: 600,
+  },
 };
 
 interface CanvasStore {
@@ -52,7 +98,7 @@ interface CanvasStore {
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
-  addNode: (type: "lead" | "subagent", position: { x: number; y: number }) => void;
+  addNode: (type: "lead" | "subagent", position: { x: number; y: number }, presetKey?: string) => void;
   removeNode: (nodeId: string) => void;
   selectNode: (nodeId: string | null) => void;
   updateNodeConfig: (nodeId: string, config: Partial<SubAgentConfig>) => void;
@@ -95,12 +141,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   onConnect: (connection) =>
     set((s) => ({ edges: addEdge({ ...connection, type: "smoothstep" }, s.edges) })),
 
-  addNode: (type, position) => {
+  addNode: (type, position, presetKey) => {
     // Lead Agent 只允许一个
     if (type === "lead" && get().nodes.some((n) => n.data.isEntryPoint)) {
       return;
     }
     const node = createNode(type, position);
+    // 应用预设配置
+    if (presetKey && type === "subagent" && PRESET_CONFIGS[presetKey]) {
+      node.data.config = { ...node.data.config, ...PRESET_CONFIGS[presetKey] };
+    }
     set((s) => ({ nodes: [...s.nodes, node] }));
   },
 
