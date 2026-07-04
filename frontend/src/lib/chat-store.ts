@@ -248,7 +248,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           metadata: {
             subagent_name: sName,
             instruction: event.instruction,
-            max_turns: event.max_turns,
+            max_turns: event.max_turns || 50,
           },
           tokenCount: 0,
         });
@@ -285,28 +285,71 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
       }
 
-      case "subagent_end":
-        get().addMessage({
-          role: "subagent",
-          content:
-            event.content ||
-            event.subagent_result?.output ||
-            `SubAgent "${event.subagent_name}" 执行完成`,
-          msgType: "subagent_end",
-          metadata: {
-            subagent_name: event.subagent_name,
-            status: event.status || event.subagent_result?.status,
-            duration_ms: event.duration_ms,
-            subagent_result: event.subagent_result,
-          },
-          tokenCount:
-            event.subagent_result?.token_usage_records?.reduce(
-              (sum: number, r: { total_tokens?: number }) =>
-                sum + (r.total_tokens || 0),
-              0,
-            ) || 0,
-        });
+      case "subagent_end": {
+        // ── 原地更新 start/progress 卡片为最终状态 ──
+        // 不再 addMessage 创建第二张卡片
+        const sName: string = event.subagent_name || "unknown";
+        const finalContent: string =
+          event.content ||
+          event.subagent_result?.output ||
+          `SubAgent "${sName}" 执行完成`;
+        const finalTokens: number =
+          event.subagent_result?.token_usage_records?.reduce(
+            (sum: number, r: { total_tokens?: number }) =>
+              sum + (r.total_tokens || 0),
+            0,
+          ) || 0;
+
+        // 找到匹配的运行中卡片
+        const card = [...s.messages].reverse().find(
+          (m) =>
+            (m.msgType === "subagent_start" ||
+              m.msgType === "subagent_progress") &&
+            m.metadata?.subagent_name === sName,
+        );
+
+        if (card) {
+          const newMessages = s.messages.map((m) =>
+            m.id === card.id
+              ? {
+                  ...m,
+                  content: finalContent,
+                  msgType: "subagent_end" as ChatMessage["msgType"],
+                  tokenCount: finalTokens,
+                  metadata: {
+                    ...m.metadata,
+                    subagent_name: sName,
+                    status: event.status || event.subagent_result?.status,
+                    duration_ms: event.duration_ms,
+                    subagent_result: event.subagent_result,
+                  },
+                }
+              : m,
+          );
+          const tid = s.activeThreadId;
+          set({
+            messages: newMessages,
+            ...(tid
+              ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } }
+              : {}),
+          });
+        } else {
+          // 兜底: 没有找到运行中卡片时新建
+          get().addMessage({
+            role: "subagent",
+            content: finalContent,
+            msgType: "subagent_end",
+            metadata: {
+              subagent_name: sName,
+              status: event.status || event.subagent_result?.status,
+              duration_ms: event.duration_ms,
+              subagent_result: event.subagent_result,
+            },
+            tokenCount: finalTokens,
+          });
+        }
         break;
+      }
 
       // ── SubAgent 内部事件 (v3) — 只进子会话, 不进主聊天 ────────
       case "subagent_thinking": {
