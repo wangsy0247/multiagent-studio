@@ -106,7 +106,7 @@ def task_tool(manager: Any | None = None) -> BaseTool:
 def ask_clarification_tool() -> BaseTool:
     """Create the ``ask_clarification`` tool used by the Lead Agent."""
 
-    @tool
+    @tool(response_format="content", return_direct=True)
     def ask_clarification(
         question: str,
         context: str = "",
