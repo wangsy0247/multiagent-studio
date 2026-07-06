@@ -332,6 +332,13 @@ def _build_critical_reminders_section(max_concurrent: int, subagent_enabled: boo
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Skills prompt section (imported from harness.skills to avoid circular imports)
+# ──────────────────────────────────────────────────────────────────────────────
+
+from harness.skills.prompt import get_skills_prompt_section  # noqa: E402
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Master template
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -354,6 +361,8 @@ You are {agent_name}, an AI assistant with multi-agent orchestration capabilitie
 
 {working_directory_section}
 
+{skills_section}
+
 {memory_tool_section}
 
 {citations_section}
@@ -368,6 +377,8 @@ def apply_prompt_template(
     max_concurrent_subagents: int = 3,
     subagent_enabled: bool = True,
     mem0_tool_enabled: bool = False,
+    *,
+    skills_section: str = "",
 ) -> str:
     """Assemble the full Lead Agent system prompt from sections.
 
@@ -376,6 +387,7 @@ def apply_prompt_template(
         max_concurrent_subagents: Max parallel task calls
         subagent_enabled: Whether subagent orchestration is available
         mem0_tool_enabled: Whether memory_search tool is registered
+        skills_section: Pre-built ``<skill_system>`` XML block (or empty string)
     """
     n = max_concurrent_subagents
 
@@ -403,6 +415,7 @@ def apply_prompt_template(
         clarification_section=clarification_section,
         subagent_section=subagent_section,
         working_directory_section=working_directory_section,
+        skills_section=skills_section,
         memory_tool_section=memory_tool_section,
         citations_section=citations_section,
         response_style_section=response_style_section,
@@ -436,26 +449,40 @@ class LeadAgent:
         agent_name: str = "Multi-Agent Orchestrator",
         max_concurrent_subagents: int = 3,
         config_manager: ConfigManager | None = None,
+        *,
+        skill_storage: Any | None = None,
     ):
         self.tool_registry = tool_registry
         self.subagent_manager = subagent_manager
         self.agent_name = agent_name
         self.max_concurrent = max_concurrent_subagents
         self.config_manager = config_manager
+        self.skill_storage = skill_storage
 
     # ------------------------------------------------------------------
     # system prompt
     # ------------------------------------------------------------------
 
     def get_system_prompt(self) -> str:
-        """Build the complete system prompt template."""
+        """Build the complete system prompt template, including enabled skills."""
         from harness.config.memory_config import get_memory_config
         mem_cfg = get_memory_config()
+
+        # Build skills section from enabled skills.
+        skills_section = ""
+        if self.skill_storage is not None:
+            try:
+                enabled_skills = self.skill_storage.load_skills(enabled_only=True)
+                skills_section = get_skills_prompt_section(enabled_skills)
+            except Exception:
+                logger.exception("Failed to load skills for system prompt")
+
         return apply_prompt_template(
             agent_name=self.agent_name,
             max_concurrent_subagents=self.max_concurrent,
             subagent_enabled=self.subagent_manager is not None,
             mem0_tool_enabled=mem_cfg.enabled and getattr(mem_cfg, "mem0_tool_enabled", False),
+            skills_section=skills_section,
         )
 
     # ------------------------------------------------------------------
@@ -505,6 +532,23 @@ class LeadAgent:
                                 "Lead Agent tool/group '%s' not found in registry",
                                 entry,
                             )
+
+        # ── Apply skill allowed-tools filtering ──
+        if self.skill_storage is not None:
+            try:
+                enabled_skills = self.skill_storage.load_skills(enabled_only=True)
+                if enabled_skills:
+                    from harness.skills.tool_policy import filter_tools_by_skill_allowed_tools
+
+                    before = len(tools)
+                    tools = filter_tools_by_skill_allowed_tools(tools, enabled_skills)
+                    logger.debug(
+                        "Skill tool-policy filtered %d → %d tools",
+                        before,
+                        len(tools),
+                    )
+            except Exception:
+                logger.exception("Failed to apply skill tool-policy")
 
         return tools
 

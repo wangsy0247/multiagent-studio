@@ -205,12 +205,27 @@ class HarnessService(_BaseService):
             max_concurrent=cfg.max_concurrent_subagents,
         )
 
+        # 8.5. Skill storage (DeerFlow-aligned progressive-loading skill system)
+        from harness.skills.storage import SkillStorage
+
+        _project_skills_root = (
+            Path(os.path.dirname(os.path.abspath(__file__))).parent / "skills"
+        )
+        _project_skills_root.mkdir(parents=True, exist_ok=True)
+        (_project_skills_root / "public").mkdir(exist_ok=True)
+        (_project_skills_root / "custom").mkdir(exist_ok=True)
+
+        self.skill_storage = SkillStorage(_project_skills_root)
+        self.skills = self.skill_storage.load_skills(enabled_only=True)
+        logger.info("Skills loaded: %d enabled from %s", len(self.skills), _project_skills_root)
+
         # 9. Lead Agent (configuration provider — tools + system prompt)
         lead_agent = LeadAgent(
             tool_registry=self.tool_registry,
             subagent_manager=self.subagent_manager,
             max_concurrent_subagents=cfg.max_concurrent_subagents,
             config_manager=self.config_manager,
+            skill_storage=self.skill_storage,
         )
 
         # 10. Checkpointer — load config and create provider

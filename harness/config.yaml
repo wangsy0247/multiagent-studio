@@ -27,7 +27,7 @@ lead_agent:
   tools:
     - search
     - files
-    - bash
+    - files_readonly
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
