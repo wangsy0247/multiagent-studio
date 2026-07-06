@@ -31,122 +31,77 @@ def _build_subagent_section(max_concurrent: int) -> str:
         for name, info in PRESET_SUBAGENTS.items()
     )
     return f"""<subagent_system>
-**🚀 SUBAGENT MODE ACTIVE — DECOMPOSE, DELEGATE, SYNTHESIZE**
+You have access to specialized subagents that can execute tasks in parallel. Subagents are a **tool to use when beneficial**, not a mandatory workflow — complete tasks directly whenever that is simpler and faster.
 
-You are running with subagent capabilities enabled. Your role is to be a **task orchestrator**:
-1. **DECOMPOSE**: Break complex tasks into parallel sub-tasks
-2. **DELEGATE**: Launch multiple subagents simultaneously using parallel `task` calls
-3. **SYNTHESIZE**: Collect and integrate results into a coherent answer
+**Default: Execute Directly**
 
-**CORE PRINCIPLE: Complex tasks should be decomposed and distributed across multiple subagents for parallel execution.**
-
-**⛔ HARD CONCURRENCY LIMIT: MAXIMUM {n} `task` CALLS PER RESPONSE. THIS IS NOT OPTIONAL.**
-- Each response, you may include **at most {n}** `task` tool calls. Any excess calls are **silently discarded** by the system — you will lose that work.
-- **Before launching subagents, you MUST count your sub-tasks in your thinking:**
-  - If count ≤ {n}: Launch all in this response.
-  - If count > {n}: **Pick the {n} most important/foundational sub-tasks for this turn.** Save the rest for the next turn.
-- **Multi-batch execution** (for >{n} sub-tasks):
-  - Turn 1: Launch sub-tasks 1-{n} in parallel → wait for results
-  - Turn 2: Launch next batch in parallel → wait for results
-  - ... continue until all sub-tasks are complete
-  - Final turn: Synthesize ALL results into a coherent answer
-- **Example thinking pattern**: "I identified 6 sub-tasks. Since the limit is {n} per turn, I will launch the first {n} now, and the rest in the next turn."
+Most tasks do NOT need subagents. Use your own tools to handle the request directly. Subagents add coordination overhead — only pay that cost when it buys you genuine parallelism or specialization.
 
 **Available Subagents:**
 {agent_descriptions}
 
-**Your Orchestration Strategy:**
+**When to Use Subagents:**
 
-✅ **DECOMPOSE + PARALLEL EXECUTION (Preferred Approach):**
+✅ Use subagents when:
+- **Truly parallel work**: 2+ independent tasks that can run simultaneously for a meaningful speedup
+- **Specialization matters**: A task needs a specific subagent's unique toolset (e.g., coder for complex code execution, researcher for multi-source literature search)
+- **Heavy-lift tasks**: A single large task benefits from being split into parallel sub-tasks
 
-For complex queries, break them down into focused sub-tasks and execute in parallel batches (max {n} per turn):
+❌ Do NOT use subagents when:
+- **Simple / single-step tasks**: "Read this file", "Search for X" — just do it yourself
+- **Sequential work**: Each step depends on the previous result — do the steps yourself in order
+- **Need clarification first**: Must ask the user before proceeding
+- **Conversational / meta questions**: "What did we talk about?"
 
-**Example 1: "Why is Tencent's stock price declining?" (3 sub-tasks → 1 batch)**
-→ Turn 1: Launch 3 subagents in parallel:
-- Subagent 1: Recent financial reports, earnings data, and revenue trends
-- Subagent 2: Negative news, controversies, and regulatory issues
-- Subagent 3: Industry trends, competitor performance, and market sentiment
-→ Turn 2: Synthesize results
+**Concurrency:** Maximum **{n} `task` calls per response**. For >{n} genuinely parallel tasks, split into batches across turns.
 
-**Example 2: "Compare 5 cloud providers" (5 sub-tasks → multi-batch)**
-→ Turn 1: Launch {n} subagents in parallel (first batch)
-→ Turn 2: Launch remaining subagents in parallel
-→ Final turn: Synthesize ALL results into comprehensive comparison
+**You Own the Thinking — SubAgents Own the Execution**
 
-**Example 3: "Refactor the authentication system"**
-→ Turn 1: Launch 3 subagents in parallel:
-- Subagent 1: Analyze current auth implementation and technical debt
-- Subagent 2: Research best practices and security patterns
-- Subagent 3: Review related tests, documentation, and vulnerabilities
-→ Turn 2: Synthesize results
+You are responsible for understanding the user's intent, analyzing trade-offs, and making decisions. SubAgents only execute within the constraints you set. Never outsource judgment calls — "which library should I use" or "how should I refactor this" are your decisions, not the subagent's.
 
-✅ **USE Parallel Subagents (max {n} per turn) when:**
-- **Complex research questions**: Requires multiple information sources or perspectives
-- **Multi-aspect analysis**: Task has several independent dimensions to explore
-- **Large codebases**: Need to analyze different parts simultaneously
-- **Comprehensive investigations**: Questions requiring thorough coverage from multiple angles
+**Writing Good Instructions**
 
-❌ **DO NOT use subagents when:**
-- **Need immediate clarification**: Must ask user before proceeding
-- **Meta conversation**: Questions about conversation history
-- **Sequential dependencies**: Each step depends on previous results (do steps yourself sequentially)
+SubAgents have **no access to this conversation**. Every instruction must be fully self-contained. Before calling, clarify these five points in your thinking:
 
-**CRITICAL WORKFLOW** (STRICTLY follow this before EVERY action):
-1. **COUNT**: In your thinking, list all sub-tasks and count them explicitly: "I have N sub-tasks"
-2. **PLAN BATCHES**: If N > {n}, explicitly plan which sub-tasks go in which batch
-3. **EXECUTE**: Launch ONLY the current batch (max {n} `task` calls). Do NOT launch sub-tasks from future batches.
-4. **REPEAT**: After results return, launch the next batch. Continue until all batches complete.
-5. **SYNTHESIZE**: After ALL batches are done, synthesize all results.
-6. **Cannot decompose** → Execute directly using available tools
+1. **Goal** — What exactly to deliver? (fact list? code change? verification report?)
+2. **Background** — What context does the subagent need? (tech stack, current situation, constraints)
+3. **Scope** — Which files / directories / line numbers? What has already been ruled out?
+4. **Constraints** — READ-ONLY or allowed to modify? If modifying, which files exactly?
+5. **Format** — What structure and length? (e.g. "within 200 words, list key findings only")
 
-**⛔ VIOLATION: Launching more than {n} `task` calls in a single response is a HARD ERROR. The system WILL discard excess calls and you WILL lose work. Always batch.**
+If any of these are unclear, ask the user before calling the subagent.
 
-**Remember: Subagents are for parallel decomposition, not for wrapping single tasks.**
+Structure your instruction with: 【Goal】【Background】【Scope】【Constraints】【Output Format】. Give exact file paths and line numbers whenever possible. Common mistakes to avoid: outsourcing decisions ("fix the bug" without telling which bug), no file paths, not specifying read-only vs writable, no length limit, not listing already-excluded areas.
 
-**How It Works:**
-- The task tool runs subagents asynchronously in the background
-- The backend automatically polls for completion (you don't need to poll)
-- The tool call will block until the subagent completes its work
-- Once complete, the result is returned to you directly
+**Verify After Every SubAgent Call**
 
-**Usage Example — Single Batch (≤{n} sub-tasks):**
+Subagent summaries describe what they **intended** to do — not always what they **actually** did. After every call:
+- If code was modified → use file_read to check the actual file content
+- If facts were reported → spot-check 1-2 key claims
+- If recommendations were made → evaluate independently, don't blindly accept
+- If multiple subagents returned results → cross-check for contradictions
 
-```python
-# User asks: "Why is Tencent's stock price declining?"
-# Thinking: 3 sub-tasks → fits in 1 batch
+**Example — Good vs Bad Instruction:**
 
-# Turn 1: Launch 3 subagents in parallel
-task(agent_name="researcher1", instruction="Research Tencent financial data...")
-task(agent_name="researcher2", instruction="Research Tencent news...")
-task(agent_name="researcher3", instruction="Research industry trends...")
-# All 3 run in parallel → synthesize results
+❌ BAD: `task(agent_name="coder", instruction="Fix the login bug")`
+→ Subagent doesn't know which bug, which file, what constraints.
+
+✅ GOOD:
 ```
+【Goal】Fix OAuth token refresh failure — users get logged out ~1 hour after login.
 
-**Usage Example — Multiple Batches (>{n} sub-tasks):**
+【Background】Express + passport-saml project. Token refresh logic modified 3 days ago,
+likely regression. access_token valid 3600s, refresh at 300s before expiry.
 
-```python
-# User asks: "Compare AWS, Azure, GCP, Alibaba Cloud, and Oracle Cloud"
-# Thinking: 5 sub-tasks → need multiple batches (max {n} per batch)
+【Scope】Focus on src/auth/middleware.ts L78-120 (verifyToken) and
+src/auth/tokenManager.ts (refreshToken). Ruled out: DB pool, SAML config, frontend.
 
-# Turn 1: Launch first batch of {n}
-task(agent_name="aws_analyst", instruction="Analyze AWS...")
-task(agent_name="azure_analyst", instruction="Analyze Azure...")
-task(agent_name="gcp_analyst", instruction="Analyze GCP...")
+【Constraints】READ-ONLY first — analyze and report root cause + suggested fix.
+Do NOT modify code until I confirm.
 
-# Turn 2: Launch remaining batch (after first batch completes)
-task(agent_name="alibaba_analyst", instruction="Analyze Alibaba Cloud...")
-task(agent_name="oracle_analyst", instruction="Analyze Oracle Cloud...")
-
-# Turn 3: Synthesize ALL results from both batches
+【Output Format】Within 200 words: ① Root cause ② Files involved ③ Suggested fix.
 ```
-
-**CRITICAL**:
-- **Max {n} `task` calls per turn** — the system enforces this, excess calls are discarded
-- All concrete work (search, code execution, file I/O) must be delegated to subagents
-- You do NOT have direct access to search, file, or code tools — use subagents for everything
-- For >{n} sub-tasks, use sequential batches of {n} across multiple turns
 </subagent_system>"""
-
 
 def _build_clarification_section() -> str:
     return """<clarification_system>
@@ -360,9 +315,8 @@ def _build_response_style_section() -> str:
 def _build_critical_reminders_section(max_concurrent: int, subagent_enabled: bool) -> str:
     n = max_concurrent
     subagent_reminder = (
-        f"- **Orchestrator Mode**: You are a task orchestrator — decompose complex tasks into parallel sub-tasks. "
-        f"**HARD LIMIT: max {n} `task` calls per response.** "
-        f"If >{n} sub-tasks, split into sequential batches of ≤{n}. Synthesize after ALL batches complete.\n"
+        f"- **Subagents**: You have subagent capabilities. Use them when tasks are genuinely parallel; "
+        f"otherwise handle work directly. Max {n} `task` calls per response.\n"
         if subagent_enabled
         else ""
     )
@@ -427,9 +381,9 @@ def apply_prompt_template(
 
     # Subagent thinking guidance (injected into thinking_style)
     subagent_thinking = (
-        f"- **DECOMPOSITION CHECK: Can this task be broken into 2+ parallel sub-tasks? If YES, COUNT them. "
-        f"If count > {n}, you MUST plan batches of ≤{n} and only launch the FIRST batch now. "
-        f"NEVER launch more than {n} `task` calls in one response.**\n"
+        f"- **Subagent check: If the task has genuinely independent parallel parts, consider subagents. "
+        f"Otherwise, just handle it directly. "
+        f"If using subagents, max {n} `task` calls per response.**\n"
         if subagent_enabled
         else ""
     )

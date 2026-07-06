@@ -103,13 +103,25 @@ def task_tool(manager: Any | None = None) -> BaseTool:
     ) -> str:
         """Delegate a task to a SubAgent for execution.
 
-        SubAgents are independent agents with their own tools and context.
-        Use this to parallelize complex work across specialized agents.
+        SubAgents have NO access to this conversation — your instruction
+        must be fully self-contained. Before calling, think through:
+        1. Goal — what exactly to deliver?
+        2. Background — what context does the subagent need?
+        3. Scope — which files / directories / line numbers?
+        4. Constraints — READ-ONLY or allowed to modify which files?
+        5. Format — what structure and length?
+
+        Structure your instruction with these sections:
+        【Goal】【Background】【Scope / Location】【Constraints】【Output Format】
+
+        After the subagent returns, verify the actual output — do not
+        blindly trust the summary. If code was modified, read the file.
+        If facts were reported, spot-check key claims.
 
         Args:
-            agent_name: Target SubAgent name
-            instruction: Detailed task instruction with acceptance criteria
-            context: Additional background information
+            agent_name: Target SubAgent name (researcher / coder / analyst / writer / reviewer)
+            instruction: Self-contained task specification following the template above.
+            context: Additional background (prefer embedding this in instruction instead).
         """
         if manager is None:
             return "Error: SubAgent manager not initialized"
@@ -139,19 +151,50 @@ def ask_clarification_tool() -> BaseTool:
     @tool(response_format="content", return_direct=True)
     def ask_clarification(
         question: str,
-        context: str = "",
-        clarification_type: str = "missing_info",
+        clarification_type: Literal[
+            "missing_info",
+            "ambiguous_requirement",
+            "approach_choice",
+            "risk_confirmation",
+            "suggestion",
+        ],
+        context: str | None = None,
         options: list[str] | None = None,
     ) -> str:
-        """Ask the user for clarification before proceeding.
+        """Ask the user for clarification when you need more information to proceed.
+
+        Use this tool when you encounter situations where you cannot proceed without user input:
+
+        - **Missing information**: Required details not provided (e.g., file paths, URLs, specific requirements)
+        - **Ambiguous requirements**: Multiple valid interpretations exist
+        - **Approach choices**: Several valid approaches exist and you need user preference
+        - **Risky operations**: Destructive actions that need explicit confirmation (e.g., deleting files, modifying production)
+        - **Suggestions**: You have a recommendation but want user approval before proceeding
+
+        The execution will be interrupted and the question will be presented to the user.
+        Wait for the user's response before continuing.
+
+        When to use ask_clarification:
+        - You need information that wasn't provided in the user's request
+        - The requirement can be interpreted in multiple ways
+        - Multiple valid implementation approaches exist
+        - You're about to perform a potentially dangerous operation
+        - You have a recommendation but need user approval
+
+        Best practices:
+        - Ask ONE clarification at a time for clarity
+        - Be specific and clear in your question
+        - Don't make assumptions when clarification is needed
+        - For risky operations, ALWAYS ask for confirmation
+        - After calling this tool, execution will be interrupted automatically
 
         Args:
-            question: The specific question to ask
-            context: Why this clarification is needed
-            clarification_type: missing_info / ambiguous_requirement / approach_choice / risk_confirmation
-            options: Optional list of choices to present
+            question: The clarification question to ask the user. Be specific and clear.
+            clarification_type: The type of clarification needed (missing_info, ambiguous_requirement, approach_choice, risk_confirmation, suggestion).
+            context: Optional context explaining why clarification is needed. Helps the user understand the situation.
+            options: Optional list of choices (for approach_choice or suggestion types). Present clear options for the user to choose from.
         """
-        return f"[Awaiting user confirmation] {question}"
+        return "Clarification request processed by middleware"
 
     return ask_clarification
 
