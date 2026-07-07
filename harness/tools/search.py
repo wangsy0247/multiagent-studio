@@ -282,12 +282,127 @@ def create_web_fetch_tool() -> Any:
     return web_fetch
 
 
+def create_paper_download_tool() -> Any:
+    """Create the ``paper_download`` tool — download full-text PDFs from arXiv."""
+
+    @tool
+    def paper_download(arxiv_url_or_id: str, save_dir: str = "/mnt/user-data/workspace") -> str:
+        """Download the full PDF of an academic paper from arXiv.
+
+        Accepts either a full arXiv URL (abs or pdf) or a bare paper ID.
+        The PDF is saved to *save_dir* using the paper ID as the filename.
+
+        Args:
+            arxiv_url_or_id: arXiv URL like https://arxiv.org/abs/2401.12345,
+                https://arxiv.org/pdf/2401.12345, or bare ID like 2401.12345.
+            save_dir: Directory to save the PDF (default: /mnt/user-data/workspace).
+
+        Returns:
+            Status message with the saved file path, paper title, and file size.
+        """
+        import re
+        import urllib.request
+        from pathlib import Path
+
+        # ── normalise the paper ID ──────────────────────────────────────────
+        arxiv_url_or_id = arxiv_url_or_id.strip()
+        # Match: bare ID (2401.12345 or 2401.12345v2), abs URL, or pdf URL
+        patterns = [
+            r"arxiv\.org/abs/([0-9]+\.[0-9]+(?:v[0-9]+)?)",
+            r"arxiv\.org/pdf/([0-9]+\.[0-9]+(?:v[0-9]+)?)",
+            r"^([0-9]+\.[0-9]+(?:v[0-9]+)?)$",
+        ]
+        paper_id = None
+        for pat in patterns:
+            m = re.search(pat, arxiv_url_or_id)
+            if m:
+                paper_id = m.group(1)
+                break
+
+        if paper_id is None:
+            return (
+                f"Error: could not parse arXiv ID from '{arxiv_url_or_id}'. "
+                f"Expected format: 2401.12345, https://arxiv.org/abs/2401.12345, "
+                f"or https://arxiv.org/pdf/2401.12345"
+            )
+
+        pdf_url = f"https://arxiv.org/pdf/{paper_id}"
+        abs_url = f"https://arxiv.org/abs/{paper_id}"
+
+        # ── download PDF ────────────────────────────────────────────────────
+        try:
+            logger.info("Downloading paper %s from %s", paper_id, pdf_url)
+
+            req = urllib.request.Request(
+                pdf_url,
+                headers={"User-Agent": "MultiAgent-Studio/2.0 (mailto:research@example.com)"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                if "pdf" not in content_type.lower() and resp.status != 200:
+                    return (
+                        f"Error: {pdf_url} returned Content-Type '{content_type}' "
+                        f"(status {resp.status}). The paper may not be available."
+                    )
+                pdf_data = resp.read()
+
+            if len(pdf_data) < 1000:
+                return f"Error: downloaded data too small ({len(pdf_data)} bytes) — may not be a valid PDF."
+
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return f"Error: paper '{paper_id}' not found on arXiv (404)."
+            return f"Error: HTTP {exc.code} when downloading {pdf_url} — {exc.reason}"
+        except Exception as exc:
+            logger.exception("Failed to download paper %s", paper_id)
+            return f"Error downloading {pdf_url}: {exc}"
+
+        # ── save to disk ─────────────────────────────────────────────────────
+        save_path = Path(save_dir) / f"{paper_id}.pdf"
+        try:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(pdf_data)
+        except OSError as exc:
+            return f"Error: failed to write PDF to {save_path}: {exc}"
+
+        # ── try to extract the title from arXiv API ─────────────────────────
+        title = paper_id
+        try:
+            import xml.etree.ElementTree as ET
+
+            api_url = f"http://export.arxiv.org/api/query?id_list={paper_id}"
+            api_req = urllib.request.Request(api_url, headers={"User-Agent": "MultiAgent-Studio/2.0"})
+            with urllib.request.urlopen(api_req, timeout=30) as api_resp:
+                root = ET.fromstring(api_resp.read())
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            entry = root.find("atom:entry", ns)
+            if entry is not None:
+                title_el = entry.findtext("atom:title", "", ns)
+                if title_el:
+                    title = title_el.strip().replace("\n", " ")
+        except Exception:
+            logger.debug("Could not fetch paper title for %s", paper_id, exc_info=True)
+
+        size_kb = len(pdf_data) / 1024
+        return (
+            f"Paper downloaded successfully.\n"
+            f"  Title: {title}\n"
+            f"  arXiv ID: {paper_id}\n"
+            f"  File: {save_path}\n"
+            f"  Size: {size_kb:.1f} KB\n"
+            f"  arXiv page: {abs_url}"
+        )
+
+    return paper_download
+
+
 def build_search_tools() -> list[Any]:
     """Return all search tools."""
     return [
         create_web_search_tool(),
         create_arxiv_search_tool(),
         create_web_fetch_tool(),
+        create_paper_download_tool(),
     ]
 
 
@@ -295,3 +410,4 @@ def build_search_tools() -> list[Any]:
 web_search = create_web_search_tool()
 arxiv_search = create_arxiv_search_tool()
 web_fetch = create_web_fetch_tool()
+paper_download = create_paper_download_tool()

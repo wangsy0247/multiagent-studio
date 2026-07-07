@@ -2,13 +2,6 @@
 name: system-architecture-review
 description: Conduct comprehensive system architecture reviews covering scalability, reliability, security, and cost. Use when asked to review architecture, design a system, evaluate trade-offs, or assess technical proposals against industry best practices.
 license: MIT
-allowed-tools:
-  - file_read
-  - file_write
-  - list_files
-  - grep_tool
-  - glob_tool
-  - web_search
 version: "2.1"
 author: multiagent-studio
 compatibility:

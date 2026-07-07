@@ -2,12 +2,6 @@
 name: deep-research
 description: Conduct multi-source deep research with web search, fact verification, and cited reports. Use this skill when asked to research a topic thoroughly, write a report, or analyze a complex subject from multiple angles.
 license: MIT
-allowed-tools:
-  - web_search
-  - web_fetch
-  - file_read
-  - file_write
-  - list_files
 version: "2.0"
 ---
 # Deep Research Skill

@@ -198,14 +198,7 @@ class HarnessService(_BaseService):
         # 6. Register middlewares (AgentMiddleware list)
         self._register_middlewares()
 
-        # 8. SubAgent manager (uses stripped-down subagent middlewares internally)
-        self.subagent_manager = SubagentManager(
-            llm_factory=self._init_llm,
-            tool_registry=self.tool_registry,
-            max_concurrent=cfg.max_concurrent_subagents,
-        )
-
-        # 8.5. Skill storage (DeerFlow-aligned progressive-loading skill system)
+        # 8. Skill storage (DeerFlow-aligned progressive-loading skill system)
         from harness.skills.storage import SkillStorage
 
         _project_skills_root = (
@@ -218,6 +211,14 @@ class HarnessService(_BaseService):
         self.skill_storage = SkillStorage(_project_skills_root)
         self.skills = self.skill_storage.load_skills(enabled_only=True)
         logger.info("Skills loaded: %d enabled from %s", len(self.skills), _project_skills_root)
+
+        # 8.5. SubAgent manager (uses stripped-down subagent middlewares internally)
+        self.subagent_manager = SubagentManager(
+            llm_factory=self._init_llm,
+            tool_registry=self.tool_registry,
+            max_concurrent=cfg.max_concurrent_subagents,
+            skill_storage=self.skill_storage,
+        )
 
         # 9. Lead Agent (configuration provider — tools + system prompt)
         lead_agent = LeadAgent(

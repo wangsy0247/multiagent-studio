@@ -2,11 +2,6 @@
 name: code-reviewer
 description: Perform systematic code review following best practices. Use this skill when asked to review, audit, or inspect code for bugs, security issues, or style problems. Supports Python, TypeScript, Go, and Rust.
 license: MIT
-allowed-tools:
-  - file_read
-  - list_files
-  - grep_tool
-  - glob_tool
 version: "1.0"
 ---
 # Code Reviewer Skill

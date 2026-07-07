@@ -248,11 +248,16 @@ class SubagentExecutor:
         tools: list[BaseTool],
         parent_state: HarnessState | None = None,
         trace_id: str | None = None,
+        *,
+        skill_storage: Any | None = None,
+        parent_skills: list[str] | None = None,
     ):
         self.config = config
         self.llm = llm
         self.parent_state = parent_state or {}
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
+        self._skill_storage = skill_storage
+        self._parent_skills = parent_skills
 
         # Filter tools
         self._base_tools = _filter_tools(
@@ -260,6 +265,9 @@ class SubagentExecutor:
             config.tools,
             config.disallowed_tools,
         )
+
+        # Load and inject skills for this subagent
+        self._skills: list[Any] = self._load_skills()
 
         # Extract thread_id from parent state
         self.thread_id = self.parent_state.get("thread_id", "")
@@ -285,6 +293,94 @@ class SubagentExecutor:
             config.timeout_seconds,
             "enabled" if self._main_loop else "disabled",
         )
+
+    # ------------------------------------------------------------------
+    # skill loading + injection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _merge_skill_allowlists(
+        parent: list[str] | None,
+        child: list[str] | None,
+    ) -> list[str] | None:
+        """Merge parent and child skill allowlists.
+
+        * parent=None, child=None → None (inherit all enabled)
+        * parent=None, child=["a"] → ["a"]
+        * parent=["a","b"], child=None → ["a","b"]
+        * parent=["a"], child=["a","b"] → ["a"] (intersection)
+        * parent=[], child=anything → []
+        """
+        if parent is not None and len(parent) == 0:
+            return []
+        if parent is None:
+            return child
+        if child is None:
+            return list(parent)
+        parent_set = set(parent)
+        return [s for s in child if s in parent_set]
+
+    def _load_skills(self) -> list[Any]:
+        """Load skills for this subagent, respecting config + parent constraints.
+
+        Returns a (possibly empty) list of ``Skill`` objects.
+        """
+        if self._skill_storage is None:
+            return []
+
+        try:
+            # Determine allowed skill names
+            child_skills: list[str] | None = self.config.skills
+            merged = self._merge_skill_allowlists(self._parent_skills, child_skills)
+
+            all_enabled = self._skill_storage.load_skills(enabled_only=True)
+
+            if merged is not None:
+                if len(merged) == 0:
+                    return []
+                allowed = set(merged)
+                return [s for s in all_enabled if s.name in allowed]
+
+            return all_enabled
+        except Exception:
+            logger.debug(
+                "Failed to load skills for subagent '%s'",
+                self.config.name,
+                exc_info=True,
+            )
+            return []
+
+    def _build_skill_messages(self, skills: list[Any]) -> list[Any]:
+        """Build SystemMessage list injecting full skill content.
+
+        Unlike the Lead Agent's progressive-loading pattern, subagents receive
+        the complete SKILL.md content directly as SystemMessages.  This avoids
+        an extra file_read round-trip in the subagent's limited turn budget.
+        """
+        from langchain_core.messages import SystemMessage
+
+        messages: list[Any] = []
+        for skill in skills:
+            try:
+                content = skill.skill_file.read_text(encoding="utf-8")
+                if content:
+                    messages.append(
+                        SystemMessage(
+                            content=(
+                                f'<skill name="{skill.name}">\n'
+                                f'{content}\n'
+                                f'</skill>'
+                            )
+                        )
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to read skill '%s' for subagent '%s'",
+                    skill.name,
+                    self.config.name,
+                    exc_info=True,
+                )
+        return messages
 
     # ------------------------------------------------------------------
     # external cancellation
@@ -317,7 +413,22 @@ class SubagentExecutor:
     # ------------------------------------------------------------------
 
     def _create_agent(self, tools: list[BaseTool]):
-        """Build the langgraph agent with stripped-down subagent middlewares."""
+        """Build the langgraph agent with stripped-down subagent middlewares.
+
+        Applies skill allowed-tools filtering before creating the agent.
+        """
+        # Apply skill tool-policy filtering
+        if self._skills:
+            try:
+                from harness.skills.tool_policy import filter_tools_by_skill_allowed_tools
+                tools = filter_tools_by_skill_allowed_tools(tools, self._skills)
+            except Exception:
+                logger.debug(
+                    "Skill tool-policy filtering failed for subagent '%s'",
+                    self.config.name,
+                    exc_info=True,
+                )
+
         middlewares = build_subagent_middlewares(
             vision_enabled=False,
             guardrail_enabled=False,
@@ -337,11 +448,15 @@ class SubagentExecutor:
     def _build_initial_state(self, task: str) -> dict[str, Any]:
         """Build the initial state dict for SubAgent execution.
 
-        Merges system_prompt + task into a single SystemMessage to avoid
-        multi-SystemMessage rejection by some LLM APIs (e.g. Anthropic).
+        Merges system_prompt + skill messages + task into messages.
         Inherits sandbox + thread_data from parent state.
         """
         messages: list[Any] = []
+
+        # ── Inject skill messages first (before system prompt) ──
+        if self._skills:
+            skill_msgs = self._build_skill_messages(self._skills)
+            messages.extend(skill_msgs)
 
         if self.config.system_prompt:
             messages.append(SystemMessage(content=self.config.system_prompt))

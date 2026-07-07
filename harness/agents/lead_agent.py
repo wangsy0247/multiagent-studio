@@ -451,6 +451,7 @@ class LeadAgent:
         config_manager: ConfigManager | None = None,
         *,
         skill_storage: Any | None = None,
+        agent_config: Any | None = None,
     ):
         self.tool_registry = tool_registry
         self.subagent_manager = subagent_manager
@@ -458,10 +459,24 @@ class LeadAgent:
         self.max_concurrent = max_concurrent_subagents
         self.config_manager = config_manager
         self.skill_storage = skill_storage
+        self.agent_config = agent_config
 
     # ------------------------------------------------------------------
     # system prompt
     # ------------------------------------------------------------------
+
+    def _available_skill_names(self) -> set[str] | None:
+        """Return the skill whitelist from agent config.
+
+        * ``None`` — load all enabled skills (legacy / default behaviour).
+        * ``set()`` (empty) — load no skills.
+        * ``{"a", "b"}`` — only load the named skills.
+        """
+        if self.agent_config is not None:
+            skills_attr = getattr(self.agent_config, "skills", None)
+            if skills_attr is not None:
+                return set(skills_attr)
+        return None
 
     def get_system_prompt(self) -> str:
         """Build the complete system prompt template, including enabled skills."""
@@ -473,7 +488,28 @@ class LeadAgent:
         if self.skill_storage is not None:
             try:
                 enabled_skills = self.skill_storage.load_skills(enabled_only=True)
-                skills_section = get_skills_prompt_section(enabled_skills)
+
+                # Apply per-agent skills whitelist
+                whitelist = self._available_skill_names()
+                if whitelist is not None:
+                    enabled_skills = [
+                        s for s in enabled_skills if s.name in whitelist
+                    ]
+
+                if enabled_skills:
+                    # Try cache first
+                    try:
+                        from harness.skills.cache import (
+                            build_skills_signature,
+                            get_cached_skills_prompt_section,
+                        )
+                        sig = build_skills_signature(enabled_skills)
+                        skills_section = get_cached_skills_prompt_section(
+                            sig,
+                            lambda: get_skills_prompt_section(enabled_skills),
+                        )
+                    except Exception:
+                        skills_section = get_skills_prompt_section(enabled_skills)
             except Exception:
                 logger.exception("Failed to load skills for system prompt")
 
@@ -505,7 +541,14 @@ class LeadAgent:
                 - search           # group → all tools in "search" group
                 - files            # group → all tools in "files" group
         """
-        tools: list[BaseTool] = build_lead_tools(self.subagent_manager)
+        tools: list[BaseTool] = build_lead_tools(
+            self.subagent_manager,
+            parent_skills=(
+                list(self._available_skill_names())
+                if self._available_skill_names() is not None
+                else None
+            ),
+        )
         seen: set[str] = {t.name for t in tools}
 
         if self.config_manager:
@@ -537,6 +580,14 @@ class LeadAgent:
         if self.skill_storage is not None:
             try:
                 enabled_skills = self.skill_storage.load_skills(enabled_only=True)
+
+                # Apply per-agent skills whitelist
+                whitelist = self._available_skill_names()
+                if whitelist is not None:
+                    enabled_skills = [
+                        s for s in enabled_skills if s.name in whitelist
+                    ]
+
                 if enabled_skills:
                     from harness.skills.tool_policy import filter_tools_by_skill_allowed_tools
 

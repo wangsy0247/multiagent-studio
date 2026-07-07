@@ -90,8 +90,17 @@ def _extract_parent_state(
     return result
 
 
-def task_tool(manager: Any | None = None) -> BaseTool:
-    """Create the ``task`` tool used by the Lead Agent."""
+def task_tool(
+    manager: Any | None = None,
+    *,
+    parent_skills: list[str] | None = None,
+) -> BaseTool:
+    """Create the ``task`` tool used by the Lead Agent.
+
+    Args:
+        manager: SubagentManager instance.
+        parent_skills: Optional parent skill allowlist to constrain subagent skills.
+    """
 
     @tool
     async def task(
@@ -130,6 +139,7 @@ def task_tool(manager: Any | None = None) -> BaseTool:
             result = await manager.execute(
                 agent_name, instruction, context,
                 parent_state=parent_state,
+                parent_skills=parent_skills,
             )
             # ── 只返回 output 文本, 不暴露内部细节 ──
             # 内部消息 (ai_messages / token_usage_records) 通过 SubagentManager.
@@ -199,7 +209,11 @@ def ask_clarification_tool() -> BaseTool:
     return ask_clarification
 
 
-def build_lead_tools(manager: Any | None = None) -> list[BaseTool]:
+def build_lead_tools(
+    manager: Any | None = None,
+    *,
+    parent_skills: list[str] | None = None,
+) -> list[BaseTool]:
     """Return all built-in tools required by the Lead Agent.
 
     Tools included:
@@ -210,7 +224,7 @@ def build_lead_tools(manager: Any | None = None) -> list[BaseTool]:
     """
     tools: list[BaseTool] = [
         create_subagent_tool(manager),
-        task_tool(manager),
+        task_tool(manager, parent_skills=parent_skills),
         ask_clarification_tool(),
     ]
 

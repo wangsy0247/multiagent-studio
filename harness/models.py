@@ -68,6 +68,7 @@ class SubAgentConfig(BaseModel):
     model: str = "inherit"
     tools: list[str] | None = None
     disallowed_tools: list[str] = ["task", "ask_clarification", "present_files"]
+    skills: list[str] | None = None
     temperature: float = 0.3
     max_turns: int = 50
     timeout_seconds: int = 900

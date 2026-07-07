@@ -54,6 +54,10 @@ tools:
     group: search
     use: harness.tools.fetchurl:web_fetch
 
+  - name: paper_download
+    group: search
+    use: harness.tools.search:paper_download
+
   - name: bash
     group: code
     use: harness.tools.sandbox_tools:bash

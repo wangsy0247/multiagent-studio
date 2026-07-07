@@ -85,15 +85,14 @@ class TestSkillMetadata:
     def test_code_reviewer_allowed_tools(self, storage):
         skills = {s.name: s for s in storage.load_skills()}
         skill = skills["code-reviewer"]
-        assert skill.allowed_tools == [
-            "file_read", "list_files", "grep_tool", "glob_tool"
-        ]
+        # allowed-tools removed — legacy allow-all
+        assert skill.allowed_tools is None
 
     def test_deep_research_allowed_tools(self, storage):
         skills = {s.name: s for s in storage.load_skills()}
         skill = skills["deep-research"]
-        assert "web_search" in skill.allowed_tools
-        assert "web_fetch" in skill.allowed_tools
+        # allowed-tools removed — legacy allow-all
+        assert skill.allowed_tools is None
 
     def test_my_workflow_is_custom(self, storage):
         skills = {s.name: s for s in storage.load_skills()}

@@ -61,11 +61,14 @@ class SubagentManager:
         llm_factory: Callable[[str | None], BaseChatModel],
         tool_registry: ToolRegistry,
         max_concurrent: int = 3,
+        *,
+        skill_storage: Any | None = None,
     ):
         self._llm_factory = llm_factory
         self._tool_registry = tool_registry
         self._max_concurrent: int = min(max(int(max_concurrent), 2), 4)
         self._semaphore = asyncio.Semaphore(self._max_concurrent)
+        self._skill_storage = skill_storage
 
         # Cache core tools at init time (they don't change per request)
         self._core_tools: list[BaseTool] = tool_registry.get_core_tools()
@@ -151,6 +154,8 @@ class SubagentManager:
         instruction: str,
         context: str = "",
         parent_state: HarnessState | None = None,
+        *,
+        parent_skills: list[str] | None = None,
     ) -> SubAgentResult:
         """Dispatch a task to a SubAgent and wait for completion.
 
@@ -185,6 +190,8 @@ class SubagentManager:
                 llm=llm,
                 tools=tools,
                 parent_state=parent_state,
+                skill_storage=self._skill_storage,
+                parent_skills=parent_skills,
             )
             try:
                 # execute() is blocking on the isolated loop — run in thread

@@ -23,8 +23,10 @@ from .search import (
     arxiv_search,
     build_search_tools,
     create_arxiv_search_tool,
+    create_paper_download_tool,
     create_web_fetch_tool,
     create_web_search_tool,
+    paper_download,
     web_fetch,
     web_search,
 )
@@ -39,9 +41,11 @@ __all__ = [
     "web_search",
     "web_fetch",
     "arxiv_search",
+    "paper_download",
     "create_web_search_tool",
     "create_web_fetch_tool",
     "create_arxiv_search_tool",
+    "create_paper_download_tool",
     "build_search_tools",
     # fetchurl (backward-compat aliases)
     "fetchurl_web_fetch",

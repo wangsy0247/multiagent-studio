@@ -2,12 +2,6 @@
 name: deployment-checklist
 description: Production deployment safety checklist — pre-flight checks, canary validation, rollback procedures. Use when preparing to deploy, before merging to main, or when asked about deployment safety practices.
 license: MIT
-allowed-tools:
-  - bash
-  - file_read
-  - file_write
-  - list_files
-  - glob_tool
 version: "1.0"
 author: multiagent-studio
 ---

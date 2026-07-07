@@ -52,13 +52,8 @@ class TestSkillDiscovery:
 class TestComplexSkillMetadata:
     def test_architecture_review_allowed_tools(self, storage):
         s = {s.name: s for s in storage.load_skills()}["system-architecture-review"]
-        assert "file_read" in s.allowed_tools
-        assert "file_write" in s.allowed_tools
-        assert "web_search" in s.allowed_tools
-        assert "grep_tool" in s.allowed_tools
-        assert "glob_tool" in s.allowed_tools
-        assert "list_files" in s.allowed_tools
-        assert len(s.allowed_tools) == 6
+        # allowed-tools removed — all skills now use legacy allow-all (None)
+        assert s.allowed_tools is None
 
     def test_architecture_review_has_version(self, storage):
         """version field should be available even though not parsed into the Skill dataclass directly."""
@@ -68,7 +63,8 @@ class TestComplexSkillMetadata:
     def test_deployment_checklist_is_custom(self, storage):
         s = {s.name: s for s in storage.load_skills()}["deployment-checklist"]
         assert s.category == SkillCategory.CUSTOM
-        assert s.allowed_tools == ["bash", "file_read", "file_write", "list_files", "glob_tool"]
+        # allowed-tools removed — legacy allow-all
+        assert s.allowed_tools is None
 
     def test_deployment_checklist_has_support_files(self):
         """Verify the custom skill directory contains its references and scripts."""
@@ -246,46 +242,36 @@ class TestComplexToolFiltering:
     def _get_skill(self, storage, name):
         return {s.name: s for s in storage.load_skills()}[name]
 
-    def test_architecture_review_restricts_tools(self, storage):
-        """system-architecture-review allows 6 tools — verify others are blocked."""
-        skill = self._get_skill(storage, "system-architecture-review")
-        from harness.skills.tool_policy import filter_tools_by_skill_allowed_tools
+    def test_all_skills_legacy_allow_all(self, storage):
+        """All skills have allowed_tools=None → legacy allow-all (no filtering)."""
+        skills = storage.load_skills()
+        result = allowed_tool_names_for_skills(skills)
+        assert result is None  # legacy: allow all tools
 
+    def test_filtering_passes_all_when_no_declarations(self, storage):
+        """When no skill declares allowed-tools, all tools pass through."""
+        skills = storage.load_skills()
         all_tools = [
             self._make_tool(n) for n in
             ["file_read", "file_write", "list_files", "grep_tool", "glob_tool",
              "web_search", "web_fetch", "bash", "task", "str_replace"]
         ]
-        filtered = filter_tools_by_skill_allowed_tools(all_tools, [skill])
-        names = {t.name for t in filtered}
-        assert names == {"file_read", "file_write", "list_files", "grep_tool", "glob_tool", "web_search"}
-        assert "bash" not in names
-        assert "task" not in names
+        filtered = filter_tools_by_skill_allowed_tools(all_tools, skills)
+        assert len(filtered) == len(all_tools)  # Nothing filtered
 
-    def test_union_of_three_restrictive_skills(self, storage):
-        """Three skills each allow different tools → union applies."""
-        s1 = self._get_skill(storage, "code-reviewer")        # 4 tools
-        s2 = self._get_skill(storage, "deep-research")        # 5 tools
-        s3 = self._get_skill(storage, "deployment-checklist") # 5 tools
+    def test_single_skill_legacy(self, storage):
+        """Single skill without allowed-tools → no restriction."""
+        skill = self._get_skill(storage, "greeting-responder")
+        result = allowed_tool_names_for_skills([skill])
+        assert result is None
 
+    def test_mixed_all_unrestricted(self, storage):
+        """Multiple skills all without allowed-tools → legacy allow-all."""
+        s1 = self._get_skill(storage, "code-reviewer")
+        s2 = self._get_skill(storage, "deep-research")
+        s3 = self._get_skill(storage, "greeting-responder")
         result = allowed_tool_names_for_skills([s1, s2, s3])
-        # Union: file_read, list_files, grep_tool, glob_tool + web_search, web_fetch, file_write + bash
-        assert "file_read" in result
-        assert "web_search" in result
-        assert "bash" in result
-        assert "file_write" in result
-        # task not in any skill's allowed list
-        assert "task" not in result
-
-    def test_mixed_restrictive_and_unrestricted(self, storage):
-        """A restrictive skill + an unrestricted skill → filtering applies."""
-        restricted = self._get_skill(storage, "code-reviewer")      # allows 4 tools
-        unrestricted = self._get_skill(storage, "greeting-responder") # allowed_tools=None
-
-        # When at least one skill declares allowed-tools, filtering applies.
-        # Unrestricted skills contribute nothing to the allowed set.
-        result = allowed_tool_names_for_skills([restricted, unrestricted])
-        assert result == {"file_read", "list_files", "grep_tool", "glob_tool"}
+        assert result is None  # All unrestricted → legacy mode
 
 
 # ===================================================================
@@ -305,7 +291,8 @@ class TestParseThenLoadRoundTrip:
         assert parsed is not None
         assert parsed.name == "system-architecture-review"
         assert parsed.description.startswith("Conduct comprehensive system architecture reviews")
-        assert len(parsed.allowed_tools) == 6
+        # allowed-tools removed — legacy allow-all
+        assert parsed.allowed_tools is None
         assert parsed.category == SkillCategory.PUBLIC
 
     def test_parse_deployment_checklist_then_load(self):
@@ -318,7 +305,8 @@ class TestParseThenLoadRoundTrip:
         assert parsed is not None
         assert parsed.name == "deployment-checklist"
         assert parsed.category == SkillCategory.CUSTOM
-        assert "bash" in parsed.allowed_tools
+        # allowed-tools removed — legacy allow-all
+        assert parsed.allowed_tools is None
 
     def test_container_path_for_nested_skill(self):
         """Skill in a flat directory gets correct container path."""
