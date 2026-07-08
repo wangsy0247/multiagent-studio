@@ -345,6 +345,10 @@ SYSTEM_PROMPT_TEMPLATE = """<role>
 You are {agent_name}, an AI assistant with multi-agent orchestration capabilities.
 </role>
 
+<language>
+{language_section}
+</language>
+
 <thinking_style>
 - Think concisely and strategically about the user's request BEFORE taking action
 - Break down the task: What is clear? What is ambiguous? What is missing?
@@ -371,6 +375,69 @@ You are {agent_name}, an AI assistant with multi-agent orchestration capabilitie
 {critical_reminders_section}"""
 
 
+def _build_language_section() -> str:
+    """Build a language directive based on persisted user preference.
+
+    Checks the user's memory for a language preference fact. If the user
+    has consistently communicated in a specific language, return an
+    explicit instruction to use that language. Otherwise, fall back to
+    matching the current conversation's language.
+    """
+    try:
+        from harness.memory.updater import get_memory_data
+        memory = get_memory_data(agent_name=None)
+        facts = memory.get("facts", []) if isinstance(memory, dict) else []
+
+        # Search for language-preference facts.
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            content = str(fact.get("content", "")).lower()
+            if fact.get("category") == "preference" and any(
+                kw in content for kw in ("language", "prefers chinese", "uses chinese", "中文", "mandarin", "speaks chinese")
+            ):
+                if "chinese" in content or "中文" in content:
+                    return (
+                        "The user prefers communicating in Chinese (中文). "
+                        "You MUST think in Chinese and respond in Chinese. "
+                        "Use Chinese for all output unless the user explicitly switches languages."
+                    )
+                if "english" in content:
+                    return (
+                        "The user prefers communicating in English. "
+                        "You MUST think in English and respond in English."
+                    )
+
+        # Fallback: check personalContext for language clues.
+        personal = (
+            memory.get("user", {}).get("personalContext", {}).get("summary", "")
+            if isinstance(memory, dict)
+            else ""
+        )
+        if personal:
+            personal_lower = personal.lower()
+            if any(kw in personal_lower for kw in ("chinese", "中文", "mandarin")):
+                return (
+                    "The user prefers communicating in Chinese (中文). "
+                    "You MUST think in Chinese and respond in Chinese."
+                )
+            if "english" in personal_lower:
+                return (
+                    "The user prefers communicating in English. "
+                    "You MUST think in English and respond in English."
+                )
+
+    except Exception:
+        pass
+
+    # Default: match the user's language in the current conversation.
+    return (
+        "Match the language the user is currently using. "
+        "If the user writes in Chinese, respond in Chinese. "
+        "If the user writes in English, respond in English."
+    )
+
+
 def apply_prompt_template(
     agent_name: str = "Multi-Agent Orchestrator",
     max_concurrent_subagents: int = 3,
@@ -378,6 +445,7 @@ def apply_prompt_template(
     mem0_tool_enabled: bool = False,
     *,
     skills_section: str = "",
+    language_section: str = "",
 ) -> str:
     """Assemble the full Lead Agent system prompt from sections.
 
@@ -410,6 +478,7 @@ def apply_prompt_template(
 
     return SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name,
+        language_section=language_section or _build_language_section(),
         subagent_thinking=subagent_thinking,
         clarification_section=clarification_section,
         subagent_section=subagent_section,
@@ -680,6 +749,15 @@ def _build_middlewares(
             ts_cfg = config_manager.get("tool_search")
             if isinstance(ts_cfg, dict): tool_search_enabled = ts_cfg.get("enabled", False)
         except Exception: pass
+    # loop_detection config (from config.yaml)
+    loop_cfg: dict = {}
+    if config_manager is not None:
+        try:
+            raw_loop = config_manager.get("loop_detection")
+            if isinstance(raw_loop, dict):
+                loop_cfg = raw_loop
+        except Exception:
+            pass
     middlewares.append(ThreadDataMiddleware({"workspace_root": workspace_root}))
     middlewares.append(UploadsMiddleware())
     middlewares.append(SandboxMiddleware())
@@ -702,7 +780,14 @@ def _build_middlewares(
     if vision_enabled: middlewares.append(ViewImageMiddleware())
     if tool_search_enabled: middlewares.append(DeferredToolFilterMiddleware())
     if subagent_enabled: middlewares.append(SubagentLimitMiddleware({"max_concurrent": max_concurrent_subagents}))
-    middlewares.append(LoopDetectionMiddleware())
+    middlewares.append(LoopDetectionMiddleware(
+        loop_cfg,
+        warn_threshold=loop_cfg.get("warn_threshold", 7),
+        hard_limit=loop_cfg.get("hard_limit", 10),
+        tool_freq_warn=loop_cfg.get("tool_freq_warn", 30),
+        tool_freq_hard_limit=loop_cfg.get("tool_freq_hard_limit", 50),
+        window_size=loop_cfg.get("window_size", 20),
+    ))
     middlewares.append(SafetyFinishReasonMiddleware())
     if custom_middlewares: middlewares.extend(custom_middlewares)
     middlewares.append(ClarificationMiddleware())

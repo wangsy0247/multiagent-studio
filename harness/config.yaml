@@ -174,8 +174,10 @@ title:
 # --- Loop Detection ---
 loop_detection:
   enabled: true
-  warn_threshold: 3
-  hard_limit: 5
+  warn_threshold: 3       # Layer 1: 相同调用集触发警告
+  hard_limit: 5            # Layer 1: 相同调用集强制停止
+  tool_freq_warn: 20       # Layer 2: 同工具名触发警告
+  tool_freq_hard_limit: 40 # Layer 2: 同工具名强制停止
   window_size: 20
 
 # --- Subagents ---

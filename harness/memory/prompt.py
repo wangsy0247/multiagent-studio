@@ -43,7 +43,7 @@ Memory Section Guidelines:
 
 **User Context** (Current state - concise summaries):
 - workContext: Professional role, company, key projects, main technologies (2-3 sentences)
-- personalContext: Languages, communication preferences, key interests (1-2 sentences)
+- personalContext: Languages, communication preferences, key interests (1-2 sentences). CRITICAL: explicitly note the user's preferred spoken/written language (e.g., "prefers Chinese", "uses English", "mixes Chinese and English"). When the user consistently writes in a particular language, treat this as a high-confidence preference.
 - topOfMind: Multiple ongoing focus areas and priorities (3-5 sentences, detailed paragraph)
 
 **History** (Temporal context - rich paragraphs):
@@ -54,6 +54,7 @@ Memory Section Guidelines:
 **Facts Extraction**:
 - Extract specific, quantifiable details
 - Include proper nouns (company names, project names, technology names)
+- CRITICAL: detect the user's preferred language — if the user consistently writes in Chinese, record as fact: "User prefers communicating in Chinese" with category "preference" and confidence 0.95+
 - Categories: preference, knowledge, context, behavior, goal, correction
 - Confidence levels: 0.9-1.0 explicit, 0.7-0.8 strongly implied, 0.5-0.6 inferred patterns
 

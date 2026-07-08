@@ -149,9 +149,15 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
     Parameters
     ----------
     warn_threshold : int
-        Number of identical tool-call sets before injecting a warning. Default: 3.
+        Number of identical tool-call sets before injecting a warning. Default: 7.
     hard_limit : int
-        Number of identical tool-call sets before forcing a hard stop. Default: 5.
+        Number of identical tool-call sets before forcing a hard stop. Default: 10.
+    tool_freq_warn : int
+        Per-tool-type call count before injecting a warning (Layer 2).
+        Default: 30.
+    tool_freq_hard_limit : int
+        Per-tool-type call count before forcing a hard stop (Layer 2).
+        Default: 50.
     window_size : int
         Size of the sliding window for tracking calls. Default: 20.
     """
@@ -164,12 +170,16 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         *,
         warn_threshold: int = _DEFAULT_WARN_THRESHOLD,
         hard_limit: int = _DEFAULT_HARD_LIMIT,
+        tool_freq_warn: int = _DEFAULT_TOOL_FREQ_WARN,
+        tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
         window_size: int = _DEFAULT_WINDOW_SIZE,
         max_tracked_threads: int = _DEFAULT_MAX_TRACKED_THREADS,
     ):
         super().__init__(config)
         self.warn_threshold = warn_threshold
         self.hard_limit = hard_limit
+        self.tool_freq_warn = tool_freq_warn
+        self.tool_freq_hard_limit = tool_freq_hard_limit
         self.window_size = window_size
         self.max_tracked_threads = max_tracked_threads
         self._lock = threading.Lock()
@@ -289,14 +299,14 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
                 freq[name] += 1
                 tc_count = freq[name]
 
-                if tc_count >= self.hard_limit:
+                if tc_count >= self.tool_freq_hard_limit:
                     logger.error(
                         "Tool frequency hard limit thread=%s tool=%s count=%d",
                         thread_id, name, tc_count,
                     )
                     return _TOOL_FREQ_HARD_STOP_MSG.format(tool_name=name, count=tc_count), True
 
-                if tc_count >= self.warn_threshold:
+                if tc_count >= self.tool_freq_warn:
                     warned_freq = self._tool_freq_warned[thread_id]
                     if name not in warned_freq:
                         warned_freq.add(name)
