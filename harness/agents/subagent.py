@@ -13,7 +13,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
 from harness.agents.subagent_executor import SubagentExecutor
-from harness.agents.subagent_middleware import build_subagent_middlewares
 from harness.models import HarnessState, SubAgentConfig, SubAgentResult
 
 logger = logging.getLogger(__name__)

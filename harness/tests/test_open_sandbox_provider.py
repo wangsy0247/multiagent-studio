@@ -87,7 +87,7 @@ class TestOpenSandboxProvider:
         assert sandbox.user_id == "u1"
         create_mock.assert_awaited_once()
         args, kwargs = create_mock.call_args
-        assert args[0] == "python:3.11-slim"
+        assert args[0] == "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12"
         assert kwargs["resource"] == {"cpu": "1", "memory": "2Gi"}
         assert len(kwargs["volumes"]) == 4
 

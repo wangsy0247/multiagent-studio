@@ -48,7 +48,6 @@ class TokenUsageMiddleware(HarnessAgentMiddleware):
 
         # Extract usage from LangChain response_metadata
         usage_meta = getattr(last_msg, "usage_metadata", None) or {}
-        response_meta = getattr(last_msg, "response_metadata", {}) or {}
 
         input_tokens = usage_meta.get("input_tokens", 0)
         output_tokens = usage_meta.get("output_tokens", 0)

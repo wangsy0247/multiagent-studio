@@ -16,7 +16,6 @@ import re
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from fastapi import UploadFile
 

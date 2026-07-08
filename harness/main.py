@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import uuid
@@ -144,9 +143,9 @@ class HarnessService(_BaseService):
             plugin_tools = self.config_manager.get("plugins.tools", [])
             self.tool_registry.load_plugins_from_config(plugin_tools)
 
-        # 3. Load MCP tools
-        if cfg.mcp_config_path and Path(cfg.mcp_config_path).exists():
-            await self.tool_registry.load_mcp_tools(cfg.mcp_config_path)
+        # 3. Load MCP tools (with persistent sessions, cache, OAuth)
+        mcp_path = cfg.mcp_config_path or "./extensions_config.json"
+        await self.tool_registry.load_mcp_tools(mcp_path)
 
         # 4. Memory system (DeerFlow-aligned: global singletons)
         memory_cfg_dict: dict[str, Any] = {}
@@ -211,6 +210,16 @@ class HarnessService(_BaseService):
         self.skill_storage = SkillStorage(_project_skills_root)
         self.skills = self.skill_storage.load_skills(enabled_only=True)
         logger.info("Skills loaded: %d enabled from %s", len(self.skills), _project_skills_root)
+
+        # Register the skill_manage agent self-management tool
+        from harness.tools.skill_manage_tool import create_skill_manage_tool
+
+        skill_manage = create_skill_manage_tool(
+            skill_storage=self.skill_storage,
+            model_client=self.llm,  # LLM-based security scanning
+        )
+        self.tool_registry.register(skill_manage, "skills")
+        logger.info("skill_manage tool registered")
 
         # 8.5. SubAgent manager (uses stripped-down subagent middlewares internally)
         self.subagent_manager = SubagentManager(

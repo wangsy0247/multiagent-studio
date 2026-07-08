@@ -1,10 +1,8 @@
 """Memory updater for reading, writing, and updating memory data — adapted from DeerFlow."""
 
-import asyncio
 import copy
 import json
 import logging
-import math
 import os
 import re
 import uuid
@@ -18,7 +16,6 @@ from harness.memory.prompt import (
     format_conversation_for_update,
 )
 from harness.memory.storage import (
-    FileMemoryStorage,
     create_empty_memory,
     get_memory_storage,
     utc_now_iso_z,

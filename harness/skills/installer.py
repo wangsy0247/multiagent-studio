@@ -13,7 +13,6 @@ Files outside these directories are rejected.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import tempfile
 import zipfile

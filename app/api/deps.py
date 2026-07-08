@@ -2,8 +2,6 @@
 FastAPI 依赖注入: 数据库会话、当前用户验证
 """
 
-from typing import AsyncGenerator
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession

@@ -24,9 +24,8 @@ import json
 import logging
 import threading
 from collections import OrderedDict, defaultdict
-from collections.abc import Awaitable, Callable
 from copy import deepcopy
-from typing import TYPE_CHECKING, override
+from typing import Any, override
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime

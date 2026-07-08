@@ -4,7 +4,6 @@ SQLModel 用户模型
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlmodel import Field, SQLModel
 

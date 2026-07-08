@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from opensandbox import Sandbox as OpenSandboxClient
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.execd import RunCommandOpts
-from opensandbox.models.filesystem import EntryInfo, SearchEntry, WriteEntry
+from opensandbox.models.filesystem import SearchEntry, WriteEntry
 from opensandbox.models.sandboxes import Host, Volume
 
 from harness.config.paths import (
@@ -192,7 +192,7 @@ class OpenSandboxProvider(SandboxProvider):
 
     def __init__(
         self,
-        image: str = "python:3.11-slim",
+        image: str = "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12",
         server_url: str = "http://localhost:8080",
         api_key: str = "",
         resource_cpu: str = "1",

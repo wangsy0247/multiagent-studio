@@ -61,7 +61,7 @@ class HarnessConfig(BaseSettings):
 
     # Middleware
     sandbox_use: str = ""  # e.g. harness.services.open_sandbox_provider:OpenSandboxProvider
-    sandbox_image: str = "python:3.11-slim"
+    sandbox_image: str = "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12"
 
     # OpenSandbox settings
     sandbox_server_url: str = "http://localhost:8080"

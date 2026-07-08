@@ -19,8 +19,10 @@ tool_groups:
   #   description: 代码执行工具组
   - name: files
     description: 文件操作工具组
-  - name: files_readonly   
+  - name: files_readonly
     description: 文件只读工具组
+  - name: mcp
+    description: MCP 外部工具 (动态加载)
 
 # --- Lead Agent ---
 lead_agent:
@@ -28,6 +30,8 @@ lead_agent:
     - search
     - files
     - files_readonly
+    - skills
+    - mcp
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
@@ -96,7 +100,7 @@ sandbox:
   use: harness.services.open_sandbox_provider:OpenSandboxProvider
 
   # Sandbox base image (used by OpenSandbox).
-  image: python:3.11-slim
+  image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12
 
   # OpenSandbox settings.
   server_url: http://localhost:8080

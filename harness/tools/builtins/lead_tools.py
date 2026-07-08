@@ -1,7 +1,6 @@
 """Built-in tools required by the Lead Agent."""
 from __future__ import annotations
 
-import json
 import logging
 from typing import Annotated, Any, Literal
 
@@ -9,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import InjectedState
 
-from harness.agents.presets import PRESET_SUBAGENTS, build_subagent_config
+from harness.agents.presets import build_subagent_config
 from harness.tools.builtins.memory_tools import create_memory_search_tool
 
 logger = logging.getLogger(__name__)

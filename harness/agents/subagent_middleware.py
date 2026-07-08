@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from langchain.agents.middleware import AgentMiddleware
 
-from harness.middleware.base import HarnessAgentMiddleware
 from harness.middleware.dangling_tool_call import DanglingToolCallMiddleware
 from harness.middleware.llm_error import LLMErrorHandlingMiddleware
 from harness.middleware.safety_finish_reason import SafetyFinishReasonMiddleware

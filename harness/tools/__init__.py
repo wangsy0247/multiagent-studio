@@ -34,6 +34,7 @@ from .fetchurl import (
     create_web_fetch_tool as create_fetchurl_web_fetch_tool,
     web_fetch as fetchurl_web_fetch,
 )
+from .skill_manage_tool import create_skill_manage_tool
 
 __all__ = [
     "ToolRegistry",
@@ -66,4 +67,6 @@ __all__ = [
     "create_grep_tool",
     "create_str_replace_tool",
     "build_sandbox_tools",
+    # skill management
+    "create_skill_manage_tool",
 ]

@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
 from harness.agents.presets import PRESET_SUBAGENTS

@@ -8,7 +8,6 @@ messages are compressed away.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Protocol, override, runtime_checkable
 

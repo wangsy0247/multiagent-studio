@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import BaseTool
 
 
 def resolve_variable(variable_path: str, expected_type: type[Any] | tuple[type[Any], ...] | None = None) -> Any:

@@ -25,7 +25,7 @@ sandbox:
   use: ""
 
   # Sandbox base image (used by OpenSandbox).
-  image: python:3.11-slim
+  image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12
 
   # OpenSandbox settings.
   server_url: http://localhost:8080

@@ -10,7 +10,6 @@ Memory is a global singleton system:
 """
 
 from harness.memory.prompt import (
-    FACT_EXTRACTION_PROMPT,
     MEMORY_UPDATE_PROMPT,
     format_conversation_for_update,
     format_memory_for_injection,
@@ -19,7 +18,6 @@ from harness.memory.queue import (
     ConversationContext,
     MemoryUpdateQueue,
     get_memory_queue,
-    reset_memory_queue,
 )
 from harness.memory.storage import (
     FileMemoryStorage,

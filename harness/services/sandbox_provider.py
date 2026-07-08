@@ -194,7 +194,7 @@ def get_sandbox_provider(**kwargs: Any) -> SandboxProvider:
 
         env_cfg = load_config()
         defaults = {
-            "image": getattr(env_cfg, "sandbox_image", "python:3.11-slim"),
+            "image": getattr(env_cfg, "sandbox_image", "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12"),
             "server_url": getattr(env_cfg, "sandbox_server_url", "http://localhost:8080"),
             "api_key": getattr(env_cfg, "sandbox_api_key", ""),
             "resource_cpu": getattr(env_cfg, "sandbox_resource_cpu", "1"),

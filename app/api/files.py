@@ -2,10 +2,8 @@
 文件 API 路由: 上传、下载、列表、删除
 """
 
-import os
 import logging
 from uuid import UUID
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse

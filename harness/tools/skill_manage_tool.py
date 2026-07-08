@@ -410,7 +410,6 @@ def _replace_markdown_section(
         return document
 
     heading_line = match.group(1)
-    start = match.start()
     content_start = match.end()
 
     # Determine heading level

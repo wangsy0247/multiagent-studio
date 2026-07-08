@@ -11,8 +11,6 @@ from harness.config.tool_config import ToolConfig, ToolGroupConfig
 from harness.models import ToolGroup
 from harness.utils import resolve_variable
 
-from .mcp_adapter import load_mcp_tools_from_config
-
 logger = logging.getLogger(__name__)
 
 
@@ -63,16 +61,34 @@ class ToolRegistry:
 
     def get_tools_by_category(self, category: str) -> list[BaseTool]:
         """Return tools belonging to a category."""
-        return [
+        tools = [
             tool for name, tool in self._tools.items()
             if self._categories.get(name) == category
         ]
+        if category == "mcp":
+            tools.extend(self._mcp_tools.values())
+        return tools
 
     # ---- MCP loading ----
 
-    async def load_mcp_tools(self, config_path: str) -> list[BaseTool]:
-        """Load external tools from an MCP configuration file."""
-        tools = await load_mcp_tools_from_config(config_path)
+    async def load_mcp_tools(self, config_path: str = "") -> list[BaseTool]:
+        """Load external tools from enabled MCP servers.
+
+        Uses the new ``harness.mcp_integration`` module with persistent sessions,
+        cache with mtime invalidation, and OAuth support.
+        """
+        from harness.mcp_integration import initialize_mcp_tools
+
+        tools = await initialize_mcp_tools(config_path=config_path)
+        for t in tools:
+            self._mcp_tools[t.name] = t
+        return tools
+
+    def get_mcp_tools_sync(self) -> list[BaseTool]:
+        """Get cached MCP tools (synchronous, for lazy-init paths)."""
+        from harness.mcp import get_cached_mcp_tools
+
+        tools = get_cached_mcp_tools()
         for t in tools:
             self._mcp_tools[t.name] = t
         return tools
