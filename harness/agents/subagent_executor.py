@@ -251,6 +251,7 @@ class SubagentExecutor:
         *,
         skill_storage: Any | None = None,
         parent_skills: list[str] | None = None,
+        worktree_ctx: Any | None = None,  # WorktreeContext | None
     ):
         self.config = config
         self.llm = llm
@@ -258,6 +259,7 @@ class SubagentExecutor:
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
         self._skill_storage = skill_storage
         self._parent_skills = parent_skills
+        self._worktree_ctx = worktree_ctx
 
         # Filter tools
         self._base_tools = _filter_tools(
@@ -450,6 +452,7 @@ class SubagentExecutor:
 
         Merges system_prompt + skill messages + task into messages.
         Inherits sandbox + thread_data from parent state.
+        When a worktree is active, injects the worktree path into the task.
         """
         messages: list[Any] = []
 
@@ -460,6 +463,18 @@ class SubagentExecutor:
 
         if self.config.system_prompt:
             messages.append(SystemMessage(content=self.config.system_prompt))
+
+        # ── Worktree isolation: inject worktree context into task ──
+        if self._worktree_ctx is not None:
+            wt = self._worktree_ctx
+            task = (
+                f"[WORKTREE]\n"
+                f"工作目录: {wt.virtual_path}\n"
+                f"分支: {wt.branch}\n"
+                f"所有文件操作请在此目录下进行，不要修改主 workspace 的文件。\n"
+                f"[/WORKTREE]\n\n"
+                f"{task}"
+            )
 
         messages.append(HumanMessage(content=task))
 

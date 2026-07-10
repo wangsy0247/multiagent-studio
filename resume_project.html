@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MultiAgent Studio - 项目简历</title>
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-light: #dbeafe;
+    --accent: #7c3aed;
+    --accent-light: #ede9fe;
+    --text: #1e293b;
+    --text-secondary: #475569;
+    --text-light: #64748b;
+    --bg: #f8fafc;
+    --card-bg: #ffffff;
+    --border: #e2e8f0;
+    --code-bg: #f1f5f9;
+    --success: #16a34a;
+    --warning: #d97706;
+    --danger: #dc2626;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.8;
+    font-size: 15px;
+  }
+  .container { max-width: 920px; margin: 0 auto; padding: 48px 32px; }
+
+  /* Header */
+  .header {
+    text-align: center;
+    margin-bottom: 48px;
+    padding-bottom: 32px;
+    border-bottom: 3px solid var(--primary);
+  }
+  .header h1 {
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .header .subtitle {
+    font-size: 16px;
+    color: var(--text-light);
+    margin-bottom: 16px;
+  }
+  .tech-stack {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .tech-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    background: var(--primary-light);
+    color: var(--primary);
+  }
+  .tech-badge.accent { background: var(--accent-light); color: var(--accent); }
+
+  /* Section */
+  .section { margin-bottom: 40px; }
+  .section-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 20px;
+    padding-left: 14px;
+    border-left: 4px solid var(--primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title .icon { font-size: 26px; }
+
+  /* Card */
+  .card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: box-shadow 0.2s;
+  }
+  .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+  .card-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--primary);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-title .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .card p { color: var(--text-secondary); margin-bottom: 8px; }
+  .card p:last-child { margin-bottom: 0; }
+  .card ul { list-style: none; padding-left: 0; }
+  .card ul li {
+    position: relative;
+    padding-left: 20px;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+  }
+  .card ul li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 10px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--primary);
+  }
+
+  /* Highlight box */
+  .highlight-box {
+    background: linear-gradient(135deg, var(--primary-light), var(--accent-light));
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 12px 0;
+    border-left: 4px solid var(--accent);
+  }
+  .highlight-box strong { color: var(--accent); }
+
+  /* Code */
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--accent);
+  }
+  .code-block {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 16px 20px;
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin: 12px 0;
+  }
+  .code-block .kw { color: #c084fc; }
+  .code-block .str { color: #86efac; }
+  .code-block .com { color: #64748b; }
+  .code-block .fn { color: #93c5fd; }
+  .code-block .num { color: #fbbf24; }
+
+  /* Metrics grid */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .metric-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    text-align: center;
+  }
+  .metric-value {
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--primary);
+    line-height: 1.2;
+  }
+  .metric-label {
+    font-size: 13px;
+    color: var(--text-light);
+    margin-top: 4px;
+  }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .arch-flow {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+  }
+  .arch-layer {
+    width: 100%;
+    padding: 12px 16px;
+    border-radius: 8px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .arch-layer.frontend { background: #dbeafe; color: #1e40af; }
+  .arch-layer.gateway { background: #fef3c7; color: #92400e; }
+  .arch-layer.app { background: #d1fae5; color: #065f46; }
+  .arch-layer.harness { background: #ede9fe; color: #5b21b6; }
+  .arch-layer.infra { background: #fce7f3; color: #9d174d; }
+  .arch-arrow { color: var(--text-light); font-size: 20px; }
+  .arch-items {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .arch-item {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.6);
+  }
+
+  /* Tags */
+  .tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tag {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+  .tag-blue { background: #dbeafe; color: #1e40af; }
+  .tag-green { background: #d1fae5; color: #065f46; }
+  .tag-purple { background: #ede9fe; color: #5b21b6; }
+  .tag-orange { background: #ffedd5; color: #9a3412; }
+  .tag-red { background: #fee2e2; color: #991b1b; }
+
+  /* Table */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  .data-table th {
+    background: var(--primary-light);
+    color: var(--primary);
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 2px solid var(--primary);
+  }
+  .data-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+  }
+  .data-table tr:hover td { background: var(--bg); }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--text-light);
+    font-size: 13px;
+  }
+
+  @media (max-width: 640px) {
+    .container { padding: 24px 16px; }
+    .header h1 { font-size: 24px; }
+    .metrics-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ==================== HEADER ==================== -->
+  <div class="header">
+    <h1>MultiAgent Studio — 全栈多智能体协作平台</h1>
+    <div class="subtitle">基于 LangGraph + LangChain 的企业级 AI Agent 编排与执行框架</div>
+    <div class="tech-stack">
+      <span class="tech-badge">LangGraph</span>
+      <span class="tech-badge">LangChain</span>
+      <span class="tech-badge">FastAPI</span>
+      <span class="tech-badge">Next.js 14</span>
+      <span class="tech-badge">React 18</span>
+      <span class="tech-badge accent">MCP 协议</span>
+      <span class="tech-badge accent">SSE 流式</span>
+      <span class="tech-badge">PostgreSQL</span>
+      <span class="tech-badge">Docker</span>
+    </div>
+  </div>
+
+  <!-- ==================== 项目背景 ==================== -->
+  <div class="section">
+    <div class="section-title"><span class="icon">📋</span> 项目内容与背景</div>
+
+    <div class="card">
+      <div class="card-title"><span class="num">1</span> 项目定位</div>
+      <p>MultiAgent Studio 是一个面向企业级场景的<strong>全栈多智能体协作平台</strong>，旨在解决单一 LLM Agent 在复杂任务中能力不足的问题。平台采用 <strong>"Lead Agent + SubAgent"</strong> 的分层编排模型：Lead Agent 作为主控智能体，通过 ReAct 循环理解用户意图、调度工具、按需派发 SubAgent 执行专业化子任务（如代码编写、数据分析、深度研究等），实现多角色协同完成复杂工作流。</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="num">2</span> 业务背景</div>
+      <p>随着大模型应用从单轮对话走向复杂任务自动化，传统单 Agent 架构面临三大痛点：</p>
+      <ul>
+        <li><strong>上下文窗口溢出</strong>：长对话导致 token 膨胀，模型注意力分散，输出质量下降</li>
+        <li><strong>能力边界单一</strong>：单个 Agent 难以同时擅长编码、研究、分析、写作等多领域任务</li>
+        <li><strong>缺乏持久记忆</strong>：跨会话信息丢失，Agent 无法积累用户偏好和历史上下文</li>
+      </ul>
+      <p>本项目参考字节跳动开源的 <strong>DeerFlow</strong> 工业级架构，从零构建了一套包含 <strong>20 层中间件管线、多后端记忆系统、上下文自动压缩、SubAgent 隔离执行</strong>的完整解决方案，并配以可视化编排前端，实现了从"对话"到"协作"的跃迁。</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="num">3</span> 系统架构</div>
+      <div class="arch-diagram">
+        <div class="arch-flow">
+          <div class="arch-layer frontend">
+            前端层 · Next.js 14 + React 18 + Zustand
+            <div class="arch-items">
+              <span class="arch-item">会话工作台</span>
+              <span class="arch-item">Agent 管理</span>
+              <span class="arch-item">项目协作</span>
+              <span class="arch-item">可视化画布</span>
+              <span class="arch-item">监控面板</span>
+            </div>
+          </div>
+          <div class="arch-arrow">↓ HTTP / SSE</div>
+          <div class="arch-layer gateway">
+            网关层 · Nginx 反向代理（SSE 零缓冲）
+          </div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer app">
+            业务层 · FastAPI（端口 8000）
+            <div class="arch-items">
+              <span class="arch-item">JWT 认证</span>
+              <span class="arch-item">会话管理</span>
+              <span class="arch-item">文件上传</span>
+              <span class="arch-item">配置管理</span>
+              <span class="arch-item">Harness 代理</span>
+            </div>
+          </div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer harness">
+            Agent 引擎层 · LangGraph + 20 层中间件（端口 8001）
+            <div class="arch-items">
+              <span class="arch-item">Lead Agent (ReAct)</span>
+              <span class="arch-item">SubAgent 池</span>
+              <span class="arch-item">记忆系统</span>
+              <span class="arch-item">工具注册表</span>
+              <span class="arch-item">上下文压缩</span>
+              <span class="arch-item">Skill 系统</span>
+              <span class="arch-item">可观测性</span>
+            </div>
+          </div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer infra">
+            基础设施层 · Docker Compose
+            <div class="arch-items">
+              <span class="arch-item">PostgreSQL + pgvector</span>
+              <span class="arch-item">Redis</span>
+              <span class="arch-item">Langfuse</span>
+              <span class="arch-item">SQLite Checkpoint</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="num">4</span> 个人角色与职责</div>
+      <ul>
+        <li><strong>后端核心开发</strong>：独立设计并实现 Agent 引擎层（harness），包含 20 层中间件管线、SubAgent 调度系统、长期记忆系统、工具注册表、上下文压缩等核心模块</li>
+        <li><strong>前端开发</strong>：基于 Next.js 14 实现 SSE 流式对话、多 Agent 可视化编排画布（ReactFlow）、项目协作看板、Agent 人格编辑器等</li>
+        <li><strong>架构设计</strong>：对齐 DeerFlow 工业级实践，设计三层服务架构（前端 → 业务层 → 引擎层），完成 Docker 容器化部署方案</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ==================== 技术亮点 ==================== -->
+  <div class="section">
+    <div class="section-title"><span class="icon">⚡</span> 技术亮点（详细）</div>
+
+    <!-- 亮点 1: 20层中间件 -->
+    <div class="card">
+      <div class="card-title"><span class="num">1</span> 20 层 AgentMiddleware 管线化架构 — 关注点分离的 Agent 执行引擎</div>
+      <p>设计了 <strong>20 层中间件管线</strong>，将 Agent 执行过程中的横切关注点（安全、记忆、压缩、错误处理、循环检测等）完全解耦，每个中间件职责单一、可独立启用/禁用，通过 <code>RuntimeFeatures</code> 声明式开关控制。</p>
+
+      <div class="highlight-box">
+        <strong>核心设计：</strong>中间件按注册顺序形成洋葱模型，<code>before_*</code> 钩子正向执行（0→N），<code>after_*</code> 钩子反向执行（N→0），<code>wrap_model_call</code> 嵌套包装（后注册 = 外层 wrapper），确保错误处理在最外层兜底、澄清拦截在最后执行。
+      </div>
+
+      <table class="data-table">
+        <thead>
+          <tr><th>层级</th><th>中间件</th><th>钩子</th><th>职责</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0-2</td><td>ThreadData / Uploads / Sandbox</td><td>before_agent</td><td>线程目录、文件上传、沙箱初始化</td></tr>
+          <tr><td>3-5</td><td>LLMError / LoopDetection / DanglingToolCall</td><td>wrap_model_call</td><td>LLM 重试、循环检测、悬空调用修复</td></tr>
+          <tr><td>6</td><td>Guardrail</td><td>wrap_tool_call</td><td>工具调用级安全授权</td></tr>
+          <tr><td>7</td><td>SandboxAudit</td><td>wrap_tool_call</td><td>沙箱操作审计日志</td></tr>
+          <tr><td>8</td><td>DynamicContext</td><td>before_agent</td><td>记忆 + 日期注入</td></tr>
+          <tr><td>9</td><td>Summarization</td><td>before_model</td><td>上下文自动压缩</td></tr>
+          <tr><td>10-13</td><td>Todo / TokenUsage / Title / Memory</td><td>after_model/agent</td><td>计划模式、Token 统计、自动标题、记忆更新</td></tr>
+          <tr><td>14-18</td><td>ViewImage / DeferredToolFilter / SubagentLimit / LoopDetect / Safety</td><td>混合</td><td>多模态、延迟工具过滤、子代理限流、安全终止</td></tr>
+          <tr><td>19</td><td>Clarification</td><td>wrap_tool_call</td><td>Human-in-the-loop 澄清（始终最后）</td></tr>
+        </tbody>
+      </table>
+
+      <div class="tag-row">
+        <span class="tag tag-blue">LangGraph create_agent()</span>
+        <span class="tag tag-purple">AgentMiddleware</span>
+        <span class="tag tag-green">洋葱模型</span>
+        <span class="tag tag-orange">RuntimeFeatures 开关</span>
+      </div>
+    </div>
+
+    <!-- 亮点 2: SubAgent 隔离 -->
+    <div class="card">
+      <div class="card-title"><span class="num">2</span> SubAgent 隔离执行系统 — 独立事件循环 + Git Worktree 文件隔离</div>
+      <p>设计了完整的 SubAgent 生命周期管理：Lead Agent 通过 <code>task</code> 工具派发子任务，SubAgent 在<strong>独立的事件循环</strong>中执行 ReAct 循环，与父 Agent 完全隔离，执行完毕后通过 <code>ToolMessage</code> 返回结果。</p>
+
+      <div class="highlight-box">
+        <strong>关键技术创新：</strong>
+        <ul style="margin-top:8px;">
+          <li><strong>持久化 Daemon Thread</strong>：SubAgent 运行在独立的 daemon thread + 持久化 asyncio 事件循环中，解决了 <code>asyncio.run()</code> 嵌套调用和 httpx 客户端绑定事件循环的难题</li>
+          <li><strong>信号量并发控制</strong>：通过 <code>asyncio.Semaphore(2-4)</code> 限制同时运行的 SubAgent 数量，防止资源耗尽</li>
+          <li><strong>合作式取消机制</strong>：使用 <code>threading.Event</code> + <code>try_set_terminal()</code> first-writer-wins 模式，确保超时和正常完成的竞争安全</li>
+          <li><strong>Git Worktree 文件隔离</strong>：利用 Git 原生多工作目录能力，为每个 SubAgent 创建独立的工作分支，merge 后自动清理</li>
+          <li><strong>工具安全过滤</strong>：默认禁止 <code>task</code>、<code>ask_clarification</code>、<code>present_files</code> 防止嵌套派发和权限越界</li>
+        </ul>
+      </div>
+
+      <div class="code-block"><span class="com"># SubAgent 隔离执行核心流程</span>
+<span class="kw">class</span> <span class="fn">SubAgent</span>:
+    <span class="kw">async def</span> <span class="fn">execute</span>(self, instruction, context=<span class="kw">None</span>):
+        <span class="com"># 1. 独立 create_agent() 图，不继承父 checkpoint</span>
+        <span class="com"># 2. 精简中间件链 (7-9 个，去除上传/总结/记忆)</span>
+        <span class="com"># 3. asyncio.Semaphore 并发控制</span>
+        <span class="com"># 4. threading.Event 合作式取消</span>
+        <span class="com"># 5. 超时 900s，try_set_terminal() 竞争保护</span>
+        messages = [SystemMessage(context), HumanMessage(instruction)]
+        result = <span class="kw">await</span> self._graph.ainvoke(state, config)
+        <span class="kw">return</span> SubAgentResult(status, output, iterations)</div>
+
+      <div class="tag-row">
+        <span class="tag tag-purple">Daemon Thread + asyncio</span>
+        <span class="tag tag-blue">Semaphore 并发控制</span>
+        <span class="tag tag-green">Git Worktree 隔离</span>
+        <span class="tag tag-orange">合作式取消</span>
+      </div>
+    </div>
+
+    <!-- 亮点 3: 记忆系统 -->
+    <div class="card">
+      <div class="card-title"><span class="num">3</span> LLM 驱动的长期记忆系统 — 异步防抖 + 多后端存储</div>
+      <p>设计了完整的用户级长期记忆系统，Agent 能跨会话积累用户偏好、工作上下文和历史事实。记忆更新由 LLM 自动分析对话内容提取结构化信息，无需人工标注。</p>
+
+      <div class="highlight-box">
+        <strong>三层数据结构（对齐 DeerFlow）：</strong>
+        <ul style="margin-top:8px;">
+          <li><strong>User Context</strong>：workContext（工作上下文）、personalContext（个人偏好）、topOfMind（当前关注）</li>
+          <li><strong>History</strong>：recentWeeks（近况）、earlierContext（更早上下文）、longTermBackground（长期背景）</li>
+          <li><strong>Facts</strong>：带置信度（0-1）、分类、来源 thread_id 的事实列表，自动去重 + 按置信度截断（max 100）</li>
+        </ul>
+      </div>
+
+      <p><strong>核心技术实现：</strong></p>
+      <ul>
+        <li><strong>异步 Debounce 更新队列</strong>：<code>MemoryUpdateQueue</code> 使用 <code>asyncio.create_task</code> + <code>asyncio.sleep(30s)</code> 防抖，同一会话多次对话在窗口内合并为一次 LLM 更新调用，大幅降低 token 消耗</li>
+        <li><strong>文件锁 + 原子写入</strong>：<code>FileMemoryStorage</code> 使用 <code>fcntl.flock</code> 文件锁防多进程写入覆盖，临时文件 + <code>os.replace</code> 原子替换</li>
+        <li><strong>mtime 缓存失效</strong>：基于文件 mtime 的缓存策略，文件变更时自动失效，无需主动通知</li>
+        <li><strong>摘要前 flush</strong>：在上下文压缩丢弃老消息前，通过 <code>memory_flush_hook</code> 先将其写入长期记忆，防止信息丢失</li>
+        <li><strong>多后端支持</strong>：file（JSON）+ mem0（向量数据库）+ dual-write 双写模式，灵活切换</li>
+        <li><strong>Token 预算控制</strong>：记忆注入默认 2000 token 上限，按优先级填充（User Context → History → Facts 按置信度降序）</li>
+      </ul>
+
+      <div class="tag-row">
+        <span class="tag tag-blue">Debounce 队列</span>
+        <span class="tag tag-purple">LLM 记忆提取</span>
+        <span class="tag tag-green">文件锁 + 原子写入</span>
+        <span class="tag tag-orange">mem0 向量后端</span>
+      </div>
+    </div>
+
+    <!-- 亮点 4: 上下文压缩 -->
+    <div class="card">
+      <div class="card-title"><span class="num">4</span> 上下文自动压缩（Summarization）— 长对话 token 治理</div>
+      <p>继承 LangChain <code>SummarizationMiddleware</code> 并深度定制，在 LLM 调用前检测上下文规模，超过阈值时自动压缩历史消息，生成结构化摘要替换原始消息。</p>
+
+      <div class="highlight-box">
+        <strong>三大触发条件（OR 语义）：</strong>
+        <ul style="margin-top:8px;">
+          <li><strong>消息数</strong>：消息数 ≥ N（如 50 条）</li>
+          <li><strong>Token 数</strong>：估算总 token 或最后一条 AIMessage 的 total_tokens ≥ N</li>
+          <li><strong>比例</strong>：达到模型最大输入 token 的 x%（如 80%）</li>
+        </ul>
+      </div>
+
+      <p><strong>智能切割策略：</strong></p>
+      <ul>
+        <li><strong>安全切割点</strong>：<code>_find_safe_cutoff_point()</code> 确保不在 ToolMessage 中间切割，自动向前查找配对的 AIMessage，保留完整的 AI/Tool 对</li>
+        <li><strong>Dynamic Context 保护</strong>：将记忆注入的 <code>&lt;system-reminder&gt;</code> 从待压缩队列移到保留队列，防止记忆丢失</li>
+        <li><strong>摘要前 Hook</strong>：<code>_fire_hooks()</code> 在压缩前触发 memory flush，将被丢弃的消息写入长期记忆</li>
+        <li><strong>消息替换</strong>：使用 <code>RemoveMessage(REMOVE_ALL_MESSAGES)</code> + 摘要消息 + 保留消息，通过 LangGraph 的 <code>add_messages</code> reducer 原子替换</li>
+      </ul>
+    </div>
+
+    <!-- 亮点 5: SSE 流式 -->
+    <div class="card">
+      <div class="card-title"><span class="num">5</span> Token 级 SSE 流式输出 — 全链路实时通信</div>
+      <p>基于 LangGraph <code>astream_events(v2)</code> 实现 Token 级流式输出，从 LLM 推理到前端渲染全链路零缓冲。设计了 <strong>16 种 SSE 事件类型</strong>，覆盖 Agent 执行的完整生命周期。</p>
+
+      <div class="code-block"><span class="com"># SSE 事件类型映射</span>
+on_chat_model_stream  → <span class="str">"message"</span> / <span class="str">"thinking"</span>    <span class="com"># Token 流 + 思考过程</span>
+on_chat_model_end     → <span class="str">"token_usage"</span>            <span class="com"># Token 用量统计</span>
+on_tool_start         → <span class="str">"tool_call"</span> / <span class="str">"subagent_start"</span>
+on_tool_end           → <span class="str">"tool_result"</span> / <span class="str">"subagent_end"</span>
+on_chain_end          → <span class="str">"finished"</span> / <span class="str">"clarification"</span> / <span class="str">"title_update"</span></div>
+
+      <p><strong>前端自研 SSE 客户端</strong>：基于 <code>fetch + ReadableStream</code> 实现，绕过 Next.js rewrites 代理直连后端避免响应缓冲，支持指数退避自动重连、JWT 自动注入、<code>AbortController</code> 中断。Nginx 层配置 <code>proxy_buffering off</code> 确保零缓冲传输。</p>
+
+      <div class="tag-row">
+        <span class="tag tag-blue">astream_events(v2)</span>
+        <span class="tag tag-purple">16 种事件类型</span>
+        <span class="tag tag-green">零缓冲 SSE</span>
+        <span class="tag tag-orange">指数退避重连</span>
+      </div>
+    </div>
+
+    <!-- 亮点 6: Skill 系统 -->
+    <div class="card">
+      <div class="card-title"><span class="num">6</span> 渐进式 Skill 加载系统 — 按需加载 + 安全扫描</div>
+      <p>设计了完整的 Skill 生命周期管理（10 阶段），将领域知识（代码审查规范、部署检查清单等）封装为可复用的 Skill 包，Agent 按需加载。</p>
+
+      <div class="highlight-box">
+        <strong>双模式加载策略：</strong>
+        <ul style="margin-top:8px;">
+          <li><strong>Lead Agent — 渐进式加载</strong>：系统提示词仅包含 Skill 名称和简短描述，LLM 按需通过 <code>file_read</code> 工具读取完整 SKILL.md，节省 token</li>
+          <li><strong>SubAgent — 直接注入</strong>：将完整 Skill 内容作为 <code>SystemMessage</code> 注入，确保子任务执行时上下文完整</li>
+        </ul>
+      </div>
+
+      <p><strong>安全扫描</strong>：对 Skill 内嵌的脚本和模板进行 LLM 驱动的安全审计，检测 7 大威胁类别（命令注入、数据外泄、权限提升、恶意载荷、路径穿越等），输出 ALLOW / WARN / BLOCK 三级决策。</p>
+
+      <p><strong>权限继承</strong>：子代理可用 Skill = 子代理声明 Skill ∩ 父代理 Skill，防止权限越界。</p>
+
+      <div class="tag-row">
+        <span class="tag tag-blue">10 阶段生命周期</span>
+        <span class="tag tag-purple">渐进式加载</span>
+        <span class="tag tag-red">7 大威胁检测</span>
+        <span class="tag tag-green">权限继承</span>
+      </div>
+    </div>
+
+    <!-- 亮点 7: HITL -->
+    <div class="card">
+      <div class="card-title"><span class="num">7</span> 消息驱动的 Human-in-the-Loop 澄清机制</div>
+      <p>设计了无状态键的 HITL 机制：当 Agent 需要用户澄清时，调用 <code>ask_clarification</code> 工具，<code>ClarificationMiddleware</code> 拦截并生成结构化 <code>ToolMessage</code>，通过 <code>Command(goto=END)</code> 暂停执行。澄清元数据保存在 <code>ToolMessage.additional_kwargs["clarification"]</code> 中。</p>
+
+      <div class="highlight-box">
+        <strong>核心创新：</strong>pending 状态<strong>不依赖自定义 State key</strong>，而是通过扫描消息历史（<code>get_pending_clarification()</code>）推断。用户回答作为 <code>HumanMessage</code> 追加后自动恢复执行，实现状态最小化和 checkpoint 友好。
+      </div>
+    </div>
+
+    <!-- 亮点 8: MCP -->
+    <div class="card">
+      <div class="card-title"><span class="num">8</span> MCP 协议集成 — 可扩展工具生态</div>
+      <p>实现了完整的 <strong>Model Context Protocol (MCP)</strong> 工具适配层，支持 stdio / SSE 两种传输方式，将外部 MCP 服务器（GitHub、PostgreSQL、Filesystem、Brave Search）提供的工具自动包装为 LangChain <code>BaseTool</code>。</p>
+      <ul>
+        <li><strong>持久化 Session</strong>：MCP 连接复用，避免每次工具调用重建连接</li>
+        <li><strong>mtime 缓存</strong>：配置文件变更时自动重新加载工具列表</li>
+        <li><strong>OAuth 支持</strong>：集成 MCP 服务器的 OAuth 认证流程</li>
+        <li><strong>延迟工具过滤</strong>：<code>DeferredToolFilterMiddleware</code> 默认隐藏 MCP 工具 schema，通过 <code>tool_search</code> 按需提升，减少 token 占用</li>
+      </ul>
+    </div>
+
+    <!-- 亮点 9: 可视化编排 -->
+    <div class="card">
+      <div class="card-title"><span class="num">9</span> ReactFlow 可视化 Agent 编排画布</div>
+      <p>基于 ReactFlow 实现拖拽式多 Agent 拓扑编排：用户从节点面板拖拽 SubAgent 节点到画布，连线定义执行拓扑，配置面板设置每个 Agent 的人格、模型、工具组。</p>
+      <ul>
+        <li><strong>图校验</strong>：Lead Agent 唯一性、节点名唯一性、DFS 无环检测</li>
+        <li><strong>5 种预设 Agent</strong>：researcher（信息检索）、coder（代码执行）、analyst（数据分析）、writer（文档撰写）、reviewer（审查专家）</li>
+        <li><strong>导入/导出</strong>：支持 JSON 序列化图结构，可复用和分享</li>
+        <li><strong>实时状态</strong>：节点颜色实时反映执行状态（idle/running/done/error）</li>
+      </ul>
+    </div>
+
+    <!-- 亮点 10: 可观测性 -->
+    <div class="card">
+      <div class="card-title"><span class="num">10</span> 全链路可观测性 — Langfuse + RunJournal + EventStore</div>
+      <p>构建了三层可观测性体系：</p>
+      <ul>
+        <li><strong>Langfuse 集成</strong>：每次 LLM 调用、工具调用自动上报 trace，支持按 thread_id 查询完整调用链</li>
+        <li><strong>RunJournal</strong>：记录单次 run 的事件流（LLM 响应、token 使用、工具调用），flush 到 EventStore 持久化</li>
+        <li><strong>Token 用量追踪</strong>：<code>TokenUsageMiddleware</code> 从 AIMessage.usage_metadata 提取 token 用量，累加到 State，前端实时展示消耗和费用</li>
+        <li><strong>多后端存储</strong>：InMemory（开发）/ SQLite（单机）/ PostgreSQL（生产）三档切换</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ==================== 最终成果 ==================== -->
+  <div class="section">
+    <div class="section-title"><span class="icon">📊</span> 最终成果</div>
+
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-value">24K+</div>
+        <div class="metric-label">后端 Python 代码行数</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">133</div>
+        <div class="metric-label">后端 Python 文件数</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">39</div>
+        <div class="metric-label">前端 TS/TSX 文件数</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">20</div>
+        <div class="metric-label">中间件层数</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">30+</div>
+        <div class="metric-label">REST API 路由数</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">24</div>
+        <div class="metric-label">测试文件数</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">16</div>
+        <div class="metric-label">SSE 事件类型</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-value">5</div>
+        <div class="metric-label">预设 SubAgent 类型</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="num">✓</span> 核心交付能力</div>
+      <table class="data-table">
+        <thead>
+          <tr><th>模块</th><th>交付内容</th><th>技术指标</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Agent 引擎</td>
+            <td>Lead Agent + SubAgent 双层编排，ReAct 循环 + 工具调用</td>
+            <td>1000 并发 run / 信号量 2-4 SubAgent 并发</td>
+          </tr>
+          <tr>
+            <td>中间件管线</td>
+            <td>20 层 AgentMiddleware，RuntimeFeatures 声明式开关</td>
+            <td>洋葱模型，钩子正向/反向/嵌套三种执行模式</td>
+          </tr>
+          <tr>
+            <td>记忆系统</td>
+            <td>per-user JSON 存储 + LLM 驱动更新 + 异步防抖队列</td>
+            <td>30s debounce / max 100 facts / 置信度 ≥ 0.7</td>
+          </tr>
+          <tr>
+            <td>上下文压缩</td>
+            <td>消息数/Token/比例三触发 + 安全切割 + 摘要前 flush</td>
+            <td>默认保留 20 条消息 / 摘要截断 4000 token</td>
+          </tr>
+          <tr>
+            <td>流式通信</td>
+            <td>Token 级 SSE + 16 种事件类型 + 自研客户端</td>
+            <td>零缓冲 / 指数退避重连 / AbortController 中断</td>
+          </tr>
+          <tr>
+            <td>Skill 系统</td>
+            <td>10 阶段生命周期 + 渐进式加载 + LLM 安全扫描</td>
+            <td>7 大威胁检测 / 三级决策 / 权限继承</td>
+          </tr>
+          <tr>
+            <td>MCP 集成</td>
+            <td>stdio/SSE 双传输 + 持久化 session + 延迟工具过滤</td>
+            <td>4 种 MCP 服务器 / OAuth / mtime 缓存</td>
+          </tr>
+          <tr>
+            <td>前端</td>
+            <td>Next.js 14 全栈 + ReactFlow 画布 + 项目协作看板</td>
+            <td>10 个页面路由 / 3 个 Zustand Store / 20+ 组件</td>
+          </tr>
+          <tr>
+            <td>部署</td>
+            <td>Docker Compose 三服务 + Nginx 反向代理</td>
+            <td>PostgreSQL + Redis + Langfuse 自托管</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="num">✓</span> 项目亮点总结</div>
+      <ul>
+        <li><strong>工业级架构</strong>：对齐字节跳动 DeerFlow 的 20 层中间件设计，具备企业级可扩展性和可维护性</li>
+        <li><strong>全栈自研</strong>：从 Agent 引擎到前端 UI 全链路自主设计实现，涵盖后端 24K+ 行 Python 和前端 39 个 TS/TSX 文件</li>
+        <li><strong>深度技术实践</strong>：涉及异步并发控制（asyncio + threading 混合）、文件锁原子写入、Git Worktree 隔离、SSE 零缓冲传输等多项底层技术</li>
+        <li><strong>完善的可观测性</strong>：Langfuse 全链路追踪 + RunJournal 事件日志 + Token 用量统计，支撑生产级运维</li>
+        <li><strong>安全设计</strong>：工具调用级 Guardrail、Skill 安全扫描（7 大威胁检测）、沙箱隔离执行、JWT 认证体系</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="footer">
+    MultiAgent Studio · 校招面试项目简历 · AI Agent 应用开发方向
+  </div>
+
+</div>
+</body>
+</html>

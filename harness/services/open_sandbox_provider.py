@@ -73,9 +73,14 @@ class OpenSandbox(Sandbox):
     def _container_path(self, virtual_path: str) -> str:
         return self.resolve_path(virtual_path)
 
-    async def execute_command(self, command: str | list[str], timeout: int = 30) -> str:
+    async def execute_command(
+        self, command: str | list[str], timeout: int = 30, cwd: str = "",
+    ) -> str:
         if isinstance(command, list):
             command = shlex.join(command)
+        # Prepend cd if a working directory is specified.
+        if cwd:
+            command = f"cd {shlex.quote(cwd)} && {command}"
         try:
             execution = await self._sbx.commands.run(
                 command,

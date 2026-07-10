@@ -157,12 +157,21 @@ class LocalSandbox(Sandbox):
         result = result.replace(os.path.expanduser("~"), "~")
         return result
 
-    async def execute_command(self, command: str | list[str], timeout: int = 30) -> str:
+    async def execute_command(
+        self, command: str | list[str], timeout: int = 30, cwd: str = "",
+    ) -> str:
         if isinstance(command, list):
             command = " ".join(command)
 
         resolved_command = self._resolve_paths_in_command(command)
-        workspace = self.resolve_path(f"{VIRTUAL_PATH_PREFIX}/workspace")
+        # Resolve cwd: virtual → host path, default to workspace.
+        if cwd:
+            try:
+                work_dir = self.resolve_path(cwd)
+            except (ValueError, OSError):
+                work_dir = self.resolve_path(f"{VIRTUAL_PATH_PREFIX}/workspace")
+        else:
+            work_dir = self.resolve_path(f"{VIRTUAL_PATH_PREFIX}/workspace")
 
         try:
             proc = await asyncio.wait_for(
@@ -170,7 +179,7 @@ class LocalSandbox(Sandbox):
                     resolved_command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
-                    cwd=workspace,
+                    cwd=work_dir,
                 ),
                 timeout=timeout,
             )

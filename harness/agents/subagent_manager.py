@@ -63,12 +63,15 @@ class SubagentManager:
         max_concurrent: int = 3,
         *,
         skill_storage: Any | None = None,
+        worktree_config: Any | None = None,  # WorktreeConfig | None
     ):
         self._llm_factory = llm_factory
         self._tool_registry = tool_registry
         self._max_concurrent: int = min(max(int(max_concurrent), 2), 4)
         self._semaphore = asyncio.Semaphore(self._max_concurrent)
         self._skill_storage = skill_storage
+        self._worktree_config = worktree_config
+        self._worktree_mgr: Any = None  # GitWorktreeManager | None
 
         # Cache core tools at init time (they don't change per request)
         self._core_tools: list[BaseTool] = tool_registry.get_core_tools()
@@ -163,12 +166,9 @@ class SubagentManager:
         the persistent isolated event loop, decoupled from the parent
         HTTP request lifecycle.
 
-        P1 improvement (DeerFlow-aligned): catches ``asyncio.CancelledError``
-        from the parent agent, signals cooperative cancellation to the
-        subagent thread via ``executor.request_cancel()``, and performs a
-        brief shielded wait before re-raising.
-
-        Returns a completed ``SubAgentResult``.
+        When the subagent config has ``isolation: worktree`` and worktree is
+        enabled, a git worktree is created before execution and merged / cleaned
+        up afterwards.
         """
         entry = self._agents.get(name)
         if entry is None:
@@ -184,42 +184,83 @@ class SubagentManager:
         if context:
             full_instruction = f"[上下文]\n{context}\n\n[任务]\n{instruction}"
 
-        async with self._semaphore:
-            executor = SubagentExecutor(
-                config=config,
-                llm=llm,
-                tools=tools,
-                parent_state=parent_state,
-                skill_storage=self._skill_storage,
-                parent_skills=parent_skills,
-            )
-            try:
-                # execute() is blocking on the isolated loop — run in thread
-                result = await asyncio.to_thread(executor.execute, full_instruction)
-                # ── Cache the full result for the SSE handler ──
-                # main.py's on_tool_end retrieves this to build the
-                # subagent_end event with full metadata (ai_messages, etc.).
-                self._last_results[name] = result
-                return result
-            except asyncio.CancelledError:
-                # Parent agent is being cancelled — signal the subagent thread
-                # to stop cooperatively at the next astream boundary.
-                logger.info(
-                    "SubAgent '%s' cancelled by parent — signalling stop",
-                    name,
+        # ── Worktree isolation ──
+        worktree_ctx = None
+        _worktree_enabled = (
+            config.isolation == "worktree"
+            and self._worktree_config is not None
+            and getattr(self._worktree_config, "enabled", False)
+        )
+        if _worktree_enabled:
+            # Lazily initialise the worktree manager on first use.
+            if self._worktree_mgr is None:
+                # Resolve the workspace path from config.
+                from harness.config.paths import get_paths
+                workspace = str(get_paths().sandbox_work_dir("default"))
+                # Override thread_id when parent_state provides it.
+                if parent_state and parent_state.get("thread_id"):
+                    tid = parent_state["thread_id"]
+                    workspace = str(get_paths().sandbox_work_dir(tid))
+                from harness.worktree.manager import GitWorktreeManager
+                self._worktree_mgr = GitWorktreeManager(
+                    workspace, self._worktree_config,
                 )
-                executor.request_cancel()
+                await self._worktree_mgr.ensure_git_repo()
+            try:
+                worktree_ctx = await self._worktree_mgr.create(name)
+            except Exception as exc:
+                logger.error(
+                    "Failed to create worktree for '%s': %s — falling back "
+                    "to shared workspace", name, exc,
+                )
 
-                # Brief shielded wait so the subagent thread has a chance to
-                # reach a terminal state (and capture token usage).  The thread
-                # continues running after CancelledError propagates; this wait
-                # just gives it a head-start on noticing the cancel_event.
+        try:
+            async with self._semaphore:
+                executor = SubagentExecutor(
+                    config=config,
+                    llm=llm,
+                    tools=tools,
+                    parent_state=parent_state,
+                    skill_storage=self._skill_storage,
+                    parent_skills=parent_skills,
+                    worktree_ctx=worktree_ctx,
+                )
                 try:
-                    await asyncio.shield(asyncio.sleep(1))
+                    # execute() is blocking on the isolated loop — run in thread
+                    result = await asyncio.to_thread(executor.execute, full_instruction)
+                    # ── Cache the full result for the SSE handler ──
+                    self._last_results[name] = result
+                    return result
                 except asyncio.CancelledError:
-                    pass
-
-                raise
+                    logger.info(
+                        "SubAgent '%s' cancelled by parent — signalling stop",
+                        name,
+                    )
+                    executor.request_cancel()
+                    try:
+                        await asyncio.shield(asyncio.sleep(1))
+                    except asyncio.CancelledError:
+                        pass
+                    raise
+        finally:
+            # ── Worktree merge & cleanup ──
+            if worktree_ctx is not None and self._worktree_mgr is not None:
+                try:
+                    merge_result = await self._worktree_mgr.merge(worktree_ctx)
+                    logger.info(
+                        "Worktree merge for '%s': status=%s files=%d",
+                        name, merge_result.status, merge_result.files_changed,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to merge worktree for '%s': %s", name, exc,
+                    )
+                try:
+                    await self._worktree_mgr.cleanup(worktree_ctx)
+                except Exception as exc:
+                    logger.error(
+                        "Failed to cleanup worktree for '%s': %s", name, exc,
+                    )
 
     # ------------------------------------------------------------------
     # execution — background (returns task_id immediately)

@@ -70,17 +70,19 @@ def create_bash_tool() -> BaseTool:
     """Create the ``bash`` tool backed by the configured sandbox provider."""
 
     @tool
-    async def bash(command: str, timeout: int = 30) -> str:
+    async def bash(command: str, timeout: int = 30, cwd: str = "") -> str:
         """Execute a shell command in the isolated sandbox.
 
         Args:
             command: Shell command to execute. Refer to files using virtual
                 paths such as ``/mnt/user-data/workspace/foo.txt``.
             timeout: Maximum execution time in seconds.
+            cwd: Working directory for the command. If empty, uses the
+                default workspace directory.
         """
         try:
             sandbox = await _get_sandbox()
-            output = await sandbox.execute_command(command, timeout=timeout)
+            output = await sandbox.execute_command(command, timeout=timeout, cwd=cwd)
             return sandbox.sanitize_output(output)
         except Exception as exc:
             logger.warning("Sandbox bash execution failed: %s", exc)

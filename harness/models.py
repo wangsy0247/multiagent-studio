@@ -72,6 +72,7 @@ class SubAgentConfig(BaseModel):
     temperature: float = 0.3
     max_turns: int = 50
     timeout_seconds: int = 900
+    isolation: str = "none"  # "none" | "worktree"
 
 
 class AgentNode(BaseModel):

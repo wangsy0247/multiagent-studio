@@ -222,12 +222,30 @@ class HarnessService(_BaseService):
         logger.info("skill_manage tool registered")
 
         # 8.5. SubAgent manager (uses stripped-down subagent middlewares internally)
+        from harness.worktree.types import WorktreeConfig as WTCfg
+        _wt_cfg = WTCfg()
+        if self.config_manager is not None:
+            _wt_raw = self.config_manager.get("worktree") or {}
+            if isinstance(_wt_raw, dict):
+                _wt_cfg = WTCfg(
+                    enabled=_wt_raw.get("enabled", True),
+                    auto_init=_wt_raw.get("auto_init", True),
+                    symlink_deps=_wt_raw.get("symlink_deps", [".venv", "node_modules"]),
+                    keep_on_conflict=_wt_raw.get("keep_on_conflict", True),
+                    cleanup_stale_on_start=_wt_raw.get("cleanup_stale_on_start", True),
+                )
+
         self.subagent_manager = SubagentManager(
             llm_factory=self._init_llm,
             tool_registry=self.tool_registry,
             max_concurrent=cfg.max_concurrent_subagents,
             skill_storage=self.skill_storage,
+            worktree_config=_wt_cfg,
         )
+
+        # 8.6 Stale worktree cleanup on startup
+        if _wt_cfg.enabled and _wt_cfg.cleanup_stale_on_start:
+            await self._cleanup_stale_worktrees()
 
         # 9. Lead Agent (configuration provider — tools + system prompt)
         lead_agent = LeadAgent(
@@ -320,6 +338,21 @@ class HarnessService(_BaseService):
             base_url=self.config.openai_base_url,
             temperature=0.3,
         )
+
+    async def _cleanup_stale_worktrees(self) -> None:
+        """Remove worktrees left over from previous crashes."""
+        try:
+            from harness.config.paths import get_paths
+            from harness.worktree.manager import GitWorktreeManager
+
+            # Use a generic workspace; the manager only needs the repo root.
+            workspace = str(get_paths().sandbox_work_dir("cleanup"))
+            mgr = GitWorktreeManager(workspace)
+            removed = await mgr.cleanup_stale()
+            if removed:
+                logger.info("Cleaned up %d stale worktree(s)", removed)
+        except Exception as exc:
+            logger.warning("Stale worktree cleanup failed: %s", exc)
 
     # ------------------------------------------------------------------
     # checkpointer config

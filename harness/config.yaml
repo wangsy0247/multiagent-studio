@@ -184,6 +184,14 @@ loop_detection:
 subagents:
   timeout_seconds: 900
 
+# --- Git Worktree Isolation ---
+worktree:
+  enabled: true
+  auto_init: true               # Auto git init non-git workspace
+  symlink_deps: [".venv", "node_modules", "__pycache__"]
+  keep_on_conflict: true        # Preserve worktree on merge conflict
+  cleanup_stale_on_start: true  # Remove stale worktrees at startup
+
 # --- Checkpointer (conversation state persistence) ---
 # backend: memory | sqlite | postgres
 # sqlite_dir 为空时自动使用 data_root+/data/（即 ~/.multiagent-studio/data/deerflow.db）

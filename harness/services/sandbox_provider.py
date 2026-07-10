@@ -18,8 +18,16 @@ class Sandbox(ABC):
     """Abstract sandbox environment for executing code and file operations."""
 
     @abstractmethod
-    async def execute_command(self, command: str | list[str], timeout: int = 30) -> str:
-        """Execute a shell command and return its output."""
+    async def execute_command(
+        self, command: str | list[str], timeout: int = 30, cwd: str = "",
+    ) -> str:
+        """Execute a shell command and return its output.
+
+        Args:
+            command: Shell command or argument list.
+            timeout: Max execution time in seconds.
+            cwd: Working directory (virtual path). Empty = default workspace.
+        """
         pass
 
     @abstractmethod
