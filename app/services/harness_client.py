@@ -44,17 +44,25 @@ class HarnessClient:
         message: str,
         execution_graph: Optional[dict] = None,
         files: Optional[list[dict]] = None,
+        project_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        mode: str = "single",
     ) -> AsyncGenerator[str, None]:
         """代理执行请求，流式返回 SSE 事件"""
         payload = {
             "thread_id": thread_id,
             "user_id": user_id,
             "message": message,
+            "mode": mode,
         }
         if execution_graph:
             payload["execution_graph"] = execution_graph
         if files:
             payload["files"] = files
+        if project_id:
+            payload["project_id"] = project_id
+        if agent_name:
+            payload["agent_name"] = agent_name
 
         client = await self._get_client()
         url = f"{self.base_url}/api/v1/execute"

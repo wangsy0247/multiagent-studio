@@ -41,6 +41,13 @@ class AgentConfig(BaseModel):
     model: str = "inherit"
     tool_groups: list[str] = Field(default_factory=list)
     skills: list[str] | None = None
+    # ── Agent Team 扩展字段 ──
+    memory_scope: str = "agent"       # "agent" | "team" | "project" — 记忆隔离范围
+    can_be_lead: bool = True          # 是否可担任 Project Lead
+    can_delegate: bool = True         # 是否可委派任务给其他 Agent
+    max_turns: int = 50               # 单次执行最大轮次
+    timeout_seconds: int = 900        # 单次执行超时（秒）
+    isolation: str = "none"           # "none" | "worktree" — 文件隔离模式
     created_at: str = ""
     updated_at: str = ""
 

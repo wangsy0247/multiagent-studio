@@ -40,6 +40,9 @@ async def execute(
             message=request.message,
             graph=request.execution_graph,
             files=request.files,
+            project_id=request.project_id,
+            agent_name=request.agent_name,
+            mode=request.mode,
         ):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 
@@ -148,6 +151,12 @@ async def create_agent(
         model=body.get("model", "inherit"),
         tool_groups=body.get("tool_groups", []),
         skills=body.get("skills"),
+        memory_scope=body.get("memory_scope", "agent"),
+        can_be_lead=body.get("can_be_lead", True),
+        can_delegate=body.get("can_delegate", True),
+        max_turns=body.get("max_turns", 50),
+        timeout_seconds=body.get("timeout_seconds", 900),
+        isolation=body.get("isolation", "none"),
     )
     user_id = body.get("user_id", "default")
     save_agent_config(name, cfg, user_id=user_id)
@@ -199,6 +208,12 @@ async def update_agent(
         model=body.get("model", existing.model),
         tool_groups=body.get("tool_groups", existing.tool_groups),
         skills=body.get("skills", existing.skills),
+        memory_scope=body.get("memory_scope", existing.memory_scope),
+        can_be_lead=body.get("can_be_lead", existing.can_be_lead),
+        can_delegate=body.get("can_delegate", existing.can_delegate),
+        max_turns=body.get("max_turns", existing.max_turns),
+        timeout_seconds=body.get("timeout_seconds", existing.timeout_seconds),
+        isolation=body.get("isolation", existing.isolation),
         created_at=existing.created_at,
         updated_at=existing.updated_at,
     )

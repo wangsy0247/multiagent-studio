@@ -535,6 +535,104 @@ class HarnessService(_BaseService):
             )
 
     # ------------------------------------------------------------------
+    # team execution
+    # ------------------------------------------------------------------
+
+    async def _execute_team(
+        self,
+        thread_id: str,
+        user_id: str,
+        message: str,
+        project_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Team 模式执行 — 通过 TeamOrchestrator 协调多 Agent 协作。
+
+        Args:
+            thread_id: 会话 ID
+            user_id: 用户 ID
+            message: 用户消息（目标描述）
+            project_id: 项目 ID
+
+        Yields:
+            SSE 事件字典
+        """
+        from harness.team.orchestrator import TeamOrchestrator
+
+        # 注册运行期取消标记
+        self._active_runs[thread_id] = {"cancelled": False, "mode": "team"}
+
+        orchestrator: TeamOrchestrator | None = None
+        try:
+            self._enforce_capacity()
+
+            # 创建并初始化 TeamOrchestrator
+            orchestrator = TeamOrchestrator(
+                project_id=project_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                llm_factory=self._init_llm,
+                tool_registry=self.tool_registry,
+                subagent_manager=self.subagent_manager,
+                skill_storage=self.skill_storage,
+            )
+            await orchestrator.initialize()
+
+            # 保存 orchestrator 引用以支持取消
+            self._active_runs[thread_id]["orchestrator"] = orchestrator
+
+            # 执行调度循环
+            async for event in orchestrator.run(message):
+                # 检查取消标志
+                if self._active_runs.get(thread_id, {}).get("cancelled"):
+                    await orchestrator.cancel()
+                    yield {
+                        "type": "team_end",
+                        "thread_id": thread_id,
+                        "project_id": project_id,
+                        "status": "cancelled",
+                    }
+                    return
+                yield event
+
+        except ValueError as exc:
+            # 项目未找到等配置错误 → 降级为单 Agent
+            logger.warning("Team init failed, degrading to single-agent: %s", exc)
+            yield {
+                "type": "team_degrade",
+                "thread_id": thread_id,
+                "reason": str(exc),
+            }
+            async for event in self.execute(
+                thread_id=thread_id,
+                user_id=user_id,
+                message=message,
+                mode="single",
+            ):
+                yield event
+
+        except asyncio.CancelledError:
+            if orchestrator:
+                await orchestrator.cancel()
+            yield {
+                "type": "team_end",
+                "thread_id": thread_id,
+                "project_id": project_id,
+                "status": "cancelled",
+            }
+
+        except Exception as exc:
+            logger.exception("Team execution failed for thread=%s", thread_id)
+            yield {
+                "type": "team_error",
+                "thread_id": thread_id,
+                "project_id": project_id,
+                "content": f"Team 执行异常: {exc}",
+            }
+
+        finally:
+            self._active_runs.pop(thread_id, None)
+
+    # ------------------------------------------------------------------
     # execution
     # ------------------------------------------------------------------
 
@@ -545,11 +643,17 @@ class HarnessService(_BaseService):
         message: str,
         graph: ExecutionGraph | None = None,
         files: list[dict] | None = None,
+        project_id: str | None = None,
+        agent_name: str | None = None,
+        mode: str = "single",
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the agent pipeline and stream SSE events in real time.
 
         Uses ``astream_events`` for true token-level streaming (not
         the old ``ainvoke`` + batch-yield pseudo-streaming).
+
+        When ``mode="team"``, routes to ``_execute_team()`` which uses
+        TeamOrchestrator for multi-agent collaboration.
 
         Event mapping (Harness → Frontend SSEEventType):
         - ``on_chat_model_stream`` → ``message`` (token-level, appended)
@@ -561,6 +665,17 @@ class HarnessService(_BaseService):
         """
         if not self._initialized:
             await self.initialize()
+
+        # ── Team 模式路由 ──
+        if mode == "team" and project_id:
+            async for event in self._execute_team(
+                thread_id=thread_id,
+                user_id=user_id,
+                message=message,
+                project_id=project_id,
+            ):
+                yield event
+            return
 
         build_config = self._build_config(thread_id)
 
@@ -1154,10 +1269,19 @@ class HarnessService(_BaseService):
 
         Only sets the cancelled flag on the runtime marker — checkpoint
         state is preserved so the user can resume later if needed.
+
+        In team mode, also cancels the TeamOrchestrator.
         """
         run = self._active_runs.get(thread_id)
         if run is not None:
             run["cancelled"] = True
+            # ── Team 模式: 取消 TeamOrchestrator ──
+            orchestrator = run.get("orchestrator")
+            if orchestrator is not None:
+                try:
+                    await orchestrator.cancel()
+                except Exception:
+                    pass
 
     async def get_status(self, thread_id: str) -> dict[str, Any]:
         """Return thread execution status, reading from LangGraph checkpoint."""

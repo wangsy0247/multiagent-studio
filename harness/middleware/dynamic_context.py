@@ -82,9 +82,11 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
     name = "dynamic_context"
 
     def __init__(self, config: dict | None = None, *,
-                 agent_name: str | None = None):
+                 agent_name: str | None = None,
+                 project_context: str | None = None):
         super().__init__(config)
         self._agent_name = agent_name
+        self._project_context = project_context  # Team 模式下的项目上下文
 
     # ── Reminder builders ────────────────────────────────────────────────
 
@@ -107,8 +109,13 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
                 logger.warning("Failed to load memory for injection: %s", exc)
 
         current_date = datetime.now().strftime("%Y-%m-%d, %A")
+        # ── Team 模式: 注入项目上下文 ──
+        project_block = ""
+        if self._project_context:
+            project_block = f"{self._project_context}\n\n"
         reminder = (
             f"<system-reminder>\n"
+            f"{project_block}"
             f"{memory_block}"
             f"<current_date>{current_date}</current_date>\n"
             f"</system-reminder>"

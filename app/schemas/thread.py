@@ -13,6 +13,10 @@ class ThreadCreate(BaseModel):
     title: str = Field(default="新会话", max_length=200)
     preset_type: Optional[str] = Field(default=None, max_length=50)
     execution_graph: Optional[dict] = None
+    # ── Agent Team 字段 ──
+    project_id: Optional[str] = Field(default=None, max_length=50)
+    agent_name: Optional[str] = Field(default=None, max_length=100)
+    mode: str = Field(default="single", max_length=20)  # "single" | "team"
 
 
 class ThreadResponse(BaseModel):
@@ -24,6 +28,10 @@ class ThreadResponse(BaseModel):
     execution_graph: Optional[dict] = None
     extra_metadata: dict = {}
     is_archived: bool
+    # ── Agent Team 字段 ──
+    project_id: Optional[str] = None
+    agent_name: Optional[str] = None
+    mode: str = "single"
     created_at: datetime
     updated_at: datetime
 

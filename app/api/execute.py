@@ -29,6 +29,10 @@ class ExecuteRequest(BaseModel):
     execution_graph: Optional[dict] = None
     plan_mode: bool = False
     files: Optional[list[dict]] = None  # 当前消息附带的上传文件元数据
+    # ── Agent Team 扩展字段 ──
+    project_id: Optional[str] = None
+    agent_name: Optional[str] = None
+    mode: str = "single"  # "single" | "team"
 
 
 class ClarificationResponse(BaseModel):
@@ -71,6 +75,9 @@ async def execute(
                 message=req.message,
                 execution_graph=req.execution_graph,
                 files=req.files,
+                project_id=req.project_id,
+                agent_name=req.agent_name,
+                mode=req.mode,
             ):
                 # 解析事件
                 try:

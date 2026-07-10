@@ -70,6 +70,9 @@ async def create_thread(
         title=req.title,
         preset_type=req.preset_type,
         execution_graph=req.execution_graph,
+        project_id=req.project_id,
+        agent_name=req.agent_name,
+        mode=req.mode,
     )
     db.add(thread)
     await db.flush()
@@ -77,6 +80,45 @@ async def create_thread(
     await db.commit()
     logger.info(f"创建会话: {thread.id} by user {current_user.username}")
     return ThreadResponse.model_validate(thread)
+
+
+@router.get("/by-project/{project_id}", response_model=ThreadListResponse)
+async def list_threads_by_project(
+    project_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出属于某个项目的所有会话."""
+    count_result = await db.execute(
+        select(func.count(Thread.id)).where(
+            Thread.user_id == current_user.id,
+            Thread.is_archived == False,
+            Thread.project_id == project_id,
+        )
+    )
+    total = count_result.scalar()
+
+    result = await db.execute(
+        select(Thread)
+        .where(
+            Thread.user_id == current_user.id,
+            Thread.is_archived == False,
+            Thread.project_id == project_id,
+        )
+        .order_by(desc(Thread.updated_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    threads = result.scalars().all()
+
+    return ThreadListResponse(
+        threads=[ThreadResponse.model_validate(t) for t in threads],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/{thread_id}", response_model=ThreadResponse)
