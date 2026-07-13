@@ -73,7 +73,11 @@ export type SSEEventType =
   | "token_usage"
   | "evaluation"
   | "error"
-  | "finished";
+  | "finished"
+  // ── Agent Team 事件 ──
+  | "team_start" | "team_end" | "team_status"
+  | "team_task_update" | "team_message" | "member_status"
+  | "team_error" | "team_degrade";
 
 export interface SSEEvent {
   type: SSEEventType;
@@ -84,6 +88,7 @@ export interface SSEEvent {
   tool_args?: Record<string, unknown>;
   tool_result?: string;
   subagent_name?: string;
+  agent_name?: string;
   instruction?: string;
   request?: ClarificationRequest;
   todo?: TodoItem;
@@ -98,6 +103,18 @@ export interface SSEEvent {
   iterations?: number;
   max_turns?: number;
   current_step?: string;
+  current_task_id?: string;
+  // ── Agent Team 字段 ──
+  project_id?: string;
+  phase?: string;
+  task?: ProjectTask;
+  task_id?: string;
+  task_title?: string;
+  message?: TeamMessage;
+  members?: string[];
+  mode?: string;
+  total_rounds?: number;
+  reason?: string;
 }
 
 export interface TokenUsage {
@@ -154,6 +171,10 @@ export interface ThreadSummary {
   presetType: string | null;
   createdAt: string;
   updatedAt: string;
+  // ── Agent Team 字段 ──
+  project_id?: string;
+  agent_name?: string;
+  mode?: string;
 }
 
 export interface ThreadDetail {
@@ -166,6 +187,10 @@ export interface ThreadDetail {
   isArchived: boolean;
   createdAt: string;
   updatedAt: string;
+  // ── Agent Team 字段 ──
+  project_id?: string;
+  agent_name?: string;
+  mode?: string;
 }
 
 // ===== 用户 =====
@@ -185,24 +210,6 @@ export interface AuthState {
   isAuthenticated: boolean;
 }
 
-// ===== 画布 =====
-export interface CanvasNode {
-  id: string;
-  type: "lead" | "subagent";
-  position: { x: number; y: number };
-  data: {
-    config: SubAgentConfig;
-    status: "idle" | "running" | "done" | "error";
-    isEntryPoint: boolean;
-  };
-}
-
-export interface CanvasEdge {
-  id: string;
-  source: string;
-  target: string;
-}
-
 // ===== 预设 =====
 export interface PresetAgent {
   name: string;
@@ -215,6 +222,90 @@ export interface ToolGroup {
   name: string;
   description: string;
   tools: string[];
+}
+
+// ===== Agent Team 相关 (对齐后端 harness/team/models.py) =====
+
+export interface Project {
+  id: string;
+  user_id?: string;
+  name: string;
+  description: string;
+  members: string[];
+  lead_agent?: string;
+  thread_count: number;
+  task_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ProjectTaskStatus =
+  | "todo" | "in_progress" | "in_review"
+  | "completed" | "failed" | "rejected" | "merged";
+
+export interface ProjectTask {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  status: ProjectTaskStatus;
+  assigned_agent?: string;
+  dependencies: string[];
+  priority: "low" | "medium" | "high";
+  result_summary?: string;
+  result_detail?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TeamMemberRuntimeStatus = "idle" | "busy" | "done" | "failed";
+
+export interface TeamMemberRuntime {
+  agent_name: string;
+  display_name?: string;
+  status: TeamMemberRuntimeStatus;
+  current_task_id?: string;
+  current_task_title?: string;
+  last_result?: string;
+}
+
+export type TeamMessageType =
+  | "task" | "result" | "question" | "answer"
+  | "broadcast" | "lifecycle";
+
+export interface TeamMessage {
+  id: string;
+  from_agent: string;
+  to_agent?: string;
+  msg_type: TeamMessageType;
+  content: string;
+  task_id?: string;
+  timestamp: string;
+}
+
+export interface TeamExecutionState {
+  isRunning: boolean;
+  members: TeamMemberRuntime[];
+  tasks: ProjectTask[];
+  messages: TeamMessage[];
+  currentRound: number;
+  maxRounds: number;
+}
+
+/** 自定义 Agent 定义 (对齐后端 AgentConfig) */
+export interface AgentDefinition {
+  name: string;
+  display_name: string;
+  description: string;
+  model: string;
+  tool_groups: string[];
+  skills?: string[];
+  memory_scope: string;
+  can_be_lead: boolean;
+  can_delegate: boolean;
+  max_turns: number;
+  timeout_seconds: number;
+  isolation: string;
 }
 
 // ===== 监控 =====

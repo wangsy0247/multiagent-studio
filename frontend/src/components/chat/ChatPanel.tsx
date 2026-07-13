@@ -4,17 +4,25 @@ import { useRef, useEffect, useCallback, useState } from "react";
 import { Send, Square, AlertTriangle } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
 import { SSEClient } from "@/lib/sse-client";
-import { useCanvasStore } from "@/lib/canvas-store";
 import { threadsAPI, filesAPI } from "@/lib/api-client";
 import { ChatMessage, AttachedFile } from "@/lib/types";
+import { useProjectStore } from "@/lib/project-store";
+import { useTeamStore } from "@/lib/team-store";
+import { TeamMemberList } from "@/components/team/TeamMemberList";
+import { TeamMessageFeed } from "@/components/team/TeamMessageFeed";
 import MessageList from "./MessageList";
 import ClarificationDialog from "./ClarificationDialog";
 import InputBar from "./InputBar";
 import SubagentDetailPanel from "./SubagentDetailPanel";
 
 interface ChatPanelProps {
-  threadId: string;
-  threadTitle: string;
+  threadId?: string;
+  threadTitle?: string;
+  // ── Agent Team 扩展 ──
+  projectId?: string;
+  agentName?: string;
+  mode?: "single" | "team";
+  onThreadCreated?: (threadId: string) => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -23,13 +31,23 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
+export default function ChatPanel({
+  threadId,
+  threadTitle,
+  projectId,
+  agentName,
+  mode: propMode,
+  onThreadCreated,
+}: ChatPanelProps) {
+  const projectAgents = useProjectStore((state) =>
+    projectId ? state.projectAgents : [],
+  );
+
   const {
     messages, isStreaming, error, title, handleSSEEvent,
     setStreaming, addMessage, setError, _stopClarificationFn,
     setActiveThread, setThreadMessages,
   } = useChatStore();
-  const { exportGraph } = useCanvasStore();
   const sseRef = useRef<SSEClient | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
 
@@ -55,7 +73,7 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
       );
 
       filesAPI
-        .upload(threadId, file)
+        .upload(threadId || "", file)
         .then((res) => {
           const data = res.data || {};
           setAttachedFiles((prev) =>
@@ -122,13 +140,6 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
     setError(null);
     setAttachedFiles([]);
 
-    // 只在用户配置了完整的 SubAgent 画布时才发送 execution_graph
-    const canvasNodes = useCanvasStore.getState().nodes;
-    const hasConfiguredSubagents = canvasNodes.some(
-      (n) => !n.data.isEntryPoint && n.data.config.name && n.data.config.name.trim()
-    );
-    const graph = hasConfiguredSubagents ? exportGraph() : undefined;
-
     let connected = false;
     const sse = new SSEClient({
       onEvent: (event) => {
@@ -150,12 +161,32 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
     });
     sseRef.current = sse;
 
+    // 如果没有 threadId 但有 projectId，等待由外部传入（ChatTab 中通过 onThreadCreated 回调设置）
+    const currentThreadId = threadId;
+    if (!currentThreadId) {
+      setError("尚未创建会话线程");
+      return;
+    }
+
     try {
+      const resolvedMode = propMode || (projectId ? "team" : "single");
       await sse.connect("/api/execute", {
-        thread_id: threadId,
+        thread_id: currentThreadId,
+        user_id: (() => {
+          try {
+            const stored = localStorage.getItem("auth-storage");
+            if (stored) {
+              const { state } = JSON.parse(stored);
+              return state?.user?.id || "default";
+            }
+          } catch {}
+          return "default";
+        })(),
         message: text,
-        execution_graph: graph || undefined,
         files: filesPayload.length > 0 ? filesPayload : undefined,
+        project_id: projectId || undefined,
+        agent_name: agentName || undefined,
+        mode: resolvedMode,
       });
     } catch (err: any) {
       console.error("SSE 连接异常:", err);
@@ -176,7 +207,7 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
 
   // ── 线程切换：设置活跃线程 + 加载历史消息 ──
   useEffect(() => {
-    if (!threadId) return;
+    if (!threadId) return;  // threadId 可选：仅在已有线程时设置
 
     // 停止上一次的 SSE 连接，防止旧线程事件污染新线程
     if (sseRef.current) {
@@ -188,6 +219,7 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
     setAttachedFiles([]);
 
     const loadHistory = async () => {
+      if (!threadId) return;
       // 已有内存消息时跳过（避免覆盖流式数据）
       const current = useChatStore.getState().threadMessages[threadId];
       if (current && current.length > 0) return;
@@ -225,8 +257,9 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
   // ── 标题持久化：SSE 更新 title 后同步到后端 ──
   const prevTitleRef = useRef(title);
   useEffect(() => {
-    if (title && title !== prevTitleRef.current && title !== "新会话" && threadId) {
-      threadsAPI.updateTitle(threadId, title).catch(console.error);
+    const currentThreadId = threadId;
+    if (title && title !== prevTitleRef.current && title !== "新会话" && currentThreadId) {
+      threadsAPI.updateTitle(currentThreadId, title).catch(console.error);
     }
     prevTitleRef.current = title;
   }, [title, threadId]);
@@ -235,6 +268,20 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
     <div className="flex h-full">
       {/* ── 左侧: 主聊天区 ── */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* ── Team 状态栏 ── */}
+        {propMode === "team" && projectId && (
+          <div className="border-b border-slate-200 bg-slate-50 p-3">
+            <div className="flex gap-3">
+              <div className="w-1/3">
+                <TeamMemberList agents={projectAgents} />
+              </div>
+              <div className="w-2/3">
+                <TeamMessageFeed agents={projectAgents} />
+              </div>
+            </div>
+          </div>
+        )}
+
         <MessageList messages={messages} isStreaming={isStreaming} />
 
         {error && (
@@ -252,9 +299,11 @@ export default function ChatPanel({ threadId, threadTitle }: ChatPanelProps) {
           attachedFiles={attachedFiles}
           onAttachFiles={handleAttachFiles}
           onRemoveFile={handleRemoveFile}
+          members={projectAgents}
+          mode={propMode}
         />
 
-        <ClarificationDialog threadId={threadId} />
+        <ClarificationDialog threadId={threadId || ""} />
       </div>
 
       {/* ── 右侧: SubAgent 详情面板 ── */}

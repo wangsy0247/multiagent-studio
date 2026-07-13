@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class ProjectLeadAgent:
     """Team 模式 Lead Agent — 项目级编排。
 
-    职责: 理解用户目标 → 拆解任务 → 分配 Member → 审阅结果 → 合并输出
+    职责: 理解用户目标 → 拆解任务 → 分配 Member → 监控进度 → 汇总输出
     """
 
     def __init__(
@@ -36,6 +36,7 @@ class ProjectLeadAgent:
         message_bus: Any | None = None,
         config_manager: Any | None = None,
         skill_storage: Any | None = None,
+        teammates: dict | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._team_context = team_context
@@ -44,6 +45,7 @@ class ProjectLeadAgent:
         self._message_bus = message_bus
         self._config_manager = config_manager
         self._skill_storage = skill_storage
+        self._teammates = teammates
 
         # 复用 LeadAgent 的基础功能（工具注册表查询等）
         self._lead_agent = LeadAgent(
@@ -81,21 +83,22 @@ class ProjectLeadAgent:
     @staticmethod
     def _build_role_section() -> str:
         return """<role>
-你是 Project Lead Agent，负责协调 Team 中的多个专业 Agent 完成项目目标。
+你是 Project Lead Agent，负责协调 Team 中的多个持久化 Teammate Agent 完成项目目标。
 
 **你的核心职责:**
 1. **理解目标**: 分析用户需求，明确成功标准
 2. **拆解任务**: 将大目标拆分为可并行/顺序执行的小任务
-3. **分配成员**: 根据每个 Member 的专业领域分配任务
-4. **监控进度**: 通过任务板跟踪每个任务的执行状态
-5. **审阅结果**: 检查 Member 提交的结果质量，必要时打回重做
-6. **合并输出**: 汇总所有子任务结果，生成最终回复
+3. **分配成员**: 根据每个 Member 的专业领域和当前状态分配任务
+4. **监控进度**: 通过 task_list 和 list_teammates 跟踪进度
+5. **动态调整**: 看到中间结果后创建新任务、调整依赖、重新分配
+6. **汇总输出**: 汇总所有子任务结果，生成最终回复
 
 **原则:**
 - 任务拆分要细粒度、可验证，每个任务的输出必须明确
 - 优先并行分配独立任务，充分利用团队的并发能力
 - 遇到需求不明确时，先向用户澄清再拆分任务
-- 不盲目信任 Member 的输出，关键结果需要验证
+- 使用 list_teammates 了解谁空闲、谁忙碌后再分配
+- 每个 Teammate 是持久化运行的，任务完成后回到 IDLE，可继续分配新任务
 </role>"""
 
     @staticmethod
@@ -104,25 +107,26 @@ class ProjectLeadAgent:
 **任务板工具:**
 - `task_create`: 创建新任务。任务描述必须包含5要素（目标/背景/范围/约束/格式）
 - `task_list`: 查看当前任务板状态，了解进度
-- `task_update`: 更新任务状态（审阅通过/打回/重新分配）
+- `task_update`: 更新任务状态（完成/失败/取消）
 
 **委派工具:**
 - `delegate_to_member`: 将任务分配给指定 Member 执行
 
+**团队管理工具:**
+- `list_teammates`: 查看所有 teammate 的当前状态（角色、状态、当前任务）
+
 **通信工具:**
 - `broadcast`: 向全体 Member 发送通知（如：全体注意，XX任务优先级提升）
 - `send_message`: 向特定 Member 发送私聊消息（如：补充说明、追问细节）
-
-**审阅与合并:**
-- `review_task`: 审阅 Member 提交的结果（通过/打回 + 反馈意见）
-- `merge_result`: 合并多个 Member 的文件变更到主 workspace
+- `read_inbox`: 读取自己的收件箱，查看其他 Agent 发来的消息
 
 **典型工作流:**
 1. 分析用户目标 → 使用 task_create 创建 1-N 个任务
 2. 对每个任务 → 使用 delegate_to_member 分配给合适的 Member
-3. 等待执行完成 → 使用 task_list 查看进度
-4. 审阅结果 → 使用 review_task 通过/打回
-5. 全部完成后 → 汇总结果生成最终回复
+3. 使用 list_teammates 查看团队状态
+4. 等待执行完成 → 使用 task_list 查看进度
+5. 使用 read_inbox 检查是否有 Member 发来的消息
+6. 全部完成后 → 汇总结果生成最终回复
 </team_tool_guidance>"""
 
     @staticmethod
@@ -159,6 +163,8 @@ class ProjectLeadAgent:
             task_store=self._task_store,
             message_bus=self._message_bus,
             subagent_manager=self._subagent_manager,
+            teammates=self._teammates,
+            role="lead",
         )
         tools.extend(team_tools)
 

@@ -5,8 +5,9 @@
  * 当 thinking / message 交替到达时，各自追加到同一个卡片，不再碎片化。
  */
 import { create } from "zustand";
-import { ChatMessage, SSEEvent, TodoItem, TokenUsage, ClarificationRequest } from "./types";
+import { ChatMessage, SSEEvent, TodoItem, TokenUsage, ClarificationRequest, TeamMemberRuntimeStatus } from "./types";
 import { generateId } from "./utils";
+import { useTeamStore } from "./team-store";
 
 interface ChatStore {
   messages: ChatMessage[];
@@ -397,6 +398,92 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             tokenCount: 0,
           });
         }
+        break;
+      }
+
+      // ── Agent Team 事件 ──────────────────────────────────────────
+      case "team_start": {
+        useTeamStore.getState().setRunning(true);
+        if (event.members && event.members.length > 0) {
+          useTeamStore.getState().initMembers(event.members);
+        }
+        // 在主聊天中插入一条系统消息
+        get().addMessage({
+          role: "system",
+          content: `🚀 Team 模式已启动 (${event.members?.length || 0} 个成员)`,
+          msgType: "text",
+          metadata: { event_type: "team_start", members: event.members, project_id: event.project_id },
+          tokenCount: 0,
+        });
+        break;
+      }
+
+      case "team_status": {
+        get().addMessage({
+          role: "system",
+          content: `📋 ${event.content || event.phase || "Team 状态更新"}`,
+          msgType: "text",
+          metadata: { event_type: "team_status", phase: event.phase },
+          tokenCount: 0,
+        });
+        break;
+      }
+
+      case "team_task_update": {
+        if (event.task) {
+          useTeamStore.getState().addTask(event.task);
+        }
+        break;
+      }
+
+      case "member_status": {
+        useTeamStore.getState().updateMemberStatus(
+          event.agent_name || event.subagent_name || "unknown",
+          (event.status as TeamMemberRuntimeStatus) || "idle",
+          event.task_id || event.current_task_id,
+        );
+        break;
+      }
+
+      case "team_message": {
+        if (event.message) {
+          useTeamStore.getState().addMessage(event.message);
+        }
+        break;
+      }
+
+      case "team_end": {
+        useTeamStore.getState().setRunning(false);
+        get().addMessage({
+          role: "system",
+          content: `✅ Team 执行结束 (状态: ${event.status}, 轮次: ${event.total_rounds || 0})`,
+          msgType: "text",
+          metadata: { event_type: "team_end", status: event.status, total_rounds: event.total_rounds },
+          tokenCount: 0,
+        });
+        break;
+      }
+
+      case "team_error": {
+        useTeamStore.getState().setRunning(false);
+        get().addMessage({
+          role: "system",
+          content: `❌ Team 错误: ${event.content || "未知错误"}`,
+          msgType: "error",
+          metadata: { event_type: "team_error" },
+          tokenCount: 0,
+        });
+        break;
+      }
+
+      case "team_degrade": {
+        get().addMessage({
+          role: "system",
+          content: `⚠️ Team 模式降级为单 Agent: ${event.reason || ""}`,
+          msgType: "text",
+          metadata: { event_type: "team_degrade", reason: event.reason },
+          tokenCount: 0,
+        });
         break;
       }
 

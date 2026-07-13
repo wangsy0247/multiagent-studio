@@ -177,7 +177,7 @@ loop_detection:
   warn_threshold: 3       # Layer 1: 相同调用集触发警告
   hard_limit: 5            # Layer 1: 相同调用集强制停止
   tool_freq_warn: 20       # Layer 2: 同工具名触发警告
-  tool_freq_hard_limit: 40 # Layer 2: 同工具名强制停止
+  tool_freq_hard_limit: 30 # Layer 2: 同工具名强制停止
   window_size: 20
 
 # --- Subagents ---
@@ -212,6 +212,11 @@ uploads:
   max_files: 10
   max_file_size: 52428800
   max_total_size: 104857600
+
+langfuse_enabled: true
+langfuse_public_key: ${HARNESS_LANGFUSE_PUBLIC_KEY}
+langfuse_secret_key: ${HARNESS_LANGFUSE_SECRET_KEY}
+langfuse_host: ${HARNESS_LANGFUSE_HOST}
 
 # --- Guardrails ---
 # guardrails:

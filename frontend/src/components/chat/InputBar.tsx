@@ -3,16 +3,20 @@
 import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent } from "react";
 import { Send, Square, Paperclip, ListTodo, X, FileText } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
-import { AttachedFile } from "@/lib/types";
+import { AttachedFile, AgentDefinition } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { AgentMentionPicker } from "@/components/team/AgentMentionPicker";
 
 interface InputBarProps {
-  onSend: (text: string, files: AttachedFile[]) => void;
+  onSend: (text: string, files: AttachedFile[], targetAgents?: string[]) => void;
   onStop: () => void;
   isStreaming: boolean;
   attachedFiles?: AttachedFile[];
   onAttachFiles?: (files: FileList | null) => void;
   onRemoveFile?: (filename: string) => void;
+  // ── Agent Team 扩展 ──
+  members?: AgentDefinition[];
+  mode?: "single" | "team";
 }
 
 export default function InputBar({
@@ -22,11 +26,17 @@ export default function InputBar({
   attachedFiles = [],
   onAttachFiles,
   onRemoveFile,
+  members = [],
+  mode,
 }: InputBarProps) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { todos } = useChatStore();
+
+  // ── @mention 状态 ──
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -35,14 +45,49 @@ export default function InputBar({
     }
   }, [text]);
 
+  // ── 检测 @ 提及 ──
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const value = e.target.value;
+    setText(value);
+    // only enable @mention in team mode
+    if (mode !== "team" || members.length === 0) {
+      setShowMentions(false);
+      return;
+    }
+    const lastAtIndex = value.lastIndexOf("@");
+    if (lastAtIndex >= 0) {
+      const afterAt = value.slice(lastAtIndex + 1);
+      if (!afterAt.includes(" ") && afterAt.length <= 30) {
+        setMentionQuery(afterAt);
+        setShowMentions(true);
+        return;
+      }
+    }
+    setShowMentions(false);
+  }
+
+  function handleMentionSelect(agentName: string) {
+    const lastAtIndex = text.lastIndexOf("@");
+    const before = text.slice(0, lastAtIndex);
+    const newText = `${before}@${agentName} `;
+    setText(newText);
+    setShowMentions(false);
+    setMentionQuery("");
+  }
+
   function handleSend() {
     if (!text.trim() && attachedFiles.length === 0) return;
-    onSend(text.trim(), attachedFiles);
+    // 解析 @mentions
+    const mentions = Array.from(
+      text.matchAll(/@([A-Za-z0-9_-]+)/g),
+    ).map((m) => m[1]);
+    const uniqueMentions = [...new Set(mentions)];
+    onSend(text.trim(), attachedFiles, uniqueMentions);
     setText("");
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !showMentions) {
       e.preventDefault();
       handleSend();
     }
@@ -127,16 +172,41 @@ export default function InputBar({
         >
           <Paperclip className="w-4 h-4" />
         </button>
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="输入任务指令... (Enter 发送, Shift+Enter 换行)"
-          rows={1}
-          className="flex-1 resize-none px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl input-focus max-h-32 bg-slate-50"
-          disabled={isStreaming}
-        />
+        {/* ── 模式标签 ── */}
+        {mode && (
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+            mode === "team"
+              ? "bg-blue-100 text-blue-700"
+              : "bg-slate-100 text-slate-600"
+          }`}>
+            {mode === "team" ? "Team" : "Single"}
+          </span>
+        )}
+
+        {/* ── @mention 补全 ── */}
+        <div className="relative flex-1">
+          {showMentions && (
+            <AgentMentionPicker
+              members={members}
+              query={mentionQuery}
+              onSelect={handleMentionSelect}
+            />
+          )}
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              mode === "team"
+                ? "输入团队目标... (@agent 点名, Enter 发送)"
+                : "输入任务指令... (Enter 发送, Shift+Enter 换行)"
+            }
+            rows={1}
+            className="w-full resize-none px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl input-focus max-h-32 bg-slate-50"
+            disabled={isStreaming}
+          />
+        </div>
         {isStreaming ? (
           <button
             onClick={onStop}

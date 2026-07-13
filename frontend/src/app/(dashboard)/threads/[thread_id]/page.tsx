@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, lazy, Suspense } from "react";
-import { useParams } from "next/navigation";
-import { MessageCircle, BarChart3 } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { MessageCircle, BarChart3, ExternalLink } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { ThreadDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -22,10 +22,15 @@ type TabType = "chat" | "monitor";
 
 export default function WorkspacePage() {
   const { thread_id } = useParams<{ thread_id: string }>();
+  const router = useRouter();
   const [thread, setThread] = useState<ThreadDetail | null>(null);
   const [tab, setTab] = useState<TabType>("chat");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // ── Agent Team: 从 thread 数据中提取 ──
+  const [projectId, setProjectId] = useState<string | undefined>();
+  const [agentName, setAgentName] = useState<string | undefined>();
+  const [threadMode, setThreadMode] = useState<string | undefined>();
 
   useEffect(() => { loadThread(); }, [thread_id]);
 
@@ -34,6 +39,10 @@ export default function WorkspacePage() {
     try {
       const { data } = await threadsAPI.get(thread_id);
       setThread(data);
+      // 提取 Agent Team 字段
+      setProjectId((data as any).project_id || undefined);
+      setAgentName((data as any).agent_name || undefined);
+      setThreadMode((data as any).mode || undefined);
     } catch (err: any) {
       setError(err.response?.data?.detail || "加载会话失败");
     } finally { setLoading(false); }
@@ -83,11 +92,39 @@ export default function WorkspacePage() {
           })}
         </div>
         <div className="flex-1" />
-        <span className="text-xs text-slate-400 truncate max-w-[250px]">{thread?.title || "新会话"}</span>
+        {/* ── 项目/Agent 上下文标签 ── */}
+        {projectId && (
+          <button
+            onClick={() => router.push(`/projects/${projectId}`)}
+            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-1 rounded-lg mr-2 transition-colors"
+          >
+            📁 项目
+            <ExternalLink className="w-3 h-3" />
+          </button>
+        )}
+        {agentName && (
+          <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded-lg mr-2">
+            🤖 @{agentName}
+          </span>
+        )}
+        {threadMode === "team" && (
+          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg mr-2 font-medium">
+            Team
+          </span>
+        )}
+        <span className="text-xs text-slate-400 truncate max-w-[200px]">{thread?.title || "新会话"}</span>
       </div>
       <div className="flex-1 overflow-hidden">
         <Suspense fallback={<PanelFallback />}>
-          {tab === "chat" && <ChatPanel threadId={thread_id} threadTitle={thread?.title || ""} />}
+          {tab === "chat" && (
+            <ChatPanel
+              threadId={thread_id}
+              threadTitle={thread?.title || ""}
+              projectId={projectId}
+              agentName={agentName}
+              mode={(threadMode as "single" | "team") || "single"}
+            />
+          )}
           {tab === "monitor" && <MonitoringPanel threadId={thread_id} />}
         </Suspense>
       </div>

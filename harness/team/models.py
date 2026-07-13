@@ -14,16 +14,18 @@ from pydantic import BaseModel, Field
 
 
 class TeamTaskStatus(str, Enum):
-    """Team 任务状态 — 从创建到合并的完整生命周期."""
+    """Team 任务状态 — 极简状态机，映射 A2A 标准 Task 生命周期.
 
-    PENDING = "pending"            # 等待依赖完成或待分配
-    ASSIGNED = "assigned"          # 已分配给 member，等待开始
-    IN_PROGRESS = "in_progress"    # member 正在执行
-    REVIEWING = "reviewing"        # Lead 正在审阅
-    MERGING = "merging"            # 正在合并 worktree 结果
-    COMPLETED = "completed"        # 已完成
-    FAILED = "failed"              # 执行失败
-    BLOCKED = "blocked"            # 被阻塞（依赖未满足或其他原因）
+    pending → in_progress → completed / failed / cancelled.
+    A2A 映射: submitted=pending, working=in_progress, completed=completed,
+              failed=failed, canceled=cancelled.
+    """
+
+    PENDING = "pending"            # 等待依赖完成或待分配 (A2A: submitted)
+    IN_PROGRESS = "in_progress"    # member 正在执行 (A2A: working)
+    COMPLETED = "completed"        # 已完成 (A2A: completed)
+    FAILED = "failed"              # 执行失败 (A2A: failed)
+    CANCELLED = "cancelled"        # 已取消 (A2A: canceled)
 
     @property
     def is_terminal(self) -> bool:
@@ -31,6 +33,7 @@ class TeamTaskStatus(str, Enum):
         return self in {
             TeamTaskStatus.COMPLETED,
             TeamTaskStatus.FAILED,
+            TeamTaskStatus.CANCELLED,
         }
 
 
@@ -67,18 +70,20 @@ class TeamTask(BaseModel):
 
 
 class TeamMessageType(str, Enum):
-    """Team 消息类型."""
+    """Team 消息类型 — 包含  结构化协议消息."""
 
-    TEXT = "text"                # 普通文本消息
-    TASK_UPDATE = "task_update"  # 任务状态变更通知
-    REVIEW_REQUEST = "review_request"
-    REVIEW_RESULT = "review_result"
-    BROADCAST = "broadcast"      # 广播消息
-    LIFECYCLE = "lifecycle"      # Agent 上下线通知
+    TEXT = "text"                              # 普通文本消息
+    BROADCAST = "broadcast"                    # 广播消息
+    LIFECYCLE = "lifecycle"                    # Agent 上下线通知
+    # ──  结构化协议消息 ──
+    SHUTDOWN_REQUEST = "shutdown_request"      # Lead → Teammate: 请求关闭
+    SHUTDOWN_RESPONSE = "shutdown_response"    # Teammate → Lead: 确认/拒绝关闭
+    PLAN_APPROVAL_REQUEST = "plan_approval_request"   # Teammate → Lead: 请求审批
+    PLAN_APPROVAL_RESPONSE = "plan_approval_response" # Lead → Teammate: 审批结果
 
 
 class TeamMessage(BaseModel):
-    """Team 内 Agent 间消息."""
+    """Team 内 Agent 间消息 — 支持  结构化协议."""
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     from_agent: str
@@ -86,6 +91,7 @@ class TeamMessage(BaseModel):
     msg_type: TeamMessageType = TeamMessageType.TEXT
     content: str
     task_id: str | None = None         # 关联的任务 ID
+    request_id: str | None = None      #  关联请求和响应 (shutdown/plan approval)
     created_at: str = ""
 
     def model_post_init(self, __context: Any) -> None:
@@ -93,18 +99,43 @@ class TeamMessage(BaseModel):
             self.created_at = datetime.now(timezone.utc).isoformat()
 
 
+class TeammateStatus(str, Enum):
+    """Teammate Agent 生命周期状态 
+
+    SPAWNING → WORKING ↔ IDLE → SHUTTING_DOWN → SHUTDOWN.
+    """
+
+    SPAWNING = "spawning"            # 正在初始化
+    WORKING = "working"              # 正在执行任务
+    IDLE = "idle"                    # 空闲，等待唤醒 ( 可自主认领)
+    SHUTTING_DOWN = "shutting_down"  # 正在优雅关闭 ( shutdown handshake)
+    SHUTDOWN = "shutdown"            # 已关闭 (终态)
+    FAILED = "failed"                # 异常终止
+
+
 class TeamMemberRuntime(BaseModel):
     """Team 成员运行时状态."""
 
     agent_name: str
     role: Literal["lead", "member"] = "member"
-    status: Literal["idle", "busy", "done", "failed"] = "idle"
+    status: TeammateStatus = TeammateStatus.SPAWNING
     current_task_id: str | None = None     # 当前正在执行的任务
     total_tasks: int = 0
     completed_tasks: int = 0
     failed_tasks: int = 0
     last_error: str | None = None
     last_heartbeat: str | None = None
+
+
+class RequestStatus(str, Enum):
+    """协议请求状态 — FSM: pending → approved / rejected.
+
+    用于关机协议和计划审批协议的请求追踪。
+    """
+
+    PENDING = "pending"      # 等待审批
+    APPROVED = "approved"    # 已批准
+    REJECTED = "rejected"    # 已拒绝
 
 
 class TeamExecutionMode(str, Enum):

@@ -20,6 +20,13 @@ export default function AgentEditPage() {
   const [model, setModel] = useState("inherit");
   const [toolGroups, setToolGroups] = useState("");
   const [memoryData, setMemoryData] = useState<Record<string, unknown> | null>(null);
+  // ── Agent Team 扩展字段 ──
+  const [memoryScope, setMemoryScope] = useState("team");
+  const [canBeLead, setCanBeLead] = useState(false);
+  const [canDelegate, setCanDelegate] = useState(true);
+  const [maxTurns, setMaxTurns] = useState(50);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(900);
+  const [isolation, setIsolation] = useState("none");
 
   useEffect(() => {
     if (!isNew) loadAgent();
@@ -35,6 +42,13 @@ export default function AgentEditPage() {
       setSoul(data.soul || "");
       setModel(agent.model || "inherit");
       setToolGroups((agent.tool_groups || []).join(", "));
+      // ── Agent Team 字段 ──
+      setMemoryScope(agent.memory_scope || "team");
+      setCanBeLead(agent.can_be_lead ?? false);
+      setCanDelegate(agent.can_delegate ?? true);
+      setMaxTurns(agent.max_turns || 50);
+      setTimeoutSeconds(agent.timeout_seconds || 900);
+      setIsolation(agent.isolation || "none");
       // Load memory
       const memResp = await agentsAPI.getMemory(name);
       setMemoryData(memResp.data.memory);
@@ -62,6 +76,12 @@ export default function AgentEditPage() {
           soul: soul.trim(),
           model,
           tool_groups: tg,
+          memory_scope: memoryScope,
+          can_be_lead: canBeLead,
+          can_delegate: canDelegate,
+          max_turns: maxTurns,
+          timeout_seconds: timeoutSeconds,
+          isolation,
         });
         router.push(`/agents/${agentName.trim()}`);
       } else {
@@ -71,6 +91,12 @@ export default function AgentEditPage() {
           soul: soul.trim(),
           model,
           tool_groups: tg,
+          memory_scope: memoryScope,
+          can_be_lead: canBeLead,
+          can_delegate: canDelegate,
+          max_turns: maxTurns,
+          timeout_seconds: timeoutSeconds,
+          isolation,
         });
       }
     } catch (err: any) {
@@ -204,6 +230,66 @@ export default function AgentEditPage() {
               placeholder="coding, search"
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
             />
+          </div>
+        </div>
+
+        {/* ── Agent Team 配置 ── */}
+        <div className="border border-slate-200 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-slate-700 mb-3">Agent Team 配置</h3>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">记忆范围</label>
+              <select value={memoryScope} onChange={(e) => setMemoryScope(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200">
+                <option value="user">用户级 (user)</option>
+                <option value="project">项目级 (project)</option>
+                <option value="local">本地私有 (local)</option>
+                <option value="team">团队内私有 (team)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">隔离方式</label>
+              <select value={isolation} onChange={(e) => setIsolation(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200">
+                <option value="none">共享 workspace</option>
+                <option value="worktree">独立 worktree</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">模型</label>
+              <select value={model} onChange={(e) => setModel(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200">
+                <option value="inherit">继承 (inherit)</option>
+                <option value="gpt-4o">gpt-4o</option>
+                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+                <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4 mt-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">最大轮次</label>
+              <input type="number" value={maxTurns} onChange={(e) => setMaxTurns(parseInt(e.target.value) || 50)}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">超时（秒）</label>
+              <input type="number" value={timeoutSeconds} onChange={(e) => setTimeoutSeconds(parseInt(e.target.value) || 900)}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
+            </div>
+          </div>
+          <div className="flex gap-6 mt-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={canBeLead} onChange={(e) => setCanBeLead(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-slate-300" />
+              <span className="text-xs text-slate-600">可担任 Project Lead</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={canDelegate} onChange={(e) => setCanDelegate(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-slate-300" />
+              <span className="text-xs text-slate-600">可委派任务</span>
+            </label>
           </div>
         </div>
 

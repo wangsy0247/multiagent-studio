@@ -45,6 +45,21 @@ apiClient.interceptors.response.use(
 
 export default apiClient;
 
+/** 获取当前登录用户的 ID，从 localStorage 读取（auth-store subscribe 持久化保证同步），兜底 "default" */
+function getCurrentUserId(): string {
+  if (typeof window === "undefined") return "default";
+  try {
+    const stored = localStorage.getItem("auth-storage");
+    if (stored) {
+      const { state } = JSON.parse(stored);
+      // user 可能在 state.user.id 或 state.user 顶层（取决于持久化格式）
+      const uid = state?.user?.id;
+      if (uid) return uid;
+    }
+  } catch {}
+  return "default";
+}
+
 export const authAPI = {
   register: (data: { email: string; username: string; password: string }) =>
     apiClient.post("/auth/register", data),
@@ -57,14 +72,21 @@ export const authAPI = {
 
 export const threadsAPI = {
   list: (page = 1) => apiClient.get(`/threads?page=${page}`),
-  create: (data: { title?: string; preset_type?: string }) =>
-    apiClient.post("/threads", data),
+  create: (data: {
+    title?: string; preset_type?: string;
+    project_id?: string; agent_name?: string; mode?: string;
+  }) => apiClient.post("/threads", data),
   get: (threadId: string) => apiClient.get(`/threads/${threadId}`),
   delete: (threadId: string) => apiClient.delete(`/threads/${threadId}`),
   updateTitle: (threadId: string, title: string) =>
     apiClient.patch(`/threads/${threadId}/title`, { title }),
+  updateGraph: (threadId: string, graph: object) =>
+    apiClient.patch(`/threads/${threadId}/graph`, { execution_graph: graph }),
   getMessages: (threadId: string, page = 1) =>
     apiClient.get(`/threads/${threadId}/messages?page=${page}`),
+  // ── Agent Team: 项目内线程 ──
+  listByProject: (projectId: string) =>
+    apiClient.get(`/threads/by-project/${projectId}`),
 };
 
 export const filesAPI = {
@@ -83,36 +105,38 @@ export const filesAPI = {
 
 // ===== Agents API (persistent per-user agents) =====
 export const agentsAPI = {
-  list: (userId = "default") => apiClient.get(`/v1/agents?user_id=${userId}`),
-  get: (name: string, userId = "default") => apiClient.get(`/v1/agents/${name}?user_id=${userId}`),
+  list: () => apiClient.get(`/v1/agents?user_id=${getCurrentUserId()}`),
+  get: (name: string) => apiClient.get(`/v1/agents/${name}?user_id=${getCurrentUserId()}`),
   create: (data: {
     name: string; display_name?: string; description?: string;
     soul?: string; model?: string; tool_groups?: string[];
     skills?: string[]; user_id?: string;
-  }) => apiClient.post("/v1/agents", data),
-  update: (name: string, data: object) => apiClient.put(`/v1/agents/${name}`, data),
-  delete: (name: string, userId = "default") => apiClient.delete(`/v1/agents/${name}?user_id=${userId}`),
-  getMemory: (name: string, userId = "default") => apiClient.get(`/v1/agents/${name}/memory?user_id=${userId}`),
-  clearMemory: (name: string, userId = "default") => apiClient.delete(`/v1/agents/${name}/memory?user_id=${userId}`),
+    memory_scope?: string; can_be_lead?: boolean; can_delegate?: boolean;
+    max_turns?: number; timeout_seconds?: number; isolation?: string;
+  }) => apiClient.post("/v1/agents", { ...data, user_id: data.user_id || getCurrentUserId() }),
+  update: (name: string, data: object) => apiClient.put(`/v1/agents/${name}`, { ...data, user_id: getCurrentUserId() }),
+  delete: (name: string) => apiClient.delete(`/v1/agents/${name}?user_id=${getCurrentUserId()}`),
+  getMemory: (name: string) => apiClient.get(`/v1/agents/${name}/memory?user_id=${getCurrentUserId()}`),
+  clearMemory: (name: string) => apiClient.delete(`/v1/agents/${name}/memory?user_id=${getCurrentUserId()}`),
 };
 
 // ===== Projects API =====
 export const projectsAPI = {
-  list: (userId = "default") => apiClient.get(`/v1/projects?user_id=${userId}`),
-  get: (id: string, userId = "default") => apiClient.get(`/v1/projects/${id}?user_id=${userId}`),
+  list: () => apiClient.get(`/v1/projects?user_id=${getCurrentUserId()}`),
+  get: (id: string) => apiClient.get(`/v1/projects/${id}?user_id=${getCurrentUserId()}`),
   create: (data: { name: string; description?: string; user_id?: string }) =>
-    apiClient.post("/v1/projects", data),
-  update: (id: string, data: object) => apiClient.put(`/v1/projects/${id}`, data),
-  delete: (id: string, userId = "default") => apiClient.delete(`/v1/projects/${id}?user_id=${userId}`),
-  addMember: (id: string, agentName: string, userId = "default") =>
-    apiClient.post(`/v1/projects/${id}/members`, { agent_name: agentName, user_id: userId }),
-  removeMember: (id: string, agentName: string, userId = "default") =>
-    apiClient.delete(`/v1/projects/${id}/members/${agentName}?user_id=${userId}`),
+    apiClient.post("/v1/projects", { ...data, user_id: data.user_id || getCurrentUserId() }),
+  update: (id: string, data: object) => apiClient.put(`/v1/projects/${id}`, { ...data, user_id: getCurrentUserId() }),
+  delete: (id: string) => apiClient.delete(`/v1/projects/${id}?user_id=${getCurrentUserId()}`),
+  addMember: (id: string, agentName: string) =>
+    apiClient.post(`/v1/projects/${id}/members`, { agent_name: agentName, user_id: getCurrentUserId() }),
+  removeMember: (id: string, agentName: string) =>
+    apiClient.delete(`/v1/projects/${id}/members/${agentName}?user_id=${getCurrentUserId()}`),
   // Tasks
-  listTasks: (id: string, userId = "default") => apiClient.get(`/v1/projects/${id}/tasks?user_id=${userId}`),
-  createTask: (id: string, data: object) => apiClient.post(`/v1/projects/${id}/tasks`, data),
-  updateTask: (id: string, taskId: string, data: object) => apiClient.put(`/v1/projects/${id}/tasks/${taskId}`, data),
-  deleteTask: (id: string, taskId: string, userId = "default") => apiClient.delete(`/v1/projects/${id}/tasks/${taskId}?user_id=${userId}`),
+  listTasks: (id: string) => apiClient.get(`/v1/projects/${id}/tasks?user_id=${getCurrentUserId()}`),
+  createTask: (id: string, data: object) => apiClient.post(`/v1/projects/${id}/tasks`, { ...data, user_id: getCurrentUserId() }),
+  updateTask: (id: string, taskId: string, data: object) => apiClient.put(`/v1/projects/${id}/tasks/${taskId}`, { ...data, user_id: getCurrentUserId() }),
+  deleteTask: (id: string, taskId: string) => apiClient.delete(`/v1/projects/${id}/tasks/${taskId}?user_id=${getCurrentUserId()}`),
 };
 
 export const configsAPI = {

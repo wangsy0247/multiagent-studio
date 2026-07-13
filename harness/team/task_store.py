@@ -59,7 +59,10 @@ class TeamTaskStore:
             return []
         try:
             with open(self._file, encoding="utf-8") as f:
-                data = json.load(f)
+                content = f.read().strip()
+                if not content:
+                    return []
+                data = json.loads(content)
             if isinstance(data, list):
                 return data
         except (json.JSONDecodeError, OSError) as exc:
@@ -85,8 +88,7 @@ class TeamTaskStore:
         self._write(raw)
         # 更新缓存
         self._cache = deepcopy(tasks)
-        if self._file.exists():
-            self._cache_mtime = self._file.stat().st_mtime
+        self._cache_mtime = self._file.stat().st_mtime
 
     # ------------------------------------------------------------------
     # 公共 API
@@ -94,18 +96,20 @@ class TeamTaskStore:
 
     async def load_tasks(self) -> list[TeamTask]:
         """加载所有任务（带缓存）."""
-        if self._file.exists():
-            mtime = self._file.stat().st_mtime
-            if self._cache is not None and mtime == self._cache_mtime:
-                return list(self._cache)
+        # 文件不存在时直接返回空列表，避免 "a+" 创建空文件
+        if not self._file.exists():
+            return []
+        mtime = self._file.stat().st_mtime
+        if self._cache is not None and mtime == self._cache_mtime:
+            return list(self._cache)
         # 需要重新加载
-        with open(self._file, "a+") as f:  # a+ 确保文件存在
+        with open(self._file, "r") as f:
             fcntl.flock(f, fcntl.LOCK_SH)
             try:
                 raw = self._read()
                 tasks = [TeamTask(**r) for r in raw]
                 self._cache = tasks
-                self._cache_mtime = self._file.stat().st_mtime if self._file.exists() else 0.0
+                self._cache_mtime = mtime
                 return list(tasks)
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
@@ -236,17 +240,26 @@ class TeamTaskStore:
                 ready.append(t)
         return ready
 
-    async def get_blocked_tasks(self) -> list[TeamTask]:
-        """返回因依赖未满足而阻塞的待办任务."""
+    async def get_unclaimed_tasks(self) -> list[TeamTask]:
+        """ 返回所有未被认领且依赖已满足的任务.
+
+        认领条件 (参考 learn-claude-code  scan_unclaimed_tasks):
+        - status == PENDING
+        - assigned_agent is None (无 owner)
+        - 所有 dependencies 均为 COMPLETED
+        """
         tasks = await self.load_tasks()
         completed_ids = {t.id for t in tasks if t.status == TeamTaskStatus.COMPLETED}
-        blocked: list[TeamTask] = []
+        unclaimed: list[TeamTask] = []
         for t in tasks:
             if t.status != TeamTaskStatus.PENDING:
                 continue
-            if t.dependencies and not all(dep in completed_ids for dep in t.dependencies):
-                blocked.append(t)
-        return blocked
+            if t.assigned_agent is not None:
+                continue
+            if not all(dep in completed_ids for dep in t.dependencies):
+                continue
+            unclaimed.append(t)
+        return unclaimed
 
     async def check_circular_dependency(self) -> list[list[str]]:
         """检测依赖图中的环。返回所有检测到的环."""
@@ -281,14 +294,20 @@ class TeamTaskStore:
 
         return cycles
 
-    async def assign_task(self, task_id: str, agent_name: str) -> TeamTask | None:
-        """将任务分配给指定 member，状态改为 IN_PROGRESS."""
-        return await self.update_task(
-            task_id,
-            assigned_agent=agent_name,
-            status=TeamTaskStatus.IN_PROGRESS,
-            started_at=_now_iso(),
-        )
+    async def clear_all(self) -> int:
+        """清空所有任务（每次新 Team 运行时调用，避免旧结果混入新对话）。返回清除的任务数。"""
+        count = 0
+        with open(self._file, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                tasks = self._load_locked()
+                count = len(tasks)
+                self._save_locked([])
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        if count:
+            logger.info("Cleared all %d tasks from %s", count, self._file)
+        return count
 
     async def delete_task(self, task_id: str) -> bool:
         """删除任务."""

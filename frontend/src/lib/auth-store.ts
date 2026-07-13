@@ -78,12 +78,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   clearError: () => set({ error: null }),
 }));
 
-// 持久化 token 到 localStorage
+// 持久化 token + user 到 localStorage
 if (typeof window !== "undefined") {
   useAuthStore.subscribe((state) => {
     localStorage.setItem(
       "auth-storage",
-      JSON.stringify({ state: { accessToken: state.accessToken } })
+      JSON.stringify({ state: { accessToken: state.accessToken, user: state.user } })
     );
   });
 }

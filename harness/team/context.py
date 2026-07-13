@@ -63,14 +63,14 @@ class TeamContext:
         """返回 Team 协作规则文本."""
         return """<team_collaboration_rules>
 **角色分工:**
-- **Project Lead** 负责: 理解用户目标 → 拆解任务 → 分配 Member → 审阅结果 → 合并输出
+- **Project Lead** 负责: 理解用户目标 → 拆解任务 → 分配 Member → 汇总输出
 - **Member Agent** 负责: 接收任务 → 使用自己的 SOUL + 工具执行 → 更新任务状态 → 报告结果
 
 **任务板使用规则:**
 1. Lead 使用 task_create 创建任务，明确指定标题、描述和分配对象
 2. Member 接收任务后立即使用 task_update 将状态改为 in_progress
-3. Member 完成后使用 task_update 将状态改为 reviewing 并附上结果摘要
-4. Lead 审阅通过后使用 task_update 将状态改为 completed
+3. Member 完成后使用 task_update 将状态改为 completed 并附上结果
+4. 如执行失败，使用 task_update 将状态改为 failed 并说明原因
 
 **通信规则:**
 1. Member 遇到需求不清时，使用 send_message 向 Lead 提问
@@ -79,7 +79,7 @@ class TeamContext:
 4. 禁止在消息中传递大段代码 — 代码应写入文件并通过任务板引用
 
 **约束:**
-1. Member Agent 不能委派任务给其他 Agent
+1. Member Agent 不能委派任务给成员 Agent，但是可以创建子 Agent 来进行并行完成
 2. 每个任务同一时间只能由一个 Member 执行
 3. 依赖未完成的任务不会被分配给 Member
 4. 单个任务最多重试 3 次，仍失败则标记为 failed 等待 Lead 决策

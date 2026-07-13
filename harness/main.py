@@ -342,11 +342,13 @@ class HarnessService(_BaseService):
     async def _cleanup_stale_worktrees(self) -> None:
         """Remove worktrees left over from previous crashes."""
         try:
+            from pathlib import Path
             from harness.config.paths import get_paths
             from harness.worktree.manager import GitWorktreeManager
 
-            # Use a generic workspace; the manager only needs the repo root.
             workspace = str(get_paths().sandbox_work_dir("cleanup"))
+            # 确保父目录存在
+            Path(workspace).parent.mkdir(parents=True, exist_ok=True)
             mgr = GitWorktreeManager(workspace)
             removed = await mgr.cleanup_stale()
             if removed:
@@ -574,6 +576,9 @@ class HarnessService(_BaseService):
                 tool_registry=self.tool_registry,
                 subagent_manager=self.subagent_manager,
                 skill_storage=self.skill_storage,
+                langfuse_public_key=self.config.langfuse_public_key,
+                langfuse_secret_key=self.config.langfuse_secret_key,
+                langfuse_host=self.config.langfuse_host,
             )
             await orchestrator.initialize()
 
