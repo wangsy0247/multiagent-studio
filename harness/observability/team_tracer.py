@@ -58,6 +58,7 @@ class TeamTracer:
         public_key: str | None = None,
         secret_key: str | None = None,
         host: str | None = None,
+        enabled: bool = False,
     ) -> None:
         self._session_id = session_id
         self._user_id = user_id
@@ -78,7 +79,7 @@ class TeamTracer:
         self._langfuse: Any = None
         self._langfuse_enabled: bool = False
         self._root_obs: Any = None  # 根 observation, end on trace_team_end
-        if _HAS_LANGFUSE and (public_key or secret_key):
+        if _HAS_LANGFUSE and enabled and (public_key or secret_key):
             try:
                 kwargs: dict[str, str] = {}
                 if public_key:

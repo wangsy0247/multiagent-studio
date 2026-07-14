@@ -134,29 +134,28 @@ async def create_agent(
     request: Request,
     harness: HarnessService = Depends(get_harness),
 ):
-    """Create a new agent (body: name, display_name, description, soul, model, tool_groups, skills)."""
+    """Create a new agent (model 必选)."""
     from harness.config.agents_config import (
-        AgentConfig,
-        save_agent_config,
-        save_agent_soul,
+        AgentConfig, AgentMemoryFields, AgentFeaturesFields,
+        AgentLimitsFields, AgentTeamFields,
+        save_agent_config, save_agent_soul, save_agent_extensions,
         validate_agent_name,
     )
     body = await request.json()
     name = validate_agent_name(body.get("name", ""))
     soul = body.get("soul", "")
+
+    model = body.get("model", "")
+    if not model:
+        raise HTTPException(status_code=400, detail="'model' 字段为必选项")
+
     cfg = AgentConfig(
         name=name,
         display_name=body.get("display_name", name),
         description=body.get("description", ""),
-        model=body.get("model", "inherit"),
+        model=model,
+        temperature=body.get("temperature", 0.3),
         tool_groups=body.get("tool_groups", []),
-        skills=body.get("skills"),
-        memory_scope=body.get("memory_scope", "agent"),
-        can_be_lead=body.get("can_be_lead", True),
-        can_delegate=body.get("can_delegate", True),
-        max_turns=body.get("max_turns", 50),
-        timeout_seconds=body.get("timeout_seconds", 900),
-        isolation=body.get("isolation", "none"),
     )
     user_id = body.get("user_id", "default")
     save_agent_config(name, cfg, user_id=user_id)
@@ -191,33 +190,21 @@ async def update_agent(
 ):
     """Update agent config + SOUL."""
     from harness.config.agents_config import (
-        AgentConfig,
-        load_agent_config,
-        save_agent_config,
-        save_agent_soul,
+        load_agent_config, save_agent_config, save_agent_soul,
     )
     body = await request.json()
     user_id = body.get("user_id", "default")
     existing = load_agent_config(name, user_id=user_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    cfg = AgentConfig(
-        name=name,
-        display_name=body.get("display_name", existing.display_name),
-        description=body.get("description", existing.description),
-        model=body.get("model", existing.model),
-        tool_groups=body.get("tool_groups", existing.tool_groups),
-        skills=body.get("skills", existing.skills),
-        memory_scope=body.get("memory_scope", existing.memory_scope),
-        can_be_lead=body.get("can_be_lead", existing.can_be_lead),
-        can_delegate=body.get("can_delegate", existing.can_delegate),
-        max_turns=body.get("max_turns", existing.max_turns),
-        timeout_seconds=body.get("timeout_seconds", existing.timeout_seconds),
-        isolation=body.get("isolation", existing.isolation),
-        created_at=existing.created_at,
-        updated_at=existing.updated_at,
-    )
-    save_agent_config(name, cfg, user_id=user_id)
+
+    # 只更新传入的字段
+    for field in ("model", "display_name", "description", "temperature",
+                  "tool_groups", "skills"):
+        if field in body:
+            setattr(existing, field, body[field])
+    existing.updated_at = ""
+    save_agent_config(name, existing, user_id=user_id)
     if "soul" in body:
         save_agent_soul(name, body["soul"], user_id=user_id)
     return {"status": "updated", "name": name}
@@ -230,7 +217,9 @@ async def delete_agent(
     harness: HarnessService = Depends(get_harness),
 ):
     """Delete an agent and its directory."""
-    from harness.config.agents_config import delete_agent
+    from harness.config.agents_config import delete_agent, is_default_agent
+    if is_default_agent(name):
+        raise HTTPException(status_code=403, detail="Cannot delete the 'default' agent")
     ok = delete_agent(name, user_id=user_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
@@ -546,6 +535,59 @@ async def get_token_usage(
 ):
     """Get token consumption statistics."""
     return harness.observability.get_token_usage(user_id, start_date, end_date)
+
+
+# ---------------------------------------------------------------------------
+# System bootstrap status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/system/bootstrap-status")
+async def get_bootstrap_status(
+    user_id: str = "default",
+    harness: HarnessService = Depends(get_harness),
+):
+    """检查系统配置状态 — 前端在登录后调用, 决定是否显示引导向导."""
+    import os as _os
+    from harness.config.config_loader import ConfigLoader
+    from harness.config.agents_config import list_custom_agents
+
+    issues: list[dict] = []
+    ok = True
+
+    # 1. API Key
+    user_config = ConfigLoader.load_user_global(user_id)
+    user_api_key = (user_config or {}).get("api_key", "") if user_config else ""
+    env_api_key = _os.getenv("OPENAI_API_KEY", "")
+    if not user_api_key and not env_api_key:
+        issues.append({
+            "field": "api_key",
+            "severity": "error",
+            "message": "API Key 未配置",
+            "fix": "settings",  # 前端跳转到设置页
+        })
+        ok = False
+
+    # 2. 用户全局配置
+    if not user_config:
+        issues.append({
+            "field": "global_config",
+            "severity": "warning",
+            "message": "用户全局配置未创建",
+            "fix": "auto",  # 系统自动修复
+        })
+        ok = False
+
+    # 3. Agent
+    agents = list_custom_agents(user_id=user_id)
+    has_default = any(a.name == "default" for a in agents)
+
+    return {
+        "ok": ok,
+        "has_default_agent": has_default,
+        "agent_count": len(agents),
+        "issues": issues,
+    }
 
 
 # ---------------------------------------------------------------------------

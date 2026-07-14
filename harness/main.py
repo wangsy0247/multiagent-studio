@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -16,12 +18,33 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langchain_openai import ChatOpenAI
 
+
+# ---------------------------------------------------------------------------
+# Per-(user, agent) cached compilation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GraphContext:
+    """Per-(user_id, agent_name) 缓存的完整编译结果."""
+    effective_config: EffectiveConfig
+    llm: BaseChatModel
+    middlewares: list  # list[HarnessAgentMiddleware]
+    graph: Any         # CompiledStateGraph
+    lead_agent: Any    # LeadAgent
+
+
+# Per-task user credentials — 供 _init_llm 在子 agent 创建时读取
+# 避免并发用户相互覆盖共享的 SubagentManager._llm_factory
+_current_req_creds: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
+    "_current_req_creds", default={},
+)
+
 from harness.agents.lead_agent import LeadAgent
 from harness.agents.lead_agent import _build_middlewares as build_lead_middlewares
 from harness.agents.subagent_manager import SubagentManager
 from harness.agents.features import RuntimeFeatures
 from harness.api.server import HarnessService as _BaseService, set_harness
-from harness.config import HarnessConfig, load_config
+from harness.config import HarnessConfig, ConfigLoader, EffectiveConfig, load_config
 from harness.config.tool_config import ToolConfig
 from harness.config.checkpointer_config import (
     CheckpointerConfig,
@@ -83,23 +106,17 @@ class HarnessService(_BaseService):
         super().__init__()
         self.config = config or load_config()
         self.config_manager = config_manager  # YAML config with mtime hot-reload
-        # Bridge YAML config to feature flags
+        # RuntimeFeatures — 保留向后兼容, 但 EffectiveConfig 优先
         if features is None:
             features = RuntimeFeatures()
-            if self.config_manager:
-                title_cfg = self.config_manager.get("title", {})
-                if isinstance(title_cfg, dict) and title_cfg.get("enabled", False):
-                    features.auto_title = True
         self.features = features
-        self.llm: BaseChatModel | None = None
+
         self.tool_registry = ToolRegistry()
-        self.middlewares: list[HarnessAgentMiddleware] = []
         self.observability: ObservabilityManager | None = None
         self.subagent_manager: SubagentManager | None = None
-        self.graph: Any = None
         self.sandbox: Any | None = None
-        self._active_runs: dict[str, dict[str, Any]] = {}  # 仅保留 cancelled 等运行期标记
-        self._active_runs_max: int = 1000                   # 并发容量上限
+        self._active_runs: dict[str, dict[str, Any]] = {}
+        self._active_runs_max: int = 1000
         self._checkpointer: BaseCheckpointSaver | None = None
         self._db_engine: DatabaseEngine | None = None
         self._run_store: RunStore | None = None
@@ -107,128 +124,122 @@ class HarnessService(_BaseService):
         self._initialized = False
         self._init_lock = asyncio.Lock()
 
+        # Per-(user_id, agent_name) graph cache — lazily populated by execute()
+        self._graph_cache: dict[tuple[str, str], GraphContext] = {}
+        self._graph_cache_lock = asyncio.Lock()
+
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
 
-    async def initialize(self) -> None:
-        """Wire all components and compile the LangGraph graph."""
+    async def initialize(self, *, agent_name: str = "default", user_id: str = "default") -> None:
+        """初始化共享基础设施 (paths, tools, memory, observability, checkpointer, DB).
+
+        不再创建 LLM / middlewares / graph — 这些延迟到首次 execute() 时按用户编译。
+
+        Args:
+            agent_name: 用于 bootstrap (加载初始 EffectiveConfig 以读取基础设施字段)
+            user_id: 用户 ID
+        """
         if self._initialized:
             return
 
         async with self._init_lock:
-            # 双重检查：获锁后再次确认未被并发初始化
             if self._initialized:
                 return
 
         cfg = self.config
 
-        # 0. Paths singleton + ensure data directory exists
+        # 0. 预检: 检查必需配置并提供引导
+        self._bootstrap_check(user_id)
+
+        # 0.1. Paths singleton
         set_paths(Paths(cfg.data_root))
         paths = get_paths()
         paths.ensure_data_dir()
         logger.info("Data root: %s", paths.base_dir)
 
-        # 1. LLM factories
-        self.llm = self._init_llm(cfg.default_model)
+        # 0.5. Ensure default agent exists
+        self._ensure_default_agent(user_id)
 
-        # 2. Load tools declared in config.yaml (DeerFlow-style)
+        # 1. 加载 bootstrap EffectiveConfig (用于读取基础设施字段)
+        bootstrap_eff = ConfigLoader.load_effective(
+            user_id=user_id, agent_name=agent_name,
+        )
+        logger.info(
+            "Bootstrap EffectiveConfig: agent=%s model=%s tool_groups=%s",
+            agent_name, bootstrap_eff.model, bootstrap_eff.tool_groups,
+        )
+
+        # 2. Load tools from harness config.yaml (fallback tool definitions)
         if self.config_manager is not None:
             raw_tools = self.config_manager.get("tools", [])
             tool_configs = [ToolConfig(**t) for t in raw_tools]
             self.tool_registry.load_tools_from_config(tool_configs)
-
-        # 2.5 Load legacy tool plugins declared in config.yaml
-        if self.config_manager is not None:
             plugin_tools = self.config_manager.get("plugins.tools", [])
             self.tool_registry.load_plugins_from_config(plugin_tools)
 
-        # 3. Load MCP tools (with persistent sessions, cache, OAuth)
+        # 3. MCP tools
         mcp_path = cfg.mcp_config_path or "./extensions_config.json"
         await self.tool_registry.load_mcp_tools(mcp_path)
 
-        # 4. Memory system (DeerFlow-aligned: global singletons)
-        memory_cfg_dict: dict[str, Any] = {}
-        if self.config_manager is not None:
-            memory_cfg_dict = self.config_manager.get("memory") or {}
-
-        # Respect config.yaml memory section when present; fall back to
-        # HarnessConfig / RuntimeFeatures defaults otherwise.
+        # 4. Memory system — 基础设施默认值 (per-user 字段由 middleware config 覆盖)
+        memory_cfg_dict = bootstrap_eff.raw.get("memory", {})
         mem_cfg = MemoryConfig(
-            enabled=memory_cfg_dict.get("enabled", self.features.memory),
+            # 基础设施 (全局部署级)
+            backend=bootstrap_eff.memory_backend,
             storage_path=memory_cfg_dict.get("storage_path") or cfg.memory_root,
-            debounce_seconds=int(memory_cfg_dict.get("debounce_seconds", cfg.debounce_seconds)),
-            model_name=memory_cfg_dict.get("model_name") or cfg.default_model,
-            max_facts=int(memory_cfg_dict.get("max_facts", 100)),
-            fact_confidence_threshold=float(
-                memory_cfg_dict.get("fact_confidence_threshold", 0.7)
-            ),
-            injection_enabled=memory_cfg_dict.get("injection_enabled", True),
-            max_injection_tokens=int(memory_cfg_dict.get("max_injection_tokens", 2000)),
-            # ── mem0 配置 ──
-            backend=memory_cfg_dict.get("backend", "file"),
-            mem0_config=memory_cfg_dict.get("mem0_config", {}),
-            mem0_search_top_k=int(memory_cfg_dict.get("mem0_search_top_k", 5)),
-            mem0_general_query=memory_cfg_dict.get(
-                "mem0_general_query", "用户的偏好、习惯、背景和重要信息",
-            ),
-            mem0_enable_time_filter=memory_cfg_dict.get("mem0_enable_time_filter", False),
-            mem0_recent_days=int(memory_cfg_dict.get("mem0_recent_days", 90)),
-            mem0_general_token_budget=int(memory_cfg_dict.get("mem0_general_token_budget", 400)),
-            mem0_tool_enabled=memory_cfg_dict.get("mem0_tool_enabled", False),
+            debounce_seconds=int(bootstrap_eff.memory_debounce_seconds),
+            mem0_config=bootstrap_eff.memory_mem0_config,
+            # 默认值 (per-user 字段通过 middleware config → queue → updater 覆盖)
+            enabled=True,
+            model_name="",
+            api_key="",
+            base_url="",
+            max_facts=bootstrap_eff.memory_max_facts,
+            fact_confidence_threshold=bootstrap_eff.memory_fact_confidence_threshold,
+            injection_enabled=bootstrap_eff.memory_injection_enabled,
+            max_injection_tokens=bootstrap_eff.memory_max_injection_tokens,
+            mem0_search_top_k=bootstrap_eff.memory_mem0_search_top_k,
+            mem0_tool_enabled=bootstrap_eff.memory_mem0_tool_enabled,
         )
         set_memory_config(mem_cfg)
-        # Ensure storage singleton is initialized with our root
         FileMemoryStorage(memory_root=cfg.memory_root)
-        # Pre-warm the queue singleton
         get_memory_queue()
-        # Pre-warm mem0 client if backend is mem0 or mem0 tool is enabled
         if mem_cfg.backend == "mem0" or mem_cfg.mem0_tool_enabled:
             from harness.memory.mem0_client import get_mem0
             get_mem0()
-        logger.info(
-            "Memory system initialized (DeerFlow-aligned): root=%s backend=%s",
-            cfg.memory_root, mem_cfg.backend,
-        )
+        logger.info("Memory system initialized: backend=%s", mem_cfg.backend)
 
-        # 5. Observability
-        self.observability = ObservabilityManager(cfg)
+        # 5. Observability — bootstrap_eff 驱动 (基础设施)
+        langfuse_cfg = {
+            "langfuse_enabled": bootstrap_eff.langfuse_enabled,
+            "langfuse_public_key": bootstrap_eff.langfuse_public_key,
+            "langfuse_secret_key": bootstrap_eff.langfuse_secret_key,
+            "langfuse_host": bootstrap_eff.langfuse_host,
+        }
+        self.observability = ObservabilityManager(langfuse_cfg)
 
-        # 6. Register middlewares (AgentMiddleware list)
-        self._register_middlewares()
-
-        # 8. Skill storage (DeerFlow-aligned progressive-loading skill system)
+        # 6. Skill storage (基础设施, 所有用户共享)
         from harness.skills.storage import SkillStorage
-
         _project_skills_root = (
             Path(os.path.dirname(os.path.abspath(__file__))).parent / "skills"
         )
         _project_skills_root.mkdir(parents=True, exist_ok=True)
         (_project_skills_root / "public").mkdir(exist_ok=True)
         (_project_skills_root / "custom").mkdir(exist_ok=True)
-
         self.skill_storage = SkillStorage(_project_skills_root)
         self.skills = self.skill_storage.load_skills(enabled_only=True)
-        logger.info("Skills loaded: %d enabled from %s", len(self.skills), _project_skills_root)
+        logger.info("Skills loaded: %d enabled", len(self.skills))
 
-        # Register the skill_manage agent self-management tool
-        from harness.tools.skill_manage_tool import create_skill_manage_tool
-
-        skill_manage = create_skill_manage_tool(
-            skill_storage=self.skill_storage,
-            model_client=self.llm,  # LLM-based security scanning
-        )
-        self.tool_registry.register(skill_manage, "skills")
-        logger.info("skill_manage tool registered")
-
-        # 8.5. SubAgent manager (uses stripped-down subagent middlewares internally)
+        # 7. Worktree config
         from harness.worktree.types import WorktreeConfig as WTCfg
-        _wt_cfg = WTCfg()
+        _wt_cfg = WTCfg(enabled=bootstrap_eff.worktree_enabled)
         if self.config_manager is not None:
             _wt_raw = self.config_manager.get("worktree") or {}
             if isinstance(_wt_raw, dict):
                 _wt_cfg = WTCfg(
-                    enabled=_wt_raw.get("enabled", True),
+                    enabled=bootstrap_eff.worktree_enabled,
                     auto_init=_wt_raw.get("auto_init", True),
                     symlink_deps=_wt_raw.get("symlink_deps", [".venv", "node_modules"]),
                     keep_on_conflict=_wt_raw.get("keep_on_conflict", True),
@@ -238,40 +249,21 @@ class HarnessService(_BaseService):
         self.subagent_manager = SubagentManager(
             llm_factory=self._init_llm,
             tool_registry=self.tool_registry,
-            max_concurrent=cfg.max_concurrent_subagents,
+            max_concurrent=bootstrap_eff.max_concurrent_subagents,
             skill_storage=self.skill_storage,
             worktree_config=_wt_cfg,
         )
-
-        # 8.6 Stale worktree cleanup on startup
         if _wt_cfg.enabled and _wt_cfg.cleanup_stale_on_start:
             await self._cleanup_stale_worktrees()
 
-        # 9. Lead Agent (configuration provider — tools + system prompt)
-        lead_agent = LeadAgent(
-            tool_registry=self.tool_registry,
-            subagent_manager=self.subagent_manager,
-            max_concurrent_subagents=cfg.max_concurrent_subagents,
-            config_manager=self.config_manager,
-            skill_storage=self.skill_storage,
-        )
-
-        # 10. Checkpointer — load config and create provider
+        # 8. Checkpointer
         ckp_cfg = self._load_checkpointer_config()
+        ckp_cfg.backend = bootstrap_eff.checkpointer_backend
         ckp_provider = AsyncCheckpointerProvider(ckp_cfg)
         self._checkpointer = await ckp_provider.get_checkpointer()
 
-        # 11. Build graph via create_agent() (memory is middleware-driven)
-        self.graph = build_harness_graph(
-            llm=self.llm,
-            tools=lead_agent.build_tools(),
-            middlewares=self.middlewares,
-            system_prompt=lead_agent.get_system_prompt(),
-            checkpointer=self._checkpointer,
-        )
-
-        # 12. Database engine + stores (DeerFlow-aligned persistence)
-        db_cfg = self._load_database_config()
+        # 9. Database engine
+        db_cfg = DatabaseConfig(backend=bootstrap_eff.database_backend, sqlite_dir=bootstrap_eff.database_sqlite_dir)
         try:
             self._db_engine = DatabaseEngine(db_cfg)
             if self._db_engine.engine is not None:
@@ -285,7 +277,7 @@ class HarnessService(_BaseService):
         logger.info("RunStore=%s EventStore=%s", type(self._run_store).__name__, type(self._event_store).__name__)
 
         self._initialized = True
-        logger.info("HarnessService initialized successfully")
+        logger.info("HarnessService infrastructure initialized (user=%s agent=%s)", user_id, agent_name)
 
     async def shutdown(self) -> None:
         """Clean up resources."""
@@ -309,34 +301,190 @@ class HarnessService(_BaseService):
                 await self._db_engine.close()
             except Exception:
                 logger.warning("Error closing database engine", exc_info=True)
+        self._graph_cache.clear()
         logger.info("HarnessService shut down")
+
+    # ------------------------------------------------------------------
+    # Per-(user, agent) graph context — lazy compilation
+    # ------------------------------------------------------------------
+
+    async def _get_or_create_graph_context(
+        self, user_id: str, agent_name: str,
+    ) -> GraphContext:
+        """返回 (user_id, agent_name) 的缓存 GraphContext, 未命中则编译.
+
+        双重检查锁模式 — 避免并发请求重复编译.
+        """
+        if not self._initialized:
+            raise RuntimeError("HarnessService not initialized — call initialize() first")
+
+        key = (user_id, agent_name)
+        # 快速路径: 无锁读取
+        if key in self._graph_cache:
+            return self._graph_cache[key]
+
+        async with self._graph_cache_lock:
+            # 获取锁后再次检查 (可能已被并发请求编译)
+            if key in self._graph_cache:
+                return self._graph_cache[key]
+            ctx = await self._build_graph_context(user_id, agent_name)
+            self._graph_cache[key] = ctx
+            logger.info(
+                "Cached graph context: user=%s agent=%s model=%s middlewares=%d",
+                user_id, agent_name, ctx.effective_config.model, len(ctx.middlewares),
+            )
+            return ctx
+
+    async def _build_graph_context(
+        self, user_id: str, agent_name: str,
+    ) -> GraphContext:
+        """加载配置 → 创建 LLM → 创建中间件 → 编译 graph → 返回 GraphContext."""
+        # 1. 加载该用户的 EffectiveConfig (L0+L1+L2 merge)
+        eff = ConfigLoader.load_effective(user_id=user_id, agent_name=agent_name)
+        logger.info(
+            "Building graph context: user=%s agent=%s model=%s tool_groups=%s",
+            user_id, agent_name, eff.model, eff.tool_groups,
+        )
+
+        # 2. 创建 per-user LLM
+        llm = self._init_llm(
+            eff.model,
+            api_key=eff.api_key,
+            base_url=eff.base_url,
+            temperature=eff.temperature,
+            max_tokens=eff.max_tokens,
+        )
+
+        # 3. 创建 per-user middlewares
+        middlewares = self._build_middlewares_for(eff, user_id)
+
+        # 4. 设置 contextvar — 子 agent 通过 _init_llm 读取当前用户凭证
+        _current_req_creds.set({
+            "api_key": eff.api_key,
+            "base_url": eff.base_url,
+        })
+
+        # 5. 创建 per-user skill_manage 工具 (需要 per-user LLM)
+        from harness.tools.skill_manage_tool import create_skill_manage_tool
+        skill_manage = create_skill_manage_tool(
+            skill_storage=self.skill_storage,
+            model_client=llm,
+        )
+        self.tool_registry.register(skill_manage, "skills")
+
+        # 6. 创建 per-user LeadAgent
+        lead_agent = LeadAgent(
+            tool_registry=self.tool_registry,
+            subagent_manager=self.subagent_manager,
+            max_concurrent_subagents=eff.max_concurrent_subagents,
+            config_manager=self.config_manager,
+            skill_storage=self.skill_storage,
+            agent_name=eff.agent_display_name or agent_name,
+        )
+
+        # 7. 编译 graph
+        graph = build_harness_graph(
+            llm=llm,
+            tools=lead_agent.build_tools(),
+            middlewares=middlewares,
+            system_prompt=lead_agent.get_system_prompt(),
+            checkpointer=self._checkpointer,
+        )
+
+        return GraphContext(
+            effective_config=eff,
+            llm=llm,
+            middlewares=middlewares,
+            graph=graph,
+            lead_agent=lead_agent,
+        )
+
+    def _build_middlewares_for(
+        self, eff: EffectiveConfig, user_id: str,
+    ) -> list:
+        """根据 EffectiveConfig 构建中间件列表 (per-user)."""
+        config = RunnableConfig(configurable={
+            "workspace_root": self.config.workspace_root,
+            "is_plan_mode": eff.subagent_enabled,
+            "subagent_enabled": eff.subagent_enabled,
+            "max_concurrent_subagents": eff.max_concurrent_subagents,
+            "memory_enabled": eff.memory_injection_enabled,
+            "summarization_enabled": eff.summarization_enabled,
+            "guardrail_enabled": eff.guardrail_enabled,
+            "vision_enabled": getattr(self.features, 'vision', False),
+            "tool_search_enabled": False,
+            "tool_max_retries": self.config.tool_max_retries,
+            "auto_title": eff.title_enabled,
+            "title_model": eff.title_model or eff.model or "gpt-4o-mini",
+            "summary_model": eff.summary_model or eff.model or "gpt-4o",
+            "memory_model": eff.memory_model or eff.model or "gpt-4o-mini",
+            "openai_api_key": eff.api_key,
+            "openai_base_url": eff.base_url,
+            "user_id": user_id,
+        })
+        mw_list = build_lead_middlewares(
+            config,
+            config_manager=self.config_manager,
+            agent_name=None,
+        )
+        logger.info("Built %d middlewares for user=%s", len(mw_list), user_id)
+        return mw_list
 
     # ------------------------------------------------------------------
     # LLM
     # ------------------------------------------------------------------
 
-    def _init_llm(self, model: str | None = None) -> BaseChatModel:
-        model = model or self.config.default_model
-        extra_body: dict[str, Any] | None = None
-        if self.config.enable_thinking:
-            extra_body = {"enable_thinking": True}
+    def _init_llm(
+        self,
+        model: str | None = None,
+        *,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        api_key: str = "",
+        base_url: str = "",
+    ) -> BaseChatModel:
+        model = model or "gpt-4o"
+        effective_base_url = base_url or "https://api.openai.com/v1"
 
-        # Qwen3 / DeepSeek 思考模式 — 使用子类保留 reasoning_content
-        if extra_body:
-            from harness.llm.thinking import ChatOpenAIWithReasoning
-            return ChatOpenAIWithReasoning(
+        # 回退到 contextvar 中的 per-user 凭证 (SubagentManager 调用时传入为空)
+        if not api_key or not base_url:
+            creds = _current_req_creds.get()
+            if not api_key:
+                api_key = creds.get("api_key", "")
+            if not base_url:
+                base_url = creds.get("base_url", "")
+            if base_url:
+                effective_base_url = base_url
+
+        # 端到端调试: 输出实际使用的模型和 API 配置
+        logger.info(
+            "_init_llm: model=%s temperature=%s max_tokens=%s",
+            model, temperature, max_tokens,
+        )
+
+        if not api_key:
+            logger.warning(
+                "_init_llm: API Key 为空 — 请在前端「设置」页面配置。"
+                " LLM 将不可用, 系统仍可启动但无法执行任务。"
+            )
+            return ChatOpenAI(
                 model=model,
-                api_key=self.config.openai_api_key or os.getenv("OPENAI_API_KEY", ""),
-                base_url=self.config.openai_base_url,
-                temperature=0.3,
-                extra_body=extra_body,
+                api_key="MISSING_API_KEY_CONFIGURED",
+                base_url=effective_base_url,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_timeout=30,
+                max_retries=1,
             )
 
         return ChatOpenAI(
             model=model,
-            api_key=self.config.openai_api_key or os.getenv("OPENAI_API_KEY", ""),
-            base_url=self.config.openai_base_url,
-            temperature=0.3,
+            api_key=api_key,
+            base_url=effective_base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            request_timeout=120,  # 防止请求挂死 (默认 600s 太长)
+            max_retries=2,
         )
 
     async def _cleanup_stale_worktrees(self) -> None:
@@ -377,13 +525,13 @@ class HarnessService(_BaseService):
                 logger.debug("No checkpointer section in YAML config")
 
         # 2. Env-var overrides (higher priority)
-        env_backend = os.getenv("HARNESS_CHECKPOINTER_BACKEND")
+        env_backend = os.getenv("CHECKPOINTER_BACKEND")
         if env_backend:
             data["backend"] = env_backend
-        env_sqlite_dir = os.getenv("HARNESS_CHECKPOINTER_SQLITE_DIR")
+        env_sqlite_dir = os.getenv("CHECKPOINTER_SQLITE_DIR")
         if env_sqlite_dir:
             data["sqlite_dir"] = env_sqlite_dir
-        env_pg_url = os.getenv("HARNESS_CHECKPOINTER_POSTGRES_URL")
+        env_pg_url = os.getenv("CHECKPOINTER_POSTGRES_URL")
         if env_pg_url:
             data["postgres_url"] = env_pg_url
 
@@ -404,13 +552,13 @@ class HarnessService(_BaseService):
             except Exception:
                 logger.debug("No database section in YAML config")
 
-        env_backend = os.getenv("HARNESS_DATABASE_BACKEND")
+        env_backend = os.getenv("DATABASE_BACKEND")
         if env_backend:
             data["backend"] = env_backend
-        env_sqlite_dir = os.getenv("HARNESS_DATABASE_SQLITE_DIR")
+        env_sqlite_dir = os.getenv("DATABASE_SQLITE_DIR")
         if env_sqlite_dir:
             data["sqlite_dir"] = env_sqlite_dir
-        env_pg_url = os.getenv("HARNESS_DATABASE_POSTGRES_URL")
+        env_pg_url = os.getenv("DATABASE_POSTGRES_URL")
         if env_pg_url:
             data["postgres_url"] = env_pg_url
 
@@ -420,51 +568,55 @@ class HarnessService(_BaseService):
     # middlewares
     # ------------------------------------------------------------------
 
-    def _register_middlewares(self) -> None:
-        """Build the 20-middleware AgentMiddleware list via lead_agent._build_middlewares.
+    def _bootstrap_check(self, user_id: str) -> None:
+        """启动预检 — 检查必需配置, 缺失时引导用户到前端设置页面."""
+        import os as _os
+        issues: list[str] = []
 
-        Matches DeerFlow's _build_middlewares — 20-middleware design.
-        """
-        config = RunnableConfig(configurable={
-            "workspace_root": self.config.workspace_root,
-            "is_plan_mode": self.features.todo is not False,
-            "subagent_enabled": self.features.subagent is not False,
-            "max_concurrent_subagents": self.config.max_concurrent_subagents,
-            "memory_enabled": self.features.memory is not False,
-            "summarization_enabled": self.features.summarization is not False,
-            "guardrail_enabled": self.features.guardrail is not False,
-            "vision_enabled": self.features.vision is not False,
-            "tool_search_enabled": False,
-            "tool_max_retries": self.config.tool_max_retries,
-            "auto_title": self.features.auto_title is not False,
-            "title_model": self.config.title_model or self.config.default_model,
-            "openai_api_key": self.config.openai_api_key,
-            "openai_base_url": self.config.openai_base_url,
-        })
-        self.middlewares = build_lead_middlewares(
-            config,
-            config_manager=self.config_manager,
-            agent_name=None,
-        )
-        logger.info("Registered %d AgentMiddlewares (20-middleware DeerFlow-aligned chain)", len(self.middlewares))
+        # 检查 L1 用户配置中是否设置了 api_key
+        from harness.config.config_loader import ConfigLoader
+        user_config = ConfigLoader.load_user_global(user_id)
+        user_api_key = (user_config or {}).get("api_key", "") if user_config else ""
+        env_api_key = _os.getenv("OPENAI_API_KEY", "")
+
+        if not user_api_key and not env_api_key:
+            issues.append(
+                "API Key 未配置 — LLM 调用将失败\n"
+                "  → 请打开前端「设置」页面 → API 配置 → 填入你的 OPENAI_API_KEY"
+            )
+
+        if not user_config:
+            issues.append(
+                "用户全局配置未创建\n"
+                "  → 系统将在注册时自动创建, 或手动访问「设置」页面初始化"
+            )
+
+        if issues:
+            logger.warning("=" * 60)
+            logger.warning("配置引导: 检测到 %d 个问题 (用户=%s):", len(issues), user_id)
+            for i, msg in enumerate(issues, 1):
+                logger.warning("  [%d] %s", i, msg)
+            logger.warning("  操作: 打开浏览器 → 设置 → 填入 API Key 即可开始使用")
+            logger.warning("=" * 60)
+
+    def _ensure_default_agent(self, user_id: str) -> None:
+        """Ensure the 'default' agent exists for the user (idempotent)."""
+        from harness.config.agents_config import create_default_agent
+        create_default_agent(user_id)
 
     # ------------------------------------------------------------------
     # Langfuse
     # ------------------------------------------------------------------
-
-    def _build_config(self, thread_id: str) -> RunnableConfig:
+    def _build_config(self, thread_id: str, *, public_key: str = "") -> RunnableConfig:
         """Build RunnableConfig with Langfuse callbacks wired in."""
         cfg = RunnableConfig(
             configurable={"thread_id": thread_id},
             recursion_limit=200,  # 默认 25 不够：11 中间件 + 17 工具时单轮对话 ~50 步
         )
-        if self.observability and self.observability.enabled:
+        if self.observability and self.observability.enabled and public_key:
             try:
                 from langfuse.langchain import CallbackHandler
-                # The Langfuse singleton is already configured by
-                # ObservabilityManager with the credentials from HarnessConfig.
-                # Pass public_key only to select the right client instance.
-                handler = CallbackHandler(public_key=self.config.langfuse_public_key)
+                handler = CallbackHandler(public_key=public_key)
                 cfg["callbacks"] = [handler]
             except Exception as exc:
                 logger.warning("Failed to wire Langfuse callback: %s", exc)
@@ -475,10 +627,11 @@ class HarnessService(_BaseService):
     # ------------------------------------------------------------------
 
     def _get_middleware_by_name(self, name: str) -> Any | None:
-        """Return the middleware instance with the given name, or None."""
-        for mw in self.middlewares:
-            if getattr(mw, "name", None) == name:
-                return mw
+        """返回第一个匹配的中间件实例 (遍历所有缓存的 context)."""
+        for ctx in self._graph_cache.values():
+            for mw in ctx.middlewares:
+                if getattr(mw, "name", None) == name:
+                    return mw
         return None
 
     # ------------------------------------------------------------------
@@ -519,14 +672,15 @@ class HarnessService(_BaseService):
         return {"status": "deleted", "thread_id": thread_id}
 
     def _cleanup_middleware_state(self, thread_id: str) -> None:
-        """通知所有中间件清理 per-thread 状态（修复 #9 字典泄漏）。"""
-        for mw in self.middlewares:
-            cleaner = getattr(mw, "cleanup_thread", None)
-            if cleaner is not None:
-                try:
-                    cleaner(thread_id)
-                except Exception:
-                    pass
+        """通知所有缓存的中间件清理 per-thread 状态."""
+        for ctx in self._graph_cache.values():
+            for mw in ctx.middlewares:
+                cleaner = getattr(mw, "cleanup_thread", None)
+                if cleaner is not None:
+                    try:
+                        cleaner(thread_id)
+                    except Exception:
+                        pass
 
     def _enforce_capacity(self) -> None:
         """超出并发上限时抛出异常拒绝新请求。"""
@@ -546,14 +700,17 @@ class HarnessService(_BaseService):
         user_id: str,
         message: str,
         project_id: str,
+        *,
+        effective_config: EffectiveConfig | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Team 模式执行 — 通过 TeamOrchestrator 协调多 Agent 协作。
+        """Team 模式执行 — 通过 TeamOrchestrator 协调多 Agent 协作.
 
         Args:
             thread_id: 会话 ID
             user_id: 用户 ID
             message: 用户消息（目标描述）
             project_id: 项目 ID
+            effective_config: 当前用户的 EffectiveConfig
 
         Yields:
             SSE 事件字典
@@ -576,9 +733,7 @@ class HarnessService(_BaseService):
                 tool_registry=self.tool_registry,
                 subagent_manager=self.subagent_manager,
                 skill_storage=self.skill_storage,
-                langfuse_public_key=self.config.langfuse_public_key,
-                langfuse_secret_key=self.config.langfuse_secret_key,
-                langfuse_host=self.config.langfuse_host,
+                effective_config=effective_config,
             )
             await orchestrator.initialize()
 
@@ -649,27 +804,46 @@ class HarnessService(_BaseService):
         graph: ExecutionGraph | None = None,
         files: list[dict] | None = None,
         project_id: str | None = None,
-        agent_name: str | None = None,
+        agent_name: str = "default",
         mode: str = "single",
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the agent pipeline and stream SSE events in real time.
 
-        Uses ``astream_events`` for true token-level streaming (not
-        the old ``ainvoke`` + batch-yield pseudo-streaming).
+        When ``mode="team"``, routes to ``_execute_team()`` for multi-agent
+        collaboration.
 
-        When ``mode="team"``, routes to ``_execute_team()`` which uses
-        TeamOrchestrator for multi-agent collaboration.
-
-        Event mapping (Harness → Frontend SSEEventType):
-        - ``on_chat_model_stream`` → ``message`` (token-level, appended)
-        - ``on_chat_model_end``    → ``token_usage``
-        - ``on_tool_start``        → ``tool_call`` / ``subagent_start``
-        - ``on_tool_end``          → ``tool_result`` / ``subagent_end``
-        - root ``on_chain_end``    → check final state for ``clarification``,
-          ``title``, then emit ``finished``
+        Args:
+            agent_name: 使用的 Agent 配置 (default = 系统默认 agent).
         """
+        # ── 校验 agent_name 存在 ──
+        agent_name = agent_name or "default"
+        if agent_name != "default":
+            from harness.config.agents_config import load_agent_config, is_default_agent
+            if not is_default_agent(agent_name):
+                existing = load_agent_config(agent_name, user_id=user_id)
+                if existing is None:
+                    yield {
+                        "type": "error",
+                        "thread_id": thread_id,
+                        "content": (
+                            f"Agent '{agent_name}' 不存在。"
+                            f" 请先通过「Agent 管理」页面创建该 Agent,"
+                            f" 或使用默认 Agent (不指定 agent_name)。"
+                        ),
+                    }
+                    return
+
         if not self._initialized:
-            await self.initialize()
+            await self.initialize(agent_name=agent_name, user_id=user_id)
+
+        # ── 获取/创建该用户的 GraphContext ──
+        ctx = await self._get_or_create_graph_context(user_id, agent_name)
+
+        # 确保 contextvar 已设置 — 缓存命中时 _build_graph_context 不会执行
+        _current_req_creds.set({
+            "api_key": ctx.effective_config.api_key,
+            "base_url": ctx.effective_config.base_url,
+        })
 
         # ── Team 模式路由 ──
         if mode == "team" and project_id:
@@ -678,15 +852,18 @@ class HarnessService(_BaseService):
                 user_id=user_id,
                 message=message,
                 project_id=project_id,
+                effective_config=ctx.effective_config,
             ):
                 yield event
             return
 
-        build_config = self._build_config(thread_id)
+        build_config = self._build_config(
+            thread_id, public_key=ctx.effective_config.langfuse_public_key,
+        )
 
         # ── 从 checkpoint 恢复状态（替旧 _active_runs） ──
         try:
-            state_snapshot = await self.graph.aget_state(build_config)
+            state_snapshot = await ctx.graph.aget_state(build_config)
         except Exception:
             logger.warning(
                 "aget_state failed for thread=%s, treating as new session",
@@ -714,8 +891,10 @@ class HarnessService(_BaseService):
             # 新会话
             current_state = initial_state(thread_id, user_id, message, files)
 
-        # ── 注册运行期取消标记（不保存完整 state） ──
-        self._active_runs[thread_id] = {"cancelled": False}
+        # ── 注册运行期取消标记（保存 user/agent 以便后续方法查找 ctx） ──
+        self._active_runs[thread_id] = {
+            "cancelled": False, "user_id": user_id, "agent_name": agent_name,
+        }
         try:
             self._enforce_capacity()
         except RuntimeError as e:
@@ -750,9 +929,9 @@ class HarnessService(_BaseService):
 
         # Select which graph to run
         if graph and graph.nodes:
-            runner = self._build_custom_graph(graph)
-        elif self.graph is not None:
-            runner = self.graph
+            runner = self._build_custom_graph(graph, graph_context=ctx)
+        elif ctx.graph is not None:
+            runner = ctx.graph
         else:
             yield {"type": "error", "content": "Harness graph is not initialized"}
             return
@@ -1135,11 +1314,19 @@ class HarnessService(_BaseService):
         custom ``pending_clarification`` state key is used; pending status is
         inferred directly from the message history.
         """
-        build_config = self._build_config(thread_id)
+        # 从 _active_runs 获取 user/agent, 默认为 default
+        run_info = self._active_runs.get(thread_id, {})
+        user_id = run_info.get("user_id", "default")
+        agent_name = run_info.get("agent_name", "default")
+        ctx = await self._get_or_create_graph_context(user_id, agent_name)
+
+        build_config = self._build_config(
+            thread_id, public_key=ctx.effective_config.langfuse_public_key,
+        )
 
         # ── 从 checkpoint 读取暂停状态 ──
         try:
-            state_snapshot = await self.graph.aget_state(build_config)
+            state_snapshot = await ctx.graph.aget_state(build_config)
         except Exception:
             logger.exception("aget_state failed for thread=%s", thread_id)
             yield {"type": "error", "content": f"thread '{thread_id}' not found", "thread_id": thread_id}
@@ -1172,7 +1359,7 @@ class HarnessService(_BaseService):
 
         final_state: dict[str, Any] = {}
         try:
-            async for event in self.graph.astream_events(state, build_config, version="v2"):
+            async for event in ctx.graph.astream_events(state, build_config, version="v2"):
                 kind = event["event"]
                 evt_name = event.get("name", "")
                 evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
@@ -1290,10 +1477,18 @@ class HarnessService(_BaseService):
 
     async def get_status(self, thread_id: str) -> dict[str, Any]:
         """Return thread execution status, reading from LangGraph checkpoint."""
-        build_config = self._build_config(thread_id)
+        # 从 _active_runs 获取 user/agent, 默认使用 default
+        run_info = self._active_runs.get(thread_id, {})
+        user_id = run_info.get("user_id", "default")
+        agent_name = run_info.get("agent_name", "default")
+        ctx = await self._get_or_create_graph_context(user_id, agent_name)
+
+        build_config = self._build_config(
+            thread_id, public_key=ctx.effective_config.langfuse_public_key,
+        )
 
         try:
-            state_snapshot = await self.graph.aget_state(build_config)
+            state_snapshot = await ctx.graph.aget_state(build_config)
         except Exception:
             logger.warning("aget_state failed for thread=%s", thread_id)
             return {"thread_id": thread_id, "status": "inactive"}
@@ -1319,7 +1514,9 @@ class HarnessService(_BaseService):
     # custom graph builder (frontend canvas support)
     # ------------------------------------------------------------------
 
-    def _build_custom_graph(self, execution_graph: ExecutionGraph) -> Any:
+    def _build_custom_graph(
+        self, execution_graph: ExecutionGraph, *, graph_context: GraphContext | None = None,
+    ) -> Any:
         """Build a LangGraph StateGraph from user-defined nodes and edges.
 
         This enables the frontend canvas to define custom agent pipelines.
@@ -1339,6 +1536,8 @@ class HarnessService(_BaseService):
         from langgraph.graph import END, StateGraph
 
         custom = StateGraph(HarnessState)
+        # 捕获当前 ctx 的 graph, 用于 lead node
+        _ctx_graph = graph_context.graph if graph_context else None
 
         # Add a node for each agent in the canvas
         for node in execution_graph.nodes:
@@ -1349,11 +1548,11 @@ class HarnessService(_BaseService):
                     state: HarnessState,
                     _node_id: str = node_id,  # 默认参数捕获，防止闭包共享
                 ) -> HarnessState:
-                    if self.graph is None:
+                    if _ctx_graph is None:
                         return state
                     from langgraph.config import get_config
                     cfg = get_config()
-                    return await self.graph.nodes["agent"].ainvoke(state, cfg)
+                    return await _ctx_graph.nodes["agent"].ainvoke(state, cfg)
                 custom.add_node(node_id, _lead_node)
             else:
                 # SubAgent node — creates a SubAgent inline and executes
@@ -1447,12 +1646,9 @@ class HarnessService(_BaseService):
 
 async def main() -> None:
     import uvicorn
-
     from harness.api.server import app
 
     config = load_config()
-
-    # ── 自动加载 YAML 配置（如果存在 config.yaml） ──
     yaml_path = Path(__file__).resolve().parent / "config.yaml"
     config_mgr: ConfigManager | None = None
     if yaml_path.exists():
@@ -1461,13 +1657,13 @@ async def main() -> None:
         logger.info("Loaded config.yaml from %s", yaml_path)
 
     harness = HarnessService(config, config_manager=config_mgr)
-    await harness.initialize()
+    await harness.initialize(agent_name="default", user_id="default")
     set_harness(harness)
 
     config_obj = uvicorn.Config(
         app=app,
         host="0.0.0.0",
-        port=config.harness_port,
+        port=config.port,
         log_level="info",
     )
     server = uvicorn.Server(config_obj)

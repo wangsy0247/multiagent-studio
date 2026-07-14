@@ -28,6 +28,14 @@ class MemoryConfig(BaseModel):
         default=None,
         description="Model name to use for memory updates (None = use default model)",
     )
+    api_key: str = Field(
+        default="",
+        description="API key for memory model (空字符串回退到 OPENAI_API_KEY 环境变量)",
+    )
+    base_url: str = Field(
+        default="",
+        description="Base URL for memory model (空字符串回退到 OPENAI_BASE_URL 环境变量)",
+    )
     max_facts: int = Field(
         default=100, ge=10, le=500,
         description="Maximum number of facts to store",

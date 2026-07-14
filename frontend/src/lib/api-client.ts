@@ -108,11 +108,16 @@ export const agentsAPI = {
   list: () => apiClient.get(`/v1/agents?user_id=${getCurrentUserId()}`),
   get: (name: string) => apiClient.get(`/v1/agents/${name}?user_id=${getCurrentUserId()}`),
   create: (data: {
-    name: string; display_name?: string; description?: string;
-    soul?: string; model?: string; tool_groups?: string[];
+    name: string; model: string;  // model 必选
+    display_name?: string; description?: string;
+    soul?: string; tool_groups?: string[];
     skills?: string[]; user_id?: string;
-    memory_scope?: string; can_be_lead?: boolean; can_delegate?: boolean;
-    max_turns?: number; timeout_seconds?: number; isolation?: string;
+    temperature?: number; max_tokens?: number;
+    memory?: { backend?: string; max_facts?: number; injection_enabled?: boolean; };
+    features?: { summarization?: boolean; subagent?: boolean; langfuse?: boolean; };
+    limits?: { max_turns?: number; timeout_seconds?: number; };
+    team?: { can_be_lead?: boolean; can_delegate?: boolean; memory_scope?: string; };
+    mcp_servers?: Record<string, boolean>;
   }) => apiClient.post("/v1/agents", { ...data, user_id: data.user_id || getCurrentUserId() }),
   update: (name: string, data: object) => apiClient.put(`/v1/agents/${name}`, { ...data, user_id: getCurrentUserId() }),
   delete: (name: string) => apiClient.delete(`/v1/agents/${name}?user_id=${getCurrentUserId()}`),

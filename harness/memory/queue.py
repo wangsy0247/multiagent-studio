@@ -32,6 +32,10 @@ class ConversationContext:
     correction_detected: bool = False
     reinforcement_detected: bool = False
     metadata: dict | None = None  # mem0 backend: event_time, thread_id, etc.
+    # Per-user credentials — carried from middleware config through queue to updater
+    api_key: str = ""
+    base_url: str = ""
+    model_name: str = ""
 
 
 class MemoryUpdateQueue:
@@ -73,10 +77,17 @@ class MemoryUpdateQueue:
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
         metadata: dict | None = None,
+        *,
+        api_key: str = "",
+        base_url: str = "",
+        model_name: str = "",
+        enabled: bool | None = None,
     ) -> None:
         """Add a conversation to the update queue (debounced)."""
         config = get_memory_config()
-        if not config.enabled:
+        if enabled is None:
+            enabled = config.enabled
+        if not enabled:
             return
 
         with self._lock:
@@ -86,6 +97,7 @@ class MemoryUpdateQueue:
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
                 metadata=metadata,
+                api_key=api_key, base_url=base_url, model_name=model_name,
             )
             self._ensure_task()
 
@@ -100,10 +112,17 @@ class MemoryUpdateQueue:
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
         metadata: dict | None = None,
+        *,
+        api_key: str = "",
+        base_url: str = "",
+        model_name: str = "",
+        enabled: bool | None = None,
     ) -> None:
         """Add a conversation and process immediately (zero debounce)."""
         config = get_memory_config()
-        if not config.enabled:
+        if enabled is None:
+            enabled = config.enabled
+        if not enabled:
             return
 
         with self._lock:
@@ -113,6 +132,7 @@ class MemoryUpdateQueue:
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
                 metadata=metadata,
+                api_key=api_key, base_url=base_url, model_name=model_name,
             )
             self._ensure_task(delay=0)
 
@@ -148,7 +168,8 @@ class MemoryUpdateQueue:
     # ── Internal ─────────────────────────────────────────────────────────
 
     def _enqueue_locked(self, *, thread_id, messages, agent_name, user_id,
-                        correction_detected, reinforcement_detected, metadata=None) -> None:
+                        correction_detected, reinforcement_detected, metadata=None,
+                        api_key="", base_url="", model_name="") -> None:
         queue_key = self._queue_key(thread_id, user_id, agent_name)
         existing_context = next(
             (c for c in self._queue
@@ -163,12 +184,16 @@ class MemoryUpdateQueue:
         merged_metadata = (existing_context.metadata or {}) if existing_context else {}
         if metadata:
             merged_metadata.update(metadata)
+        # Per-user credentials: new values take priority over cached
         context = ConversationContext(
             thread_id=thread_id, messages=messages,
             agent_name=agent_name, user_id=user_id,
             correction_detected=merged_correction,
             reinforcement_detected=merged_reinforcement,
             metadata=merged_metadata or None,
+            api_key=api_key or (existing_context.api_key if existing_context else ""),
+            base_url=base_url or (existing_context.base_url if existing_context else ""),
+            model_name=model_name or (existing_context.model_name if existing_context else ""),
         )
         self._queue = [c for c in self._queue
                        if self._queue_key(c.thread_id, c.user_id, c.agent_name) != queue_key]
@@ -230,6 +255,9 @@ class MemoryUpdateQueue:
                         reinforcement_detected=context.reinforcement_detected,
                         user_id=context.user_id,
                         metadata=context.metadata,
+                        api_key=context.api_key,
+                        base_url=context.base_url,
+                        model_name=context.model_name,
                     )
                     if success:
                         logger.info("Memory updated successfully for thread %s", context.thread_id)

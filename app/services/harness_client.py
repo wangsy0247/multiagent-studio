@@ -61,8 +61,7 @@ class HarnessClient:
             payload["files"] = files
         if project_id:
             payload["project_id"] = project_id
-        if agent_name:
-            payload["agent_name"] = agent_name
+        payload["agent_name"] = agent_name or "default"
 
         client = await self._get_client()
         url = f"{self.base_url}/api/v1/execute"

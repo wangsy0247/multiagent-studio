@@ -1,8 +1,10 @@
 """Harness configuration management.
 
-Provides both the Pydantic-based ``HarnessConfig`` (loaded from env vars
-and the ``harness/.env`` file) and the YAML-based ``ConfigManager`` with
-mtime hot-reload.
+Provides:
+  - HarnessConfig: Pydantic-based env-var configuration (no prefix)
+  - ConfigManager:  YAML-based configuration with mtime hot-reload
+  - ConfigLoader:   Three-layer config merge (L0 system → L1 user global → L2 agent)
+  - EffectiveConfig: Merged runtime config dataclass
 """
 from __future__ import annotations
 
@@ -14,79 +16,60 @@ from pydantic import ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
 
 from harness.config.config_manager import ConfigManager
+from harness.config.config_loader import ConfigLoader, create_user_configs
+from harness.config.config_models import EffectiveConfig
+from harness.config.defaults import SYSTEM_DEFAULTS, HARDCODED_OVERRIDES
 from harness.config.tool_config import ToolConfig, ToolGroupConfig
 
 # Resolve .env relative to the harness package directory — NOT the CWD.
-# This fixes ``python -m harness.main`` when started from the project root.
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-# Load .env into os.environ so that tools using os.getenv() (e.g. web_search)
-# can see values defined in harness/.env without requiring a manual export.
 if _ENV_FILE.exists():
     load_dotenv(_ENV_FILE, override=False)
 
 
 class HarnessConfig(BaseSettings):
-    """Harness configuration loaded from environment variables and ``.env``."""
+    """Harness configuration loaded from environment variables and ``.env``.
+
+    NOTE: Most runtime settings now come from EffectiveConfig (three-layer merge).
+    HarnessConfig is kept for infrastructure defaults and env-var overrides.
+    """
 
     model_config = ConfigDict(
         env_file=str(_ENV_FILE) if _ENV_FILE.exists() else None,
-        env_prefix="HARNESS_",
         extra="ignore",
     )
 
-    # Data & Paths
-    data_root: str = "~/.multiagent-studio"  # 统一数据根目录
-    workspace_root: str = "~/.multiagent-studio/workspace"
-    memory_root: str = "~/.multiagent-studio/memory"
+    # Data & Paths — 统一根目录, 子路径由 Paths 类管理
+    data_root: str = "~/.multiagent-studio"
+    workspace_root: str = "~/.multiagent-studio"
+    memory_root: str = "~/.multiagent-studio"
     prompts_root: str = "./prompts"
 
     @model_validator(mode="after")
     def _expand_paths(self) -> "HarnessConfig":
-        """Expand ~ to user home directory."""
         for field_name in ("data_root", "workspace_root", "memory_root", "prompts_root"):
             val = getattr(self, field_name)
             if val and val.startswith("~"):
                 setattr(self, field_name, os.path.expanduser(val))
         return self
 
-    # LLM
-    default_model: str = "gpt-4o"
-    summary_model: str = "gpt-4o-mini"
-    title_model: str = "gpt-4o-mini"
-    judge_model: str = "gpt-4o"
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
-    enable_thinking: bool = False  # 启用 Qwen3/DeepSeek 思考模式（reasoning_content）
-
-    # Middleware
-    sandbox_use: str = ""  # e.g. harness.services.open_sandbox_provider:OpenSandboxProvider
-    sandbox_image: str = "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12"
-
-    # OpenSandbox settings
+    # Sandbox
     sandbox_server_url: str = "http://localhost:8080"
     sandbox_api_key: str = ""
-    sandbox_resource_cpu: str = "1"
-    sandbox_resource_memory: str = "2Gi"
-    sandbox_timeout_minutes: int = 30
+    sandbox_image: str = "python:3.12"
 
+    # Tool
     tool_max_retries: int = 3
-    summary_token_threshold: int = 8000
-    summary_message_threshold: int = 20
     max_concurrent_subagents: int = 3
-    debounce_seconds: float = 30.0
-
-    # Tools (DeerFlow-style config-driven tool loading)
-    tools: list[ToolConfig] = Field(default_factory=list, description="Available tools loaded from config.yaml")
-    tool_groups: list[ToolGroupConfig] = Field(default_factory=list, description="Available tool groups")
-
-    # MCP
+    tools: list[ToolConfig] = Field(default_factory=list)
+    tool_groups: list[ToolGroupConfig] = Field(default_factory=list)
     mcp_config_path: str = "./extensions_config.json"
 
     # Service
-    harness_port: int = 8001
+    port: int = 8001
 
-    # Observability
+    # Observability (仅作 env-var fallback — EffectiveConfig 优先)
     langfuse_enabled: bool = True
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
@@ -104,5 +87,10 @@ def load_config() -> HarnessConfig:
 __all__ = [
     "HarnessConfig",
     "ConfigManager",
+    "ConfigLoader",
+    "EffectiveConfig",
+    "SYSTEM_DEFAULTS",
+    "HARDCODED_OVERRIDES",
+    "create_user_configs",
     "load_config",
 ]

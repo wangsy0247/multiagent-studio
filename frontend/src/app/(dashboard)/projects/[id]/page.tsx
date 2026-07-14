@@ -34,6 +34,10 @@ export default function ProjectDetailPage() {
     try {
       const { data } = await projectsAPI.get(id);
       setProject(data);
+      // 同步到 project-store，确保 ChatTab 能读取到 currentProject 和 projectAgents
+      useProjectStore.setState({ currentProject: data });
+      useProjectStore.getState().fetchProjectAgents(data.members || []);
+      useProjectStore.getState().fetchProjectThreads(id);
       // 初始化 team-store 成员
       if (data.members?.length > 0) {
         const agentsResp = await agentsAPI.list();

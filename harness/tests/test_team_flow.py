@@ -728,22 +728,20 @@ class TestTeamTracer:
         assert tracer.is_enabled is False  # 无 LANGFUSE_PUBLIC_KEY
 
     def test_tracer_context_managers_noop(self):
-        """no-op 模式下 context manager 应安全执行."""
+        """no-op 模式下追踪方法应安全执行 (不抛异常)."""
         from harness.observability import TeamTracer
         tracer = TeamTracer(session_id="test", user_id="test")
 
-        # trace_team_run
-        with tracer.trace_team_run("test message") as (tid, url):
-            assert tid is None
-            assert url is None
+        # trace_team_start / trace_team_end
+        tracer.trace_team_start("test message")
+        tracer.trace_team_end("completed", total_rounds=3)
 
         # trace_phase
-        with tracer.trace_phase("planning"):
-            pass  # 不应抛异常
+        tracer.trace_phase("planning")  # 不应抛异常
 
         # trace_teammate_work
-        with tracer.trace_teammate_work("alice", "task_1"):
-            pass  # 不应抛异常
+        tracer.trace_teammate_work_start("alice", "task_1")
+        tracer.trace_teammate_work_end("alice", "task_1")  # 不应抛异常
 
     def test_langchain_callback_noop(self):
         """no-op 模式下 CallbackHandler 应返回 None."""
@@ -765,10 +763,10 @@ class TestTeamTracer:
         tracer.shutdown()
 
     def test_tracer_metadata_set_noop(self):
-        """no-op 模式下 set_trace_metadata 不应抛异常."""
+        """no-op 模式下 trace_error 不应抛异常."""
         from harness.observability import TeamTracer
         tracer = TeamTracer(session_id="test", user_id="test")
-        tracer.set_trace_metadata("key", "value")  # 不应异常
+        tracer.trace_error("test error message", metadata={"key": "value"})  # 不应异常
 
 
 # ============================================================================

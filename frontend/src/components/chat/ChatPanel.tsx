@@ -51,6 +51,13 @@ export default function ChatPanel({
   const sseRef = useRef<SSEClient | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
 
+  // ── Agent 选择状态 ──
+  const [selectedAgent, setSelectedAgent] = useState<string>(agentName || "default");
+  // 外部 prop 变化时同步
+  useEffect(() => {
+    if (agentName) setSelectedAgent(agentName);
+  }, [agentName]);
+
   const handleAttachFiles = useCallback((fileList: FileList | null) => {
     if (!fileList) return;
     const newFiles: AttachedFile[] = Array.from(fileList).map((file) => ({
@@ -185,7 +192,7 @@ export default function ChatPanel({
         message: text,
         files: filesPayload.length > 0 ? filesPayload : undefined,
         project_id: projectId || undefined,
-        agent_name: agentName || undefined,
+        agent_name: selectedAgent,
         mode: resolvedMode,
       });
     } catch (err: any) {
@@ -301,6 +308,8 @@ export default function ChatPanel({
           onRemoveFile={handleRemoveFile}
           members={projectAgents}
           mode={propMode}
+          selectedAgent={selectedAgent}
+          onAgentChange={setSelectedAgent}
         />
 
         <ClarificationDialog threadId={threadId || ""} />

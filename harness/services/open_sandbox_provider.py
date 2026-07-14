@@ -197,7 +197,7 @@ class OpenSandboxProvider(SandboxProvider):
 
     def __init__(
         self,
-        image: str = "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12",
+        image: str = "",  # 空=从 SANDBOX_IMAGE env var 或 config 读取
         server_url: str = "http://localhost:8080",
         api_key: str = "",
         resource_cpu: str = "1",

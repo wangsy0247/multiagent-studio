@@ -2,8 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Save, Trash2, Brain } from "lucide-react";
+import { ArrowLeft, Save, Trash2, Brain, Shield } from "lucide-react";
 import { agentsAPI } from "@/lib/api-client";
+
+const MODEL_OPTIONS = [
+  "gpt-4o", "gpt-4o-mini", "gpt-4.1",
+  "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8",
+  "qwen3.6-plus", "deepseek-v4",
+];
 
 export default function AgentEditPage() {
   const { name } = useParams<{ name: string }>();
@@ -17,16 +23,24 @@ export default function AgentEditPage() {
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
   const [soul, setSoul] = useState("");
-  const [model, setModel] = useState("inherit");
+  const [model, setModel] = useState("gpt-4o");  // 必选, 不再有 inherit
+  const [temperature, setTemperature] = useState(0.3);
+  const [maxTokens, setMaxTokens] = useState(4096);
   const [toolGroups, setToolGroups] = useState("");
   const [memoryData, setMemoryData] = useState<Record<string, unknown> | null>(null);
+  // ── Memory 配置 ──
+  const [memoryBackend, setMemoryBackend] = useState("file");
+  const [memoryMaxFacts, setMemoryMaxFacts] = useState(10);
+  const [memoryInjection, setMemoryInjection] = useState(true);
   // ── Agent Team 扩展字段 ──
-  const [memoryScope, setMemoryScope] = useState("team");
   const [canBeLead, setCanBeLead] = useState(false);
   const [canDelegate, setCanDelegate] = useState(true);
   const [maxTurns, setMaxTurns] = useState(50);
   const [timeoutSeconds, setTimeoutSeconds] = useState(900);
-  const [isolation, setIsolation] = useState("none");
+  const [subagentMaxConcurrent, setSubagentMaxConcurrent] = useState(3);
+  // ── Features ──
+  const [featureSummarization, setFeatureSummarization] = useState(true);
+  const [featureSubagent, setFeatureSubagent] = useState(true);
 
   useEffect(() => {
     if (!isNew) loadAgent();
@@ -40,15 +54,30 @@ export default function AgentEditPage() {
       setDisplayName(agent.display_name || "");
       setDescription(agent.description || "");
       setSoul(data.soul || "");
-      setModel(agent.model || "inherit");
+      setModel(agent.model || "gpt-4o");
+      setTemperature(agent.temperature ?? 0.3);
+      setMaxTokens(agent.max_tokens ?? 4096);
       setToolGroups((agent.tool_groups || []).join(", "));
-      // ── Agent Team 字段 ──
-      setMemoryScope(agent.memory_scope || "team");
-      setCanBeLead(agent.can_be_lead ?? false);
-      setCanDelegate(agent.can_delegate ?? true);
-      setMaxTurns(agent.max_turns || 50);
-      setTimeoutSeconds(agent.timeout_seconds || 900);
-      setIsolation(agent.isolation || "none");
+      // 嵌套子模型 (向后兼容: 可能不存在)
+      const mem = agent.memory || {};
+      setMemoryBackend(mem.backend || "file");
+      setMemoryMaxFacts(mem.max_facts ?? 10);
+      setMemoryInjection(mem.injection_enabled ?? true);
+      // team
+      const team = agent.team || {};
+      setCanBeLead(team.can_be_lead ?? agent.can_be_lead ?? false);
+      setCanDelegate(team.can_delegate ?? agent.can_delegate ?? true);
+      // limits
+      const limits = agent.limits || {};
+      setMaxTurns(limits.max_turns ?? agent.max_turns ?? 50);
+      setTimeoutSeconds(limits.timeout_seconds ?? agent.timeout_seconds ?? 900);
+      // subagents
+      const sub = agent.subagents || {};
+      setSubagentMaxConcurrent(sub.max_concurrent ?? 3);
+      // features
+      const feat = agent.features || {};
+      setFeatureSummarization(feat.summarization ?? true);
+      setFeatureSubagent(feat.subagent ?? true);
       // Load memory
       const memResp = await agentsAPI.getMemory(name);
       setMemoryData(memResp.data.memory);
@@ -64,40 +93,34 @@ export default function AgentEditPage() {
       setError("Agent 名称不能为空");
       return;
     }
+    if (!model) {
+      setError("请选择模型");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
       const tg = toolGroups.split(",").map((s) => s.trim()).filter(Boolean);
+      const payload: Record<string, unknown> = {
+        name: agentName.trim(),
+        model,
+        display_name: displayName.trim() || undefined,
+        description: description.trim() || undefined,
+        soul: soul.trim() || undefined,
+        tool_groups: tg,
+        temperature,
+        max_tokens: maxTokens,
+        memory: { backend: memoryBackend, max_facts: memoryMaxFacts, injection_enabled: memoryInjection },
+        features: { summarization: featureSummarization, subagent: featureSubagent, langfuse: true, guardrail: false },
+        limits: { max_turns: maxTurns, timeout_seconds: timeoutSeconds },
+        team: { can_be_lead: canBeLead, can_delegate: canDelegate, memory_scope: "agent" },
+        subagents: { max_concurrent: subagentMaxConcurrent, timeout_seconds: 900 },
+      };
       if (isNew) {
-        await agentsAPI.create({
-          name: agentName.trim(),
-          display_name: displayName.trim(),
-          description: description.trim(),
-          soul: soul.trim(),
-          model,
-          tool_groups: tg,
-          memory_scope: memoryScope,
-          can_be_lead: canBeLead,
-          can_delegate: canDelegate,
-          max_turns: maxTurns,
-          timeout_seconds: timeoutSeconds,
-          isolation,
-        });
+        await agentsAPI.create(payload as any);
         router.push(`/agents/${agentName.trim()}`);
       } else {
-        await agentsAPI.update(name, {
-          display_name: displayName.trim(),
-          description: description.trim(),
-          soul: soul.trim(),
-          model,
-          tool_groups: tg,
-          memory_scope: memoryScope,
-          can_be_lead: canBeLead,
-          can_delegate: canDelegate,
-          max_turns: maxTurns,
-          timeout_seconds: timeoutSeconds,
-          isolation,
-        });
+        await agentsAPI.update(name, payload);
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || "保存失败");
@@ -111,8 +134,13 @@ export default function AgentEditPage() {
     try {
       await agentsAPI.delete(name);
       router.push("/agents");
-    } catch (err) {
-      setError("删除失败");
+    } catch (err: any) {
+      const detail = err.response?.data?.detail || "";
+      if (err.response?.status === 403) {
+        setError("无法删除 default agent — 它是系统必需的");
+      } else {
+        setError(detail || "删除失败");
+      }
     }
   }
 
@@ -125,6 +153,8 @@ export default function AgentEditPage() {
       console.error("Failed to clear memory:", err);
     }
   }
+
+  const isDefault = agentName === "default";
 
   if (loading) {
     return (
@@ -145,9 +175,14 @@ export default function AgentEditPage() {
           <h1 className="text-2xl font-bold text-slate-900">
             {isNew ? "新建 Agent" : `编辑: ${displayName || agentName}`}
           </h1>
+          {isDefault && (
+            <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded font-medium mt-1 inline-block">
+              <Shield className="w-3 h-3 inline mr-1" />系统默认 Agent — 不可删除
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          {!isNew && (
+          {!isNew && !isDefault && (
             <button onClick={handleDelete} className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors">
               <Trash2 className="w-4 h-4" /> 删除
             </button>
@@ -206,76 +241,102 @@ export default function AgentEditPage() {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        {/* Model & Tools */}
+        <div className="grid grid-cols-3 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">模型</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">模型 *</label>
             <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
             >
-              <option value="inherit">继承 (inherit)</option>
-              <option value="gpt-4o">gpt-4o</option>
-              <option value="gpt-4o-mini">gpt-4o-mini</option>
-              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+              {MODEL_OPTIONS.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">工具组（逗号分隔）</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">温度</label>
             <input
-              type="text"
-              value={toolGroups}
-              onChange={(e) => setToolGroups(e.target.value)}
-              placeholder="coding, search"
+              type="number"
+              value={temperature}
+              onChange={(e) => setTemperature(parseFloat(e.target.value) || 0.3)}
+              min={0} max={2} step={0.1}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">最大 Token</label>
+            <input
+              type="number"
+              value={maxTokens}
+              onChange={(e) => setMaxTokens(parseInt(e.target.value) || 4096)}
+              min={256} max={128000} step={256}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
             />
           </div>
         </div>
 
-        {/* ── Agent Team 配置 ── */}
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">工具组（逗号分隔，扩展到系统默认）</label>
+          <input
+            type="text"
+            value={toolGroups}
+            onChange={(e) => setToolGroups(e.target.value)}
+            placeholder="例如: code (为空则使用系统默认 search, files, files_readonly, mcp)"
+            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
+          />
+          <p className="text-[10px] text-slate-400 mt-1">系统默认工具组: search, files, files_readonly, mcp — Agent 可在此基础上扩展</p>
+        </div>
+
+        {/* ── 记忆配置 ── */}
         <div className="border border-slate-200 rounded-xl p-4">
-          <h3 className="text-sm font-medium text-slate-700 mb-3">Agent Team 配置</h3>
+          <h3 className="text-sm font-medium text-slate-700 mb-3">记忆配置</h3>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">记忆范围</label>
-              <select value={memoryScope} onChange={(e) => setMemoryScope(e.target.value)}
+              <label className="block text-xs font-medium text-slate-600 mb-1">后端</label>
+              <select value={memoryBackend} onChange={(e) => setMemoryBackend(e.target.value)}
                 className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200">
-                <option value="user">用户级 (user)</option>
-                <option value="project">项目级 (project)</option>
-                <option value="local">本地私有 (local)</option>
-                <option value="team">团队内私有 (team)</option>
+                <option value="file">File (本地 JSON)</option>
+                <option value="mem0">mem0 (pgvector)</option>
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">隔离方式</label>
-              <select value={isolation} onChange={(e) => setIsolation(e.target.value)}
-                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200">
-                <option value="none">共享 workspace</option>
-                <option value="worktree">独立 worktree</option>
-              </select>
+              <label className="block text-xs font-medium text-slate-600 mb-1">最大记忆数</label>
+              <input type="number" value={memoryMaxFacts} onChange={(e) => setMemoryMaxFacts(parseInt(e.target.value) || 10)}
+                min={1} max={100}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">模型</label>
-              <select value={model} onChange={(e) => setModel(e.target.value)}
-                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200">
-                <option value="inherit">继承 (inherit)</option>
-                <option value="gpt-4o">gpt-4o</option>
-                <option value="gpt-4o-mini">gpt-4o-mini</option>
-                <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-                <option value="claude-haiku-4-5">claude-haiku-4-5</option>
-              </select>
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 cursor-pointer pb-1.5">
+                <input type="checkbox" checked={memoryInjection} onChange={(e) => setMemoryInjection(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-slate-300" />
+                <span className="text-xs text-slate-600">启用记忆注入</span>
+              </label>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4 mt-3">
+        </div>
+
+        {/* ── Agent Team 配置 ── */}
+        <div className="border border-slate-200 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-slate-700 mb-3">Team & 限制</h3>
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">最大轮次</label>
               <input type="number" value={maxTurns} onChange={(e) => setMaxTurns(parseInt(e.target.value) || 50)}
+                min={1} max={200}
                 className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">超时（秒）</label>
               <input type="number" value={timeoutSeconds} onChange={(e) => setTimeoutSeconds(parseInt(e.target.value) || 900)}
+                min={30} max={3600}
+                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">并行 SubAgent 数</label>
+              <input type="number" value={subagentMaxConcurrent} onChange={(e) => setSubagentMaxConcurrent(parseInt(e.target.value) || 3)}
+                min={1} max={10}
                 className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
             </div>
           </div>
@@ -293,6 +354,23 @@ export default function AgentEditPage() {
           </div>
         </div>
 
+        {/* ── 功能开关 ── */}
+        <div className="border border-slate-200 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-slate-700 mb-3">功能开关</h3>
+          <div className="flex gap-6">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={featureSummarization} onChange={(e) => setFeatureSummarization(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-slate-300" />
+              <span className="text-xs text-slate-600">对话摘要</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={featureSubagent} onChange={(e) => setFeatureSubagent(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-slate-300" />
+              <span className="text-xs text-slate-600">子 Agent 委派</span>
+            </label>
+          </div>
+        </div>
+
         {/* SOUL Editor */}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -304,7 +382,7 @@ export default function AgentEditPage() {
           <textarea
             value={soul}
             onChange={(e) => setSoul(e.target.value)}
-            placeholder="# Agent Soul&#10;&#10;你是一个专业的编程助手...&#10;"
+            placeholder={"# Agent Soul\n\n你是一个专业的编程助手..."}
             rows={12}
             className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-slate-200 resize-y"
           />

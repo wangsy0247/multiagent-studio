@@ -55,9 +55,14 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         runtime: Runtime,
     ) -> dict | None:
         """Queue conversation for memory update after agent completes."""
-        mem_cfg = self._memory_config or get_memory_config()
-        if not mem_cfg.enabled:
+        # Per-user enabled 优先, 回退到全局 MemoryConfig
+        per_user_enabled = self.config.get("memory_enabled", None)
+        if per_user_enabled is False:
             return None
+        if per_user_enabled is None:
+            mem_cfg = self._memory_config or get_memory_config()
+            if not mem_cfg.enabled:
+                return None
 
         # Get thread_id from runtime context or LangGraph config
         thread_id = runtime.context.get("thread_id") if runtime.context else None
@@ -98,6 +103,10 @@ class MemoryMiddleware(HarnessAgentMiddleware):
             correction_detected=correction_detected,
             reinforcement_detected=reinforcement_detected,
             metadata=metadata,
+            api_key=self.config.get("openai_api_key", ""),
+            base_url=self.config.get("openai_base_url", ""),
+            model_name=self.config.get("memory_model", ""),
+            enabled=self.config.get("memory_enabled", None),
         )
 
         return None

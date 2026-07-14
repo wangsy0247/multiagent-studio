@@ -211,35 +211,63 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
 def create_summarization_middleware(
     *,
     before_summarization: list[BeforeSummarizationHook] | None = None,
+    model_name: str = "",
+    api_key: str = "",
+    base_url: str = "",
+    user_id: str = "",
 ) -> SummarizationMiddleware | None:
-    """Build a SummarizationMiddleware from SummarizationConfig."""
+    """Build a SummarizationMiddleware from SummarizationConfig.
+
+    Args:
+        before_summarization: Hooks invoked before each summarization cycle.
+        model_name: Model name override (from EffectiveConfig).
+        api_key: API key (from EffectiveConfig). Falls back to L1 config → env.
+        base_url: Base URL (from EffectiveConfig). Falls back to L1 config → env.
+        user_id: User ID for loading L1 config as fallback.
+    """
+    import os as _os
+
     cfg = get_summarization_config()
     if not cfg.enabled:
         return None
 
-    # Create model instance from config
+    # Resolve model name: explicit arg > config.yaml > SYSTEM_DEFAULTS
+    effective_model = model_name or cfg.model_name
+    if not effective_model:
+        from harness.config.defaults import SYSTEM_DEFAULTS
+        effective_model = SYSTEM_DEFAULTS.get("summary_model", "")
+    if not effective_model:
+        effective_model = _os.getenv("DEFAULT_MODEL", "gpt-4o")
+
+    # ── 动态解析 api_key / base_url ──
+    # 优先级: 显式传入 > 用户 L1 配置 > 环境变量
+    effective_api_key = api_key
+    effective_base_url = base_url
+    if (not effective_api_key or not effective_base_url) and user_id:
+        l1 = _load_user_config(user_id)
+        if not effective_api_key:
+            effective_api_key = l1.get("api_key", "")
+        if not effective_base_url:
+            effective_base_url = l1.get("base_url", "")
+    effective_api_key = effective_api_key or _os.getenv("OPENAI_API_KEY", "")
+    effective_base_url = effective_base_url or _os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
     model = None
-    # Resolve model name: config.yaml > HarnessConfig.summary_model (env) > None
-    model_name = cfg.model_name
-    if not model_name:
-        try:
-            from harness.config import load_config
-            hcfg = load_config()
-            model_name = hcfg.summary_model
-        except Exception:
-            pass
-    if model_name:
+    if effective_model:
         try:
             from langchain_openai import ChatOpenAI
-            from harness.config import load_config
-            hcfg = load_config()
             model = ChatOpenAI(
-                model=model_name,
-                api_key=hcfg.openai_api_key,
-                base_url=hcfg.openai_base_url,
+                model=effective_model,
+                api_key=effective_api_key,
+                base_url=effective_base_url,
                 temperature=0,
+                request_timeout=60,
+                max_retries=1,
             )
-            logger.info("Summarization enabled using model=%s", model_name)
+            logger.info(
+                "Summarization LLM: model=%s",
+                effective_model,
+            )
         except Exception as exc:
             logger.warning("Failed to create summarization model: %s", exc)
             return None
@@ -266,3 +294,13 @@ def create_summarization_middleware(
         before_summarization=before_summarization,
         preserve_dynamic_context_reminders=cfg.preserve_dynamic_context_reminders,
     )
+
+
+def _load_user_config(user_id: str) -> dict:
+    """加载用户 L1 全局配置 (用于运行时动态解析 api_key/base_url)."""
+    try:
+        from harness.config.config_loader import ConfigLoader
+        cfg = ConfigLoader.load_user_global(user_id)
+        return cfg or {}
+    except Exception:
+        return {}

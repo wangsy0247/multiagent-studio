@@ -7,13 +7,21 @@ from harness.memory.queue import get_memory_queue
 from harness.config.memory_config import get_memory_config
 
 
-def memory_flush_hook(event) -> None:
+def memory_flush_hook(event, *, api_key: str = "", base_url: str = "",
+                      model_name: str = "", enabled: bool = True) -> None:
     """Flush messages about to be summarized into the memory queue.
 
     Uses ``add_nowait()`` for immediate processing, since the messages are
     about to be removed from state by summarization.
+
+    Args:
+        event: Summarization event from SummarizationMiddleware.
+        api_key: Per-user API key (from middleware config).
+        base_url: Per-user base URL.
+        model_name: Per-user memory model name.
+        enabled: Per-user memory enabled flag.
     """
-    if not get_memory_config().enabled or not event.thread_id:
+    if not enabled or not event.thread_id:
         return
 
     filtered_messages = filter_messages_for_memory(list(event.messages_to_summarize))
@@ -40,4 +48,5 @@ def memory_flush_hook(event) -> None:
         user_id=user_id,
         correction_detected=correction_detected,
         reinforcement_detected=reinforcement_detected,
+        api_key=api_key, base_url=base_url, model_name=model_name,
     )

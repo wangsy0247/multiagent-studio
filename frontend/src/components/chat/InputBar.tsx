@@ -6,6 +6,7 @@ import { useChatStore } from "@/lib/chat-store";
 import { AttachedFile, AgentDefinition } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { AgentMentionPicker } from "@/components/team/AgentMentionPicker";
+import AgentSelector from "./AgentSelector";
 
 interface InputBarProps {
   onSend: (text: string, files: AttachedFile[], targetAgents?: string[]) => void;
@@ -17,6 +18,9 @@ interface InputBarProps {
   // ── Agent Team 扩展 ──
   members?: AgentDefinition[];
   mode?: "single" | "team";
+  // ── Agent 选择 ──
+  selectedAgent?: string;
+  onAgentChange?: (agentName: string) => void;
 }
 
 export default function InputBar({
@@ -28,6 +32,8 @@ export default function InputBar({
   onRemoveFile,
   members = [],
   mode,
+  selectedAgent,
+  onAgentChange,
 }: InputBarProps) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -172,6 +178,15 @@ export default function InputBar({
         >
           <Paperclip className="w-4 h-4" />
         </button>
+
+        {/* ── Agent 选择器 ── */}
+        {onAgentChange && (
+          <AgentSelector
+            value={selectedAgent || "default"}
+            onChange={onAgentChange}
+          />
+        )}
+
         {/* ── 模式标签 ── */}
         {mode && (
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${

@@ -10,7 +10,6 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from harness.config import load_config
 from harness.memory.prompt import (
     MEMORY_UPDATE_PROMPT,
     format_conversation_for_update,
@@ -25,29 +24,51 @@ from harness.config.memory_config import get_memory_config
 logger = logging.getLogger(__name__)
 
 
-def _create_memory_model(model_name: str | None = None) -> ChatOpenAI:
-    """Create a lightweight model for memory updates (thinking disabled).
+def _create_memory_model(
+    model_name: str | None = None,
+    *,
+    api_key: str = "",
+    base_url: str = "",
+) -> ChatOpenAI | None:
+    """创建 memory 更新用的轻量模型.
 
-    Priority:
-        1. HARNESS_OPENAI_API_KEY / HARNESS_OPENAI_BASE_URL env vars
-        2. OPENAI_API_KEY / OPENAI_BASE_URL env vars
-        3. HarnessConfig (loaded from config.yaml and harness/.env)
+    无有效凭证时返回 None — 调用方应优雅跳过 memory 更新.
+
+    凭证优先级 (高到低):
+    1. 显式传入的 ``api_key`` / ``base_url`` (来自 per-user GraphContext)
+    2. ``MemoryConfig.api_key`` / ``MemoryConfig.base_url`` (全局单例)
+    3. ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL`` 环境变量
+
+    模型名称优先级:
+    1. 显式传入的 ``model_name``
+    2. ``MemoryConfig.model_name``
+    3. ``DEFAULT_MODEL`` env var
+    4. ``gpt-4o-mini`` hardcoded fallback
     """
-    cfg = load_config()
-    name = model_name or os.getenv("HARNESS_DEFAULT_MODEL", cfg.default_model)
-    api_key = os.getenv(
-        "HARNESS_OPENAI_API_KEY",
-        os.getenv("OPENAI_API_KEY", cfg.openai_api_key),
-    )
-    base_url = os.getenv(
-        "HARNESS_OPENAI_BASE_URL",
-        os.getenv("OPENAI_BASE_URL", cfg.openai_base_url),
+    from harness.config.memory_config import get_memory_config
+    mem_cfg = get_memory_config()
+    name = model_name or mem_cfg.model_name or os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
+    effective_api_key = api_key or mem_cfg.api_key or os.getenv("OPENAI_API_KEY", "")
+    effective_base_url = base_url or mem_cfg.base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+    if not effective_api_key:
+        logger.warning(
+            "Memory LLM skipped: no API key configured "
+            "(set api_key in frontend settings or OPENAI_API_KEY env)"
+        )
+        return None
+
+    logger.info(
+        "Memory LLM: model=%s",
+        name,
     )
     return ChatOpenAI(
         model=name,
-        api_key=api_key,
-        base_url=base_url,
+        api_key=effective_api_key,
+        base_url=effective_base_url,
         temperature=0.3,
+        request_timeout=60,
+        max_retries=1,
     )
 
 
@@ -124,9 +145,14 @@ class MemoryUpdater:
 
     def __init__(self, model_name: str | None = None):
         self._model_name = model_name
+        # Per-request overrides (set by aupdate_memory)
+        self._api_key: str = ""
+        self._base_url: str = ""
 
-    def _get_model(self) -> ChatOpenAI:
-        return _create_memory_model(self._model_name)
+    def _get_model(self) -> ChatOpenAI | None:
+        return _create_memory_model(
+            self._model_name, api_key=self._api_key, base_url=self._base_url,
+        )
 
     def _build_correction_hint(self, correction_detected: bool, reinforcement_detected: bool) -> str:
         hint = ""
@@ -217,7 +243,9 @@ class MemoryUpdater:
 
     async def aupdate_memory(self, messages, thread_id=None, agent_name=None,
                              correction_detected=False, reinforcement_detected=False,
-                             user_id=None, metadata=None) -> bool:
+                             user_id=None, metadata=None, *,
+                             api_key: str = "", base_url: str = "",
+                             model_name: str = "") -> bool:
         """Async entry point — may write to file, mem0, or both (dual-write).
 
         Routing logic:
@@ -230,6 +258,12 @@ class MemoryUpdater:
 
         cfg = get_memory_config()
         mem0_tool_enabled = getattr(cfg, "mem0_tool_enabled", False)
+
+        # Store per-user credentials for _get_model()
+        self._api_key = api_key
+        self._base_url = base_url
+        if model_name:
+            self._model_name = model_name
 
         results: list[bool] = []
 
@@ -322,6 +356,8 @@ class MemoryUpdater:
                 return False
             current_memory, prompt = prepared
             model = self._get_model()
+            if model is None:
+                return False  # 无有效凭证, 跳过本次更新
             response = await model.ainvoke(prompt, config={"run_name": "memory_agent"})
             return self._finalize_update(
                 current_memory=current_memory,

@@ -68,6 +68,7 @@ class TeammateAgent:
         role: str = "member",
         lead_name: str | None = None,
         tracer: Any = None,
+        effective_config: Any = None,
     ) -> None:
         self.name = agent_name
         self.llm = llm
@@ -76,15 +77,22 @@ class TeammateAgent:
         self._message_bus = message_bus
         self._task_store = task_store
         self._skill_storage = skill_storage
-        self._event_queue = event_queue  # SSE 事件输出 (orchestrator 注入)
-        self._role = role  # "lead" | "member"
-        self._lead_name = lead_name  # Lead 的 agent name (用于发 summary)
-        self._tracer = tracer  # TeamTracer (可选, 用于 Langfuse 可视化)
+        self._event_queue = event_queue
+        self._role = role
+        self._lead_name = lead_name
+        self._tracer = tracer
 
-        # ── 加载 Agent 配置和 SOUL ──
-        user_id = team_context.user_id
-        self._agent_config = load_agent_config(agent_name, user_id=user_id)
-        self._agent_soul = load_agent_soul(agent_name, user_id=user_id)
+        # ── EffectiveConfig (优先) + 向后兼容旧 AgentConfig ──
+        self._effective_config = effective_config
+        self._user_id = team_context.user_id
+        if effective_config is not None:
+            self._agent_config = None  # 统一用 effective_config
+            self._agent_soul = effective_config.agent_soul
+        else:
+            # Fallback: 兼容未传入 effective_config 的旧调用路径
+            user_id = team_context.user_id
+            self._agent_config = load_agent_config(agent_name, user_id=user_id)
+            self._agent_soul = load_agent_soul(agent_name, user_id=user_id)
 
         # ── 运行时状态 ──
         self.status: TeammateStatus = TeammateStatus.SPAWNING
@@ -261,20 +269,30 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                     raise asyncio.CancelledError("Teammate shutdown requested")
                 return await handler(request)
 
+        # ── 从 EffectiveConfig 读取功能开关 ──
+        eff = self._effective_config
+        summarization_enabled = eff.summarization_enabled if eff else True
+        memory_enabled = eff.memory_injection_enabled if eff else True
+        guardrail_enabled = eff.guardrail_enabled if eff else False
+
         middlewares = build_teammate_middlewares(
             workspace_root=workspace_root,
             agent_name=self.name,
-            is_plan_mode=is_lead,           # Lead 需要 TodoMiddleware
-            subagent_enabled=not is_lead,   # 仅 Member 可委派子任务, Lead 通过 delegate_to_member
-            memory_enabled=True,
-            summarization_enabled=True,
-            guardrail_enabled=True,
-            vision_enabled=getattr(self._agent_config, 'vision', False) if self._agent_config else False,
+            is_plan_mode=is_lead,
+            subagent_enabled=not is_lead,
+            memory_enabled=memory_enabled,
+            summarization_enabled=summarization_enabled,
+            guardrail_enabled=guardrail_enabled,
+            vision_enabled=False,
             tool_max_retries=3,
-            # Lead 额外保留 DynamicContextMiddleware + ClarificationMiddleware
             keep_dynamic_context=is_lead,
             keep_clarification=is_lead,
             custom_middlewares=[InboxDrainMiddleware()],
+            summary_model=eff.summary_model if eff else "",
+            memory_model=eff.memory_model or eff.model if eff else "",
+            api_key=eff.api_key if eff else "",
+            base_url=eff.base_url if eff else "",
+            user_id=self._user_id,
         )
         return middlewares
 

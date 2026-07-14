@@ -17,12 +17,10 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, AsyncIterator
 
 from harness.config.agents_config import load_agent_config
 from harness.config.paths import get_paths
-from harness.models import SubagentStatus
 from harness.team.context import TeamContext
 from harness.team.message_bus import TeamMessageBus
 from harness.team.models import (
@@ -81,9 +79,7 @@ class TeamOrchestrator:
         tool_registry: ToolRegistry | None = None,
         subagent_manager: Any = None,
         skill_storage: Any = None,
-        langfuse_public_key: str = "",
-        langfuse_secret_key: str = "",
-        langfuse_host: str = "",
+        effective_config: Any = None,
     ) -> None:
         self._project_id = project_id
         self._thread_id = thread_id
@@ -92,6 +88,7 @@ class TeamOrchestrator:
         self._tool_registry = tool_registry
         self._subagent_manager = subagent_manager
         self._skill_storage = skill_storage
+        self._effective_config = effective_config  # Lead's EffectiveConfig
 
         # ── 核心组件 ──
         self.task_store = TeamTaskStore(project_id, user_id)
@@ -112,6 +109,15 @@ class TeamOrchestrator:
         # ── Tracing ──
         from harness.config.paths import get_paths
         trace_dir = get_paths().base_dir / "users" / user_id / "team_traces" / project_id / thread_id
+        langfuse_public_key = ""
+        langfuse_secret_key = ""
+        langfuse_host = ""
+        langfuse_enabled = False
+        if effective_config is not None:
+            langfuse_enabled = effective_config.langfuse_enabled
+            langfuse_public_key = effective_config.langfuse_public_key or ""
+            langfuse_secret_key = effective_config.langfuse_secret_key or ""
+            langfuse_host = effective_config.langfuse_host or ""
         self.tracer = TeamTracer(
             trace_dir=trace_dir,
             session_id=thread_id,
@@ -119,6 +125,7 @@ class TeamOrchestrator:
             public_key=langfuse_public_key or None,
             secret_key=langfuse_secret_key or None,
             host=langfuse_host or None,
+            enabled=langfuse_enabled,
         )
 
         # ── 去重: 已通知过 Lead 的空闲 teammate ──
@@ -162,36 +169,67 @@ class TeamOrchestrator:
         )
 
         # ── 为每个 member 创建 TeammateAgent ──
+        failed_members: list[str] = []
         for name in member_names:
-            await self._create_teammate(name)
+            tm = await self._create_teammate(name)
+            if tm is None:
+                failed_members.append(name)
+
+        # 检查是否所有成员都创建失败
+        if not self.teammates:
+            raise ValueError(
+                f"Team 初始化失败: 所有成员 ({', '.join(member_names)}) 都无法创建。"
+                f" 请检查每个 Agent 的配置 (model/api_key) 是否正确。"
+            )
+
+        if failed_members:
+            logger.warning(
+                "TeamOrchestrator: %d/%d members failed to create: %s",
+                len(failed_members), len(member_names), ", ".join(failed_members),
+            )
+            await self._event_queue.put({
+                "type": "team_status",
+                "thread_id": self._thread_id,
+                "project_id": self._project_id,
+                "phase": "init",
+                "content": (
+                    f"警告: {len(failed_members)} 个成员创建失败 ({', '.join(failed_members)})。"
+                    f" 请检查这些 Agent 是否存在且配置了有效的 model。"
+                ),
+            })
 
         logger.info(
-            "TeamOrchestrator initialized: project=%s teammates=%d",
-            self._project_id, len(self.teammates),
+            "TeamOrchestrator initialized: project=%s teammates=%d/%d",
+            self._project_id, len(self.teammates), len(member_names),
         )
 
     async def _create_teammate(self, name: str) -> TeammateAgent | None:
-        """创建并 spawn 一个 TeammateAgent."""
+        """创建并 spawn 一个 TeammateAgent — 使用 ConfigLoader 加载 per-agent 配置."""
         try:
-            cfg = load_agent_config(name, user_id=self._user_id)
-            if cfg is None and self._user_id != "default":
-                cfg = load_agent_config(name, user_id="default")
+            from harness.config.config_loader import ConfigLoader
 
-            llm = self._llm_factory(cfg.model if cfg and cfg.model != "inherit" else None) if self._llm_factory else None
+            # 加载 member 的 EffectiveConfig (L0 + L1 + L2)
+            member_eff = ConfigLoader.load_effective(
+                user_id=self._user_id, agent_name=name,
+            )
+
+            llm = self._llm_factory(
+                member_eff.model,
+                temperature=member_eff.temperature,
+                max_tokens=member_eff.max_tokens,
+            ) if self._llm_factory else None
             if llm is None:
                 logger.error("No LLM available for teammate '%s'", name)
                 return None
 
+            # 工具 — 从 member EffectiveConfig 的 tool_groups 加载
             tools: list = []
             if self._tool_registry:
-                if cfg and cfg.tool_groups:
-                    for group in cfg.tool_groups:
-                        tools.extend(self._tool_registry.get_tools_by_category(group))
-                else:
-                    tools = list(self._tool_registry.get_core_tools())
+                for group in member_eff.tool_groups:
+                    tools.extend(self._tool_registry.get_tools_by_category(group))
 
             # 注入 team 工具 (按角色过滤)
-            role = "lead" if (cfg and cfg.can_be_lead) else "member"
+            role = "lead" if member_eff.can_be_lead else "member"
             lead_name = self._get_lead_name_from_config()
 
             #  spawn callback: 让 Lead 可以动态创建 teammate
@@ -240,6 +278,7 @@ class TeamOrchestrator:
                 role=role,
                 lead_name=lead_name,
                 tracer=self.tracer,
+                effective_config=member_eff,
             )
             await teammate.spawn()
             self.teammates[name] = teammate
@@ -253,6 +292,10 @@ class TeamOrchestrator:
     def _get_lead_name_from_config(self) -> str | None:
         """从已加载的 teammate 中查找 Lead 名称."""
         for name, tm in self.teammates.items():
+            eff = tm._effective_config
+            if eff and eff.can_be_lead:
+                return name
+            # fallback: 旧 AgentConfig
             if tm._agent_config and tm._agent_config.can_be_lead:
                 return name
         # fallback: 第一个 teammate
@@ -527,9 +570,11 @@ class TeamOrchestrator:
     def _get_lead(self) -> TeammateAgent | None:
         """获取 Lead Agent."""
         for name, tm in self.teammates.items():
+            eff = tm._effective_config
+            if eff and eff.can_be_lead:
+                return tm
             if tm._agent_config and tm._agent_config.can_be_lead:
                 return tm
-        # fallback: 第一个 teammate
         for tm in self.teammates.values():
             return tm
         return None

@@ -76,6 +76,12 @@ def build_teammate_middlewares(
     custom_middlewares: list[AgentMiddleware] | None = None,
     # 记忆相关 hook
     memory_flush_hook: Callable | None = None,
+    # 模型配置
+    summary_model: str = "",
+    memory_model: str = "",
+    api_key: str = "",
+    base_url: str = "",
+    user_id: str = "",
 ) -> list[AgentMiddleware]:
     """构建 Teammate 完整中间件链 (17 层).
 
@@ -114,7 +120,13 @@ def build_teammate_middlewares(
     # [8] Summarization (长运行 teammate 需要上下文压缩)
     if summarization_enabled and _has_summarization:
         hooks = [memory_flush_hook] if memory_flush_hook and memory_enabled else []
-        summ_mw = _create_summarization(before_summarization=hooks)
+        summ_mw = _create_summarization(
+            before_summarization=hooks,
+            model_name=summary_model,
+            api_key=api_key,
+            base_url=base_url,
+            user_id=user_id,
+        )
         if summ_mw is not None:
             middlewares.append(summ_mw)
 
@@ -127,7 +139,11 @@ def build_teammate_middlewares(
 
     # [11] Memory (teammate 有自己的记忆)
     if memory_enabled:
-        middlewares.append(MemoryMiddleware(agent_name=agent_name))
+        middlewares.append(MemoryMiddleware(
+            {"openai_api_key": api_key, "openai_base_url": base_url,
+             "memory_model": memory_model},
+            agent_name=agent_name,
+        ))
 
     # [12] ViewImage
     if vision_enabled:

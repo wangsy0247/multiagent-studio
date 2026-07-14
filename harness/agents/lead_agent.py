@@ -731,7 +731,9 @@ def _build_middlewares(
     tool_max_retries = cfg.get("tool_max_retries", 3)
     auto_title_enabled = cfg.get("auto_title", False)
     title_model = cfg.get("title_model", "gpt-4o-mini")
+    summary_model = cfg.get("summary_model", "")
     api_key = cfg.get("openai_api_key", ""); base_url = cfg.get("openai_base_url", "")
+    user_id = cfg.get("user_id", "default")
     if config_manager is not None:
         try:
             mem_cfg = config_manager.get("memory")
@@ -769,14 +771,32 @@ def _build_middlewares(
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
     if summarization_enabled:
         from harness.memory.summarization_hook import memory_flush_hook
-        hooks = [memory_flush_hook] if memory_enabled else []
-        summ_mw = create_summarization_middleware(before_summarization=hooks)
+        hooks: list = []
+        if memory_enabled:
+            _mem_enabled = memory_enabled
+            _mem_model = cfg.get("memory_model", "")
+            hooks.append(lambda ev: memory_flush_hook(
+                ev, api_key=api_key, base_url=base_url,
+                model_name=_mem_model, enabled=_mem_enabled,
+            ))
+        summ_mw = create_summarization_middleware(
+            before_summarization=hooks,
+            model_name=summary_model,
+            api_key=api_key,
+            base_url=base_url,
+            user_id=user_id,
+        )
         if summ_mw is not None: middlewares.append(summ_mw)
     if is_plan_mode: middlewares.append(TodoMiddleware())
     middlewares.append(TokenUsageMiddleware())
     if auto_title_enabled:
-        middlewares.append(TitleMiddleware({"title_model": title_model, "api_key": api_key, "base_url": base_url}))
-    if memory_enabled: middlewares.append(MemoryMiddleware(agent_name=agent_name))
+        middlewares.append(TitleMiddleware({"title_model": title_model, "api_key": api_key, "base_url": base_url, "user_id": user_id}))
+    if memory_enabled:
+        middlewares.append(MemoryMiddleware(
+            {"openai_api_key": api_key, "openai_base_url": base_url,
+             "memory_model": cfg.get("memory_model", "")},
+            agent_name=agent_name,
+        ))
     if vision_enabled: middlewares.append(ViewImageMiddleware())
     if tool_search_enabled: middlewares.append(DeferredToolFilterMiddleware())
     if subagent_enabled: middlewares.append(SubagentLimitMiddleware({"max_concurrent": max_concurrent_subagents}))
@@ -801,7 +821,8 @@ def make_lead_agent(config: RunnableConfig, *, config_manager: ConfigManager | N
     model_name = cfg.get("model_name") or cfg.get("model", "gpt-4o")
     from langchain_openai import ChatOpenAI
     llm = ChatOpenAI(model=model_name, api_key=cfg.get("openai_api_key", ""),
-                     base_url=cfg.get("openai_base_url", ""), temperature=0.3)
+                     base_url=cfg.get("openai_base_url", ""), temperature=0.3,
+                     request_timeout=120, max_retries=2)
     tools = cfg.get("_tools", [])
     system_prompt = cfg.get("_system_prompt", "You are a helpful assistant.")
     middlewares = _build_middlewares(config, config_manager=config_manager, agent_name=agent_name)

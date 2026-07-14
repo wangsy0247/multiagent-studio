@@ -39,12 +39,23 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.flush()
     await db.refresh(user)
 
+    # ── 为新用户创建全局配置 + default agent ──
+    config_status = "created"
+    try:
+        from harness.config import create_user_configs
+        create_user_configs(str(user.id))
+        logger.info("Created user configs for new user '%s'", user.id)
+    except Exception as exc:
+        logger.warning("Failed to create user configs for '%s': %s", user.id, exc)
+        config_status = f"failed: {exc}"
+
     token = create_access_token(str(user.id), user.role)
     return TokenResponse(
         access_token=token,
         user_id=user.id,
         username=user.username,
         role=user.role,
+        config_status=config_status,
     )
 
 

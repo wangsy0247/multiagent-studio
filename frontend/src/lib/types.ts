@@ -292,20 +292,53 @@ export interface TeamExecutionState {
   maxRounds: number;
 }
 
+/** Agent 记忆配置 (对齐后端 AgentMemoryFields) */
+export interface AgentMemoryConfig {
+  backend: "file" | "mem0";
+  max_facts: number;
+  injection_enabled: boolean;
+  max_injection_tokens: number;
+  mem0_tool_enabled: boolean;
+  mem0_search_top_k: number;
+}
+
+/** Agent 功能开关 (对齐后端 AgentFeaturesFields) */
+export interface AgentFeaturesConfig {
+  summarization: boolean;
+  subagent: boolean;
+  langfuse: boolean;
+  guardrail: boolean;
+}
+
 /** 自定义 Agent 定义 (对齐后端 AgentConfig) */
 export interface AgentDefinition {
   name: string;
   display_name: string;
   description: string;
   model: string;
+  temperature: number;
+  max_tokens: number;
   tool_groups: string[];
-  skills?: string[];
-  memory_scope: string;
-  can_be_lead: boolean;
-  can_delegate: boolean;
-  max_turns: number;
-  timeout_seconds: number;
-  isolation: string;
+  skills?: string[] | null;
+  memory: AgentMemoryConfig;
+  features: AgentFeaturesConfig;
+  limits: { max_turns: number; timeout_seconds: number };
+  team: { can_be_lead: boolean; can_delegate: boolean; memory_scope: string };
+  subagents: { timeout_seconds: number; max_concurrent: number };
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** 后端 agents API 直接返回的 agent 对象 (不含嵌套子模型) */
+export interface AgentListItem {
+  name: string;
+  display_name: string;
+  description: string;
+  model: string;
+  tool_groups: string[];
+  skills?: string[] | null;
+  created_at: string;
+  updated_at: string;
 }
 
 // ===== 监控 =====

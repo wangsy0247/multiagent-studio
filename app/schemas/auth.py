@@ -27,6 +27,7 @@ class TokenResponse(BaseModel):
     user_id: UUID
     username: str
     role: str
+    config_status: str = "created"  # "created" | "exists" | "failed: ..."
 
 
 class UserResponse(BaseModel):

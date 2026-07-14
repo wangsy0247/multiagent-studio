@@ -396,7 +396,7 @@ class ExecuteRequest(BaseModel):
     files: list[dict] | None = None
     # ── Agent Team 扩展字段 ──
     project_id: str | None = None   # 项目 ID，非空时启用 Team 上下文
-    agent_name: str | None = None   # 单 Agent 模式指定 Agent
+    agent_name: str = "default"   # 单 Agent 模式指定 Agent
     mode: str = "single"            # "single" | "team"
 
 

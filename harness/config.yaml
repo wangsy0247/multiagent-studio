@@ -104,7 +104,7 @@ sandbox:
 
   # OpenSandbox settings.
   server_url: http://localhost:8080
-  api_key: "multiagent-studio"
+  # api_key: ${SANDBOX_API_KEY:-multiagent-studio}
   resource_cpu: "1"
   resource_memory: "2Gi"
   timeout_minutes: 30
@@ -140,16 +140,16 @@ memory:
         collection_name: memories
         embedding_model_dims: 1024   # text-embedding-v4 = 2560 维
         user: harness
-        password: harness
-        host: localhost
-        port: 5432
+        password: ${PGVECTOR_PASSWORD:-harness}
+        host: ${PGVECTOR_HOST:-localhost}
+        port: ${PGVECTOR_PORT:-5432}
         hnsw: true
     llm:
       provider: openai
       config:
-        model: qwen3.6-plus
-        openai_base_url: ${HARNESS_OPENAI_BASE_URL}
-        api_key: ${HARNESS_OPENAI_API_KEY}
+        model: ${MEM0_LLM_MODEL:-gpt-4o-mini}
+        openai_base_url: ${OPENAI_BASE_URL}
+        api_key: ${OPENAI_API_KEY}
     embedder:
       provider: openai
       config:
@@ -214,9 +214,9 @@ uploads:
   max_total_size: 104857600
 
 langfuse_enabled: true
-langfuse_public_key: ${HARNESS_LANGFUSE_PUBLIC_KEY}
-langfuse_secret_key: ${HARNESS_LANGFUSE_SECRET_KEY}
-langfuse_host: ${HARNESS_LANGFUSE_HOST}
+langfuse_public_key: ${LANGFUSE_PUBLIC_KEY}
+langfuse_secret_key: ${LANGFUSE_SECRET_KEY}
+langfuse_host: ${LANGFUSE_HOST}
 
 # --- Guardrails ---
 # guardrails:

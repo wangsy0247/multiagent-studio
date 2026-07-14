@@ -13,7 +13,7 @@ class UserConfig(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True, unique=True)
-    default_model: str = Field(default="gpt-4o", max_length=100)
+    default_model: str = Field(default="", max_length=100)  # 空=使用系统默认
     tools_enabled: list = Field(default_factory=list, sa_column=Column(JSON))
     mcp_config: dict = Field(default_factory=dict, sa_column=Column(JSON))
     max_concurrent_subagents: int = Field(default=3)
