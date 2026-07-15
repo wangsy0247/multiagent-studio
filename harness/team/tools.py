@@ -58,6 +58,7 @@ def create_team_tools(
     teammates: dict | None = None,
     role: str = "member",
     spawn_callback: Any = None,  # async callable(agent_name: str) -> str
+    event_emitter: Any = None,   # async callable(event: dict) — SSE 事件发射器
 ) -> list[BaseTool]:
     """构建 Team 模式专用工具集, 按角色过滤.
 
@@ -66,6 +67,7 @@ def create_team_tools(
               lead: LEAD_TOOLS + SHARED_TOOLS (11 个)
               member: SHARED_TOOLS + MEMBER_TOOLS (9 个)
         spawn_callback: Lead 专属, 用于动态 spawn 新 teammate 的回调.
+        event_emitter: SSE 事件发射器, task_create/task_update 会通过它推送前端更新.
     """
 
     # ═════════════════════════════════════════════════════════════════
@@ -230,6 +232,15 @@ def create_team_tools(
             assigned_agent=assigned_agent if assigned_agent else None,
             dependencies=dependencies or [], priority=priority,
         )
+        # ── SSE: 推送任务创建事件到前端 ──
+        if event_emitter is not None:
+            try:
+                await event_emitter({
+                    "type": "team_task_update",
+                    "task": task.model_dump(),
+                })
+            except Exception:
+                pass
         return (f"任务已创建:\n- ID: {task.id}\n- 标题: {task.title}\n"
                 f"- 状态: {task.status}\n- 分配: {task.assigned_agent or '待分配'}")
 
@@ -274,6 +285,15 @@ def create_team_tools(
         updated = await task_store.update_task(task_id, **updates)
         if updated is None:
             return f"Error: Failed to update task '{task_id}'"
+        # ── SSE: 推送任务更新事件到前端 ──
+        if event_emitter is not None:
+            try:
+                await event_emitter({
+                    "type": "team_task_update",
+                    "task": updated.model_dump(),
+                })
+            except Exception:
+                pass
         return f"任务 [{task_id}] 已更新: {updated.title} → {updated.status.value}"
 
     @tool

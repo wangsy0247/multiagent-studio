@@ -1,7 +1,7 @@
 """TeamTaskStore — 持久化任务板，支持依赖解析和原子更新。
 
 任务板以 JSON 文件存储:
-    {data_root}/users/{user_id}/team_tasks/{project_id}.json
+    {data_root}/users/{user_id}/projects/{project_id}/tasks.json
 
 支持:
 - CRUD 操作
@@ -42,9 +42,9 @@ class TeamTaskStore:
         self._project_id = project_id
         self._user_id = user_id
         paths = get_paths()
-        self._tasks_dir = paths.base_dir / "users" / user_id / "team_tasks"
+        self._tasks_dir = paths.base_dir / "users" / user_id / "projects" / project_id
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
-        self._file = self._tasks_dir / f"{project_id}.json"
+        self._file = self._tasks_dir / "tasks.json"
         # 内存缓存（受文件锁保护）
         self._cache: list[TeamTask] | None = None
         self._cache_mtime: float = 0.0
@@ -157,7 +157,11 @@ class TeamTaskStore:
         return task
 
     async def update_task(self, task_id: str, **fields: Any) -> TeamTask | None:
-        """更新任务字段."""
+        """更新任务字段 (自动将 status 字符串转为枚举，消除 Pydantic 序列化警告)."""
+        # 防御：字符串 status → TeamTaskStatus 枚举
+        if "status" in fields and isinstance(fields["status"], str):
+            fields["status"] = TeamTaskStatus(fields["status"])
+
         result: TeamTask | None = None
 
         with open(self._file, "a+") as f:

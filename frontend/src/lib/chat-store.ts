@@ -441,6 +441,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           event.agent_name || event.subagent_name || "unknown",
           (event.status as TeamMemberRuntimeStatus) || "idle",
           event.task_id || event.current_task_id,
+          event.task_title,
+          event.started_at,
         );
         break;
       }

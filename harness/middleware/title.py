@@ -44,6 +44,11 @@ class TitleMiddleware(HarnessAgentMiddleware):
         if state.get("title_generated"):
             return None
 
+        # ── 共享去重标志 (mutable list, 跨多次 graph run 共享) ──
+        title_emitted_ref: list | None = self.config.get("_title_emitted_ref")
+        if title_emitted_ref and title_emitted_ref[0]:
+            return None
+
         messages = state.get("messages", [])
         has_ai = any(isinstance(m, AIMessage) for m in messages)
         if not has_ai:
@@ -62,6 +67,23 @@ class TitleMiddleware(HarnessAgentMiddleware):
             return None
 
         logger.info("Title generated: %s", title)
+
+        # ── 标记已生成, 防止后续重复 ──
+        if title_emitted_ref is not None:
+            title_emitted_ref[0] = True
+
+        # ── 回调: 将标题推送到 SSE 事件队列 ──
+        on_title = self.config.get("on_title")
+        if on_title is not None:
+            try:
+                import asyncio
+                if asyncio.iscoroutinefunction(on_title):
+                    await on_title(title)
+                else:
+                    on_title(title)
+            except Exception as exc:
+                logger.warning("on_title callback failed: %s", exc)
+
         return {
             "suggested_title": title,
             "title_generated": True,

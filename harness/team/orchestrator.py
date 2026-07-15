@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -50,13 +51,31 @@ def _now_iso() -> str:
 
 
 async def _load_project_json(project_id: str, user_id: str) -> dict[str, Any] | None:
-    """加载项目 JSON 文件."""
+    """加载项目 JSON 文件 (兼容新旧两种存储格式).
+
+    新格式: projects/{pid}/project.json
+    旧格式: projects/{pid}.json  → 自动迁移到新格式
+    """
     paths = get_paths()
-    proj_path = paths.base_dir / "users" / user_id / "projects" / f"{project_id}.json"
-    if not proj_path.exists():
-        return None
-    with open(proj_path) as f:
-        return json.load(f)
+    new_path = paths.base_dir / "users" / user_id / "projects" / project_id / "project.json"
+    old_path = paths.base_dir / "users" / user_id / "projects" / f"{project_id}.json"
+
+    if new_path.exists():
+        with open(new_path) as f:
+            return json.load(f)
+
+    # ── 向后兼容: 旧格式自动迁移 ──
+    if old_path.exists():
+        logger.info("Migrating project '%s' from old format → new format", project_id)
+        with open(old_path) as f:
+            project = json.load(f)
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(new_path, "w") as f:
+            json.dump(project, f, indent=2, ensure_ascii=False)
+        old_path.unlink()
+        return project
+
+    return None
 
 
 class TeamOrchestrator:
@@ -80,6 +99,7 @@ class TeamOrchestrator:
         subagent_manager: Any = None,
         skill_storage: Any = None,
         effective_config: Any = None,
+        checkpointer: Any = None,  # LangGraph BaseCheckpointSaver
     ) -> None:
         self._project_id = project_id
         self._thread_id = thread_id
@@ -89,6 +109,7 @@ class TeamOrchestrator:
         self._subagent_manager = subagent_manager
         self._skill_storage = skill_storage
         self._effective_config = effective_config  # Lead's EffectiveConfig
+        self._checkpointer = checkpointer
 
         # ── 核心组件 ──
         self.task_store = TeamTaskStore(project_id, user_id)
@@ -108,7 +129,7 @@ class TeamOrchestrator:
 
         # ── Tracing ──
         from harness.config.paths import get_paths
-        trace_dir = get_paths().base_dir / "users" / user_id / "team_traces" / project_id / thread_id
+        trace_dir = get_paths().base_dir / "users" / user_id / "projects" / project_id / "traces" / thread_id
         langfuse_public_key = ""
         langfuse_secret_key = ""
         langfuse_host = ""
@@ -296,6 +317,7 @@ class TeamOrchestrator:
                 teammates=self.teammates,
                 role=role,
                 spawn_callback=None,
+                event_emitter=self._event_queue.put,
             )
             tools.extend(team_tools)
 
@@ -322,8 +344,11 @@ class TeamOrchestrator:
                 event_queue=self._event_queue,
                 role=role,
                 lead_name=lead_name,
+                thread_id=self._thread_id,
+                project_id=self._project_id,
                 tracer=self.tracer,
                 effective_config=member_eff,
+                checkpointer=self._checkpointer,
             )
             await teammate.spawn()
             self.teammates[name] = teammate
@@ -435,6 +460,7 @@ class TeamOrchestrator:
                 teammates=self.teammates,
                 role="lead",
                 spawn_callback=_on_spawn,
+                event_emitter=self._event_queue.put,
             )
             tools.extend(team_tools)
 
@@ -455,9 +481,12 @@ class TeamOrchestrator:
                 event_queue=self._event_queue,
                 role="lead",
                 lead_name=lead_name,
+                thread_id=self._thread_id,
+                project_id=self._project_id,
                 tracer=self.tracer,
                 effective_config=lead_eff,
                 soul_override=lead_soul,
+                checkpointer=self._checkpointer,
             )
             await teammate.spawn()
             self.teammates[lead_name] = teammate
@@ -521,13 +550,9 @@ class TeamOrchestrator:
                             yield await self._emit_team_error(
                                 f"Lead Agent 分析失败: {lead.last_error or '未知错误'}")
                             break
-                        # drain event queue + 进度事件
+                        # drain event queue
                         while not self._event_queue.empty():
                             yield self._event_queue.get_nowait()
-                        if i % 20 == 0:  # 每 10s 发一次进度
-                            yield await self._emit_team_status(
-                                "triage",
-                                f"Lead Agent 正在分析目标... (状态: {lead.status.value})")
                         await asyncio.sleep(0.5)
 
                     if lead.last_error:
@@ -611,13 +636,24 @@ class TeamOrchestrator:
                             if (tm.status == TeammateStatus.IDLE and tm.current_task_id is None
                                     and name not in self._notified_idle):
                                 self._notified_idle.add(name)
+                                # ── SSE: 成员状态变更 → 前端 Members 标签 ──
+                                await self._event_queue.put(await self._emit_member_status(
+                                    name, "idle"))
                                 lead_notify = self._get_lead()
                                 if lead_notify and lead_notify.name != name:
-                                    await self.message_bus.send(TeamMessage(
+                                    msg = TeamMessage(
                                         from_agent=name, to_agent=lead_notify.name,
                                         msg_type=TeamMessageType.LIFECYCLE,
                                         content=f"已完成 {tm.completed_tasks} 个任务, 等待新任务",
-                                    ))
+                                    )
+                                    await self.message_bus.send(msg)
+                                    # ── SSE: 推送消息事件到前端 ──
+                                    await self._event_queue.put({
+                                        "type": "team_message",
+                                        "thread_id": self._thread_id,
+                                        "project_id": self._project_id,
+                                        "message": msg.model_dump(),
+                                    })
                             elif tm.status == TeammateStatus.WORKING:
                                 # 重新进入 WORKING → 清除标记, 下次完成时可再通知
                                 self._notified_idle.discard(name)
@@ -712,6 +748,10 @@ class TeamOrchestrator:
         await self.task_store.update_task(task.id, status=TeamTaskStatus.IN_PROGRESS)
         await tm.assign_task(task)
         self._progress_event.set()
+        # ── SSE: 任务更新 + 成员状态变更 ──
+        await self._event_queue.put(await self._emit_task_update(task))
+        await self._event_queue.put(await self._emit_member_status(
+            tm.name, "busy", task_id=task.id, task_title=task.title))
 
     def _select_idle_teammate(self) -> TeammateAgent | None:
         """选择空闲且健康的 teammate (负载均衡: 已完成任务少的优先)."""
@@ -913,3 +953,28 @@ class TeamOrchestrator:
     async def _emit_team_error(self, message: str) -> dict[str, Any]:
         return {"type": "team_error", "thread_id": self._thread_id,
                 "project_id": self._project_id, "content": message}
+
+    async def _emit_task_update(self, task: TeamTask) -> dict[str, Any]:
+        """发射任务更新 SSE 事件 → 前端 team-store.addTask()."""
+        return {
+            "type": "team_task_update",
+            "thread_id": self._thread_id,
+            "project_id": self._project_id,
+            "task": task.model_dump(),
+        }
+
+    async def _emit_member_status(
+        self, agent_name: str, status: str, task_id: str = "", task_title: str = "",
+    ) -> dict[str, Any]:
+        """发射成员运行时状态 SSE 事件 → 前端 team-store.updateMemberStatus()."""
+        return {
+            "type": "member_status",
+            "thread_id": self._thread_id,
+            "project_id": self._project_id,
+            "agent_name": agent_name,
+            "status": status,
+            "task_id": task_id or "",
+            "current_task_id": task_id or "",
+            "task_title": task_title or "",
+            "started_at": _now_iso() if status == "busy" else "",
+        }

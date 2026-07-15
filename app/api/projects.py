@@ -2,6 +2,7 @@
 
 import json as _json
 import logging
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -45,13 +46,43 @@ def _resolve_user_id(explicit: str | None, authorization: str | None = None) -> 
 # ── 路径工具 ──
 
 def _proj_dir(user_id: str) -> Path:
+    """用户项目根目录: {base}/users/{uid}/projects/."""
     return get_paths().base_dir / "users" / user_id / "projects"
 
 
+def _project_file(project_id: str, user_id: str) -> Path:
+    """单个项目的元数据文件: {base}/users/{uid}/projects/{pid}/project.json.
+
+    向后兼容旧格式 projects/{pid}.json: 若存在则自动迁移到新格式.
+    """
+    new_path = _proj_dir(user_id) / project_id / "project.json"
+    old_path = _proj_dir(user_id) / f"{project_id}.json"
+
+    if new_path.exists():
+        return new_path
+
+    # 旧格式自动迁移
+    if old_path.exists():
+        logger.info("Migrating project '%s' from old format → new format", project_id)
+        old_data = _json.loads(old_path.read_text())
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        new_path.write_text(_json.dumps(old_data, indent=2))
+        old_path.unlink()
+        return new_path
+
+    return new_path  # 新项目, 尚未创建
+
+
+def _project_dir(project_id: str, user_id: str) -> Path:
+    """单个项目目录: {base}/users/{uid}/projects/{pid}/."""
+    return _proj_dir(user_id) / project_id
+
+
 def _tasks_path(project_id: str, user_id: str) -> Path:
-    d = get_paths().base_dir / "users" / user_id / "tasks"
+    """项目任务文件: {base}/users/{uid}/projects/{pid}/tasks.json."""
+    d = _project_dir(project_id, user_id)
     d.mkdir(parents=True, exist_ok=True)
-    return d / f"{project_id}.json"
+    return d / "tasks.json"
 
 
 def _load_tasks(project_id: str, user_id: str) -> list:
@@ -77,9 +108,23 @@ async def list_projects(
     if not d.exists():
         return {"projects": [], "count": 0}
     projects = []
+    seen: set[str] = set()
+    # 新格式: projects/{pid}/project.json
+    for f in sorted(d.glob("*/project.json")):
+        try:
+            proj = _json.loads(f.read_text())
+            if proj.get("id") not in seen:
+                projects.append(proj)
+                seen.add(proj.get("id", ""))
+        except Exception:
+            pass
+    # 旧格式兼容: projects/{pid}.json (扁平文件)
     for f in sorted(d.glob("*.json")):
         try:
-            projects.append(_json.loads(f.read_text()))
+            proj = _json.loads(f.read_text())
+            if proj.get("id") not in seen:
+                projects.append(proj)
+                seen.add(proj.get("id", ""))
         except Exception:
             pass
     return {"projects": projects, "count": len(projects)}
@@ -104,7 +149,9 @@ async def create_project(request: Request):
         "created_at": now,
         "updated_at": now,
     }
-    (d / f"{pid}.json").write_text(_json.dumps(project, indent=2))
+    p = _project_file(pid, user_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps(project, indent=2))
     return project
 
 
@@ -115,7 +162,7 @@ async def get_project(
     authorization: str | None = Header(None, include_in_schema=False),
 ):
     uid = _resolve_user_id(user_id, authorization)
-    p = _proj_dir(uid) / f"{project_id}.json"
+    p = _project_file(project_id, uid)
     if not p.exists():
         raise HTTPException(404, "Project not found")
     return _json.loads(p.read_text())
@@ -126,7 +173,7 @@ async def update_project(project_id: str, request: Request):
     body = await request.json()
     auth_header = request.headers.get("Authorization")
     user_id = _resolve_user_id(body.get("user_id"), auth_header)
-    p = _proj_dir(user_id) / f"{project_id}.json"
+    p = _project_file(project_id, user_id)
     if not p.exists():
         raise HTTPException(404, "Project not found")
     project = _json.loads(p.read_text())
@@ -145,10 +192,16 @@ async def delete_project(
     authorization: str | None = Header(None, include_in_schema=False),
 ):
     uid = _resolve_user_id(user_id, authorization)
-    p = _proj_dir(uid) / f"{project_id}.json"
-    if not p.exists():
+    # 删除新格式目录 (如果存在)
+    d = _project_dir(project_id, uid)
+    if d.exists():
+        shutil.rmtree(d)
+    # 兼容旧格式文件
+    old = _proj_dir(uid) / f"{project_id}.json"
+    if old.exists():
+        old.unlink()
+    if not d.exists() and not old.exists():
         raise HTTPException(404, "Project not found")
-    p.unlink()
     return {"status": "deleted", "id": project_id}
 
 
@@ -158,7 +211,7 @@ async def add_member(project_id: str, request: Request):
     auth_header = request.headers.get("Authorization")
     user_id = _resolve_user_id(body.get("user_id"), auth_header)
     agent_name = body.get("agent_name", "")
-    p = _proj_dir(user_id) / f"{project_id}.json"
+    p = _project_file(project_id, user_id)
     if not p.exists():
         raise HTTPException(404, "Project not found")
     project = _json.loads(p.read_text())
@@ -179,7 +232,7 @@ async def remove_member(
     authorization: str | None = Header(None, include_in_schema=False),
 ):
     uid = _resolve_user_id(user_id, authorization)
-    p = _proj_dir(uid) / f"{project_id}.json"
+    p = _project_file(project_id, uid)
     if not p.exists():
         raise HTTPException(404, "Project not found")
     project = _json.loads(p.read_text())
@@ -205,12 +258,18 @@ async def create_task(project_id: str, request: Request):
     auth_header = request.headers.get("Authorization")
     user_id = _resolve_user_id(body.get("user_id"), auth_header)
     tasks = _load_tasks(project_id, user_id)
+    # 校验 status (与后端 TeamTaskStatus 5 态保持一致)
+    valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
+    raw_status = body.get("status", "pending")
+    if raw_status not in valid_statuses:
+        raise HTTPException(400, f"Invalid status: {raw_status}. Must be one of {valid_statuses}")
+
     task = {
         "id": str(uuid.uuid4())[:8],
         "project_id": project_id,
         "title": body.get("title", ""),
         "description": body.get("description", ""),
-        "status": "todo",
+        "status": raw_status,
         "assigned_agent": body.get("assigned_agent"),
         "priority": body.get("priority", "medium"),
         "created_at": datetime.now().isoformat(),
@@ -231,6 +290,11 @@ async def update_task(project_id: str, task_id: str, request: Request):
         if t["id"] == task_id:
             for k in ("title", "description", "status", "assigned_agent", "priority"):
                 if k in body:
+                    # 校验 status 合法性
+                    if k == "status":
+                        valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
+                        if body[k] not in valid_statuses:
+                            raise HTTPException(400, f"Invalid status: {body[k]}. Must be one of {valid_statuses}")
                     t[k] = body[k]
             t["updated_at"] = datetime.now().isoformat()
             _save_tasks(project_id, tasks, user_id)

@@ -13,6 +13,21 @@ interface Project { id: string; name: string; description: string; members: stri
 interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; }
 interface Agent { name: string; display_name: string; description: string; }
 
+function ElapsedTimer({ startedAt }: { startedAt: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = new Date(startedAt).getTime();
+    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  const display = m > 0 ? `${m}m ${s}s` : `${s}s`;
+  return <span className="text-[10px] text-blue-500 font-mono ml-1">{display}</span>;
+}
+
 type TabType = "chat" | "tasks" | "members";
 
 export default function ProjectDetailPage() {
@@ -307,14 +322,13 @@ function TasksTab({ projectId }: { projectId: string }) {
     }
   });
 
+  // 5 态看板 — 与后端 TeamTaskStatus 对齐 (A2A 兼容)
   const columns: { key: ProjectTaskStatus; label: string; color: string }[] = [
-    { key: "todo", label: "待办", color: "bg-slate-100" },
+    { key: "pending", label: "待办", color: "bg-slate-100" },
     { key: "in_progress", label: "进行中", color: "bg-blue-100" },
-    { key: "in_review", label: "审阅中", color: "bg-yellow-100" },
     { key: "completed", label: "已完成", color: "bg-green-100" },
     { key: "failed", label: "失败", color: "bg-red-100" },
-    { key: "rejected", label: "已驳回", color: "bg-orange-100" },
-    { key: "merged", label: "已合并", color: "bg-purple-100" },
+    { key: "cancelled", label: "已取消", color: "bg-orange-100" },
   ];
 
   return (
@@ -343,7 +357,7 @@ function TasksTab({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      <div className="grid grid-cols-7 gap-2 h-[calc(100%-4rem)]">
+      <div className="grid grid-cols-5 gap-2 h-[calc(100%-4rem)]">
         {columns.map((col) => (
           <div key={col.key} className="flex flex-col">
             <div className={`text-xs font-medium px-2 py-1.5 rounded-lg mb-2 ${col.color} text-slate-700`}>
@@ -436,8 +450,8 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
   // Lead 是第一个 member (orchestrator 的 _resolve_lead_identity 保证)
   const leadName = members.length > 0 ? members[0] : null;
 
-  const statusLabels: Record<string, string> = { idle: "空闲", working: "执行中", spawning: "启动中", shutting_down: "关闭中", failed: "失败" };
-  const statusColors: Record<string, string> = { idle: "bg-slate-300", working: "bg-blue-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
+  const statusLabels: Record<string, string> = { idle: "空闲", busy: "执行中", spawning: "启动中", shutting_down: "关闭中", failed: "失败" };
+  const statusColors: Record<string, string> = { idle: "bg-slate-300", busy: "bg-blue-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
 
   return (
     <div className="max-w-2xl mx-auto p-6">
@@ -481,6 +495,9 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
                         {isLead ? <Star className="w-3.5 h-3.5 text-amber-500" /> : <span>🤖</span>}
                         {a.display_name || a.name}
                         <span className="text-xs text-slate-400 font-normal">({statusLabels[status] || status})</span>
+                        {runtime?.started_at && status === "busy" && (
+                          <ElapsedTimer startedAt={runtime.started_at} />
+                        )}
                         {isLead && (
                           <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">
                             Team Lead

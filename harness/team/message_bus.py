@@ -8,7 +8,7 @@
 - 消息循环检测: 检测 A↔B 乒乓消息
 
 目录结构:
-    {data_root}/users/{user_id}/team_messages/{project_id}/inbox/
+    {data_root}/users/{user_id}/projects/{project_id}/messages/inbox/
         lead.jsonl
         alice.jsonl
         bob.jsonl
@@ -44,7 +44,7 @@ class TeamMessageBus:
         self._project_id = project_id
         self._user_id = user_id
         paths = get_paths()
-        self._inbox_dir = paths.base_dir / "users" / user_id / "team_messages" / project_id / "inbox"
+        self._inbox_dir = paths.base_dir / "users" / user_id / "projects" / project_id / "messages" / "inbox"
         self._inbox_dir.mkdir(parents=True, exist_ok=True)
 
         # ── 实时通知: agent_name → asyncio.Event ──

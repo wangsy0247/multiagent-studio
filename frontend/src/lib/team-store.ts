@@ -26,7 +26,8 @@ interface TeamState {
     agentName: string,
     status: TeamMemberRuntimeStatus,
     taskId?: string,
-    taskTitle?: string
+    taskTitle?: string,
+    startedAt?: string,
   ) => void;
   addTask: (task: ProjectTask) => void;
   updateTask: (task: Partial<ProjectTask> & { id: string }) => void;
@@ -57,7 +58,7 @@ export const useTeamStore = create<TeamState>((set) => ({
       })),
     }),
 
-  updateMemberStatus: (agentName, status, taskId, taskTitle) =>
+  updateMemberStatus: (agentName, status, taskId, taskTitle, startedAt) =>
     set((state) => ({
       members: state.members.map((m) =>
         m.agent_name === agentName
@@ -66,6 +67,7 @@ export const useTeamStore = create<TeamState>((set) => ({
               status,
               current_task_id: taskId || m.current_task_id,
               current_task_title: taskTitle || m.current_task_title,
+              started_at: startedAt !== undefined ? startedAt : m.started_at,
             }
           : m
       ),

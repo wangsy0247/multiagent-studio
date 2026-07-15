@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 
 from harness.config.agents_config import load_agent_config, load_agent_soul
+from harness.models import HarnessState
 from harness.team.context import TeamContext
 from harness.team.message_bus import TeamMessageBus
 from harness.team.models import (
@@ -73,9 +74,12 @@ class TeammateAgent:
         event_queue: asyncio.Queue | None = None,
         role: str = "member",
         lead_name: str | None = None,
+        thread_id: str = "",
+        project_id: str = "",
         tracer: Any = None,
         effective_config: Any = None,
         soul_override: str | None = None,
+        checkpointer: Any = None,  # LangGraph BaseCheckpointSaver | None
     ) -> None:
         self.name = agent_name
         self.llm = llm
@@ -87,7 +91,10 @@ class TeammateAgent:
         self._event_queue = event_queue
         self._role = role
         self._lead_name = lead_name
+        self._thread_id = thread_id
+        self._project_id = project_id
         self._tracer = tracer
+        self._checkpointer = checkpointer
 
         # ── EffectiveConfig (优先) + 向后兼容旧 AgentConfig ──
         self._effective_config = effective_config
@@ -113,7 +120,17 @@ class TeammateAgent:
         self.failed_tasks: int = 0
         self.last_error: str | None = None
 
-        # ── 对话历史 (跨任务保持) ──
+        # ── 稳定 checkpoint thread_id (跨 graph run 持久化状态) ──
+        # 格式: team-{project_id}-{thread_id}-{agent_name}
+        # checkpointer=None 时退化为随机 ID (无持久化)
+        _pid = project_id or "noproject"
+        _tid = thread_id or "nothread"
+        if checkpointer is not None:
+            self._checkpoint_thread_id = f"team-{_pid}-{_tid}-{agent_name}"
+        else:
+            self._checkpoint_thread_id = f"teammate-{agent_name}-{uuid.uuid4()}"
+
+        # ── 对话历史 (跨任务保持, checkpointer 启用时自动从 state 恢复) ──
         self._messages: list[Any] = []
 
         # ── 事件驱动唤醒 ──
@@ -133,6 +150,9 @@ class TeammateAgent:
 
         # ── asyncio Task 引用 ──
         self._task: asyncio.Task[None] | None = None
+
+        # ── Title 去重标志 (仅 Lead, 防止多次 graph run 重复生成标题) ──
+        self._title_emitted = [False] if role == "lead" else None
 
         # ── 构建 system prompt (只构建一次) ──
         self._system_prompt = self._build_system_prompt()
@@ -304,6 +324,18 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         memory_enabled = eff.memory_injection_enabled if eff else True
         guardrail_enabled = eff.guardrail_enabled if eff else False
 
+        # ── Title 回调: 生成标题后推送到 SSE 事件队列 ──
+        _event_queue = self._event_queue
+        _thread_id = self._thread_id
+
+        async def _on_title(title: str) -> None:
+            if _event_queue is not None:
+                await _event_queue.put({
+                    "type": "title_update",
+                    "title": title,
+                    "thread_id": _thread_id,
+                })
+
         middlewares = build_teammate_middlewares(
             workspace_root=workspace_root,
             agent_name=self.name,
@@ -316,6 +348,10 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             tool_max_retries=3,
             keep_dynamic_context=is_lead,
             keep_clarification=is_lead,
+            keep_title=is_lead,
+            title_model=eff.title_model if eff else "gpt-4o-mini",
+            title_emitted_ref=self._title_emitted,
+            on_title=_on_title if is_lead else None,
             custom_middlewares=[InboxDrainMiddleware()],
             summary_model=eff.summary_model if eff else "",
             memory_model=eff.memory_model or eff.model if eff else "",
@@ -432,19 +468,15 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         """WORKING 阶段 — create_agent() + 预构建中间件 + astream_events.
 
         中间件链在 __init__ 中按角色区分:
-          Lead:   DynamicContext + Todo + Clarification, 无 SubagentLimit (委派走 delegate_to_member)
-          Member: SubagentLimit (可用 task 委派子任务), 无 DynamicContext/Todo/Clarification
-          Lead 层数 ≈19, Member 层数 ≈18
-        统一排除: TitleMiddleware
+          Lead:   DynamicContext + Todo + Clarification + Title, 无 SubagentLimit (委派走 delegate_to_member)
+          Member: SubagentLimit (可用 task 委派子任务), 无 DynamicContext/Todo/Clarification/Title
+          Lead 层数 ≈20, Member 层数 ≈18
         """
         from langchain.agents import create_agent
         from langchain_core.runnables import RunnableConfig
 
         # ── s17: 身份重注入 (防止长上下文后遗忘) ──
         self._inject_identity()
-
-        # ── 只保留最近消息防止上下文爆炸 ──
-        recent = self._messages[-50:] if len(self._messages) > 50 else self._messages
 
         # ── Tracing: 标记工作开始 ──
         if self._tracer is not None:
@@ -454,11 +486,14 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
         # ── create_agent + astream_events ──
         try:
+            # HarnessState + checkpointer → LangGraph 状态持久化 (短期/会话记忆)
             agent = create_agent(
                 model=self.llm,
                 tools=self._tools,
                 system_prompt=self._system_prompt,
                 middleware=self._middlewares,
+                state_schema=HarnessState,
+                checkpointer=self._checkpointer,
             )
 
             max_turns = self._agent_config.max_turns if self._agent_config else MAX_WORK_TURNS
@@ -469,13 +504,19 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 if lc_callback is not None:
                     callbacks.append(lc_callback)
             config = RunnableConfig(
-                configurable={"thread_id": f"teammate-{self.name}-{uuid.uuid4()}"},
+                configurable={"thread_id": self._checkpoint_thread_id},
                 recursion_limit=max_turns * 3,
                 callbacks=callbacks if callbacks else None,
             )
 
-            input_state = {"messages": recent} if recent else {"messages": []}
-            final_messages: list[Any] = []
+            # input_state: 仅传入新任务消息 → checkpointer 恢复历史 + add_messages 合并
+            recent = self._messages[-50:] if len(self._messages) > 50 else self._messages
+            input_state: dict[str, Any] = {
+                "messages": recent,
+                "thread_id": self._thread_id,
+                "user_id": self._user_id,
+            }
+            final_output: dict[str, Any] = {}
 
             # astream_events — 推送实时思考 / 工具调用事件到 SSE 流
             async for event in agent.astream_events(input_state, config, version="v2"):
@@ -516,11 +557,12 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 elif kind == "on_chain_end" and event.get("name") == "LangGraph":
                     result = data.get("output", {})
                     if isinstance(result, dict):
-                        final_messages = list(result.get("messages", []))
+                        final_output = result
 
-            # 回写消息历史 — 保留执行期间收到的 inbox 消息
-            if final_messages:
-                self._messages = list(final_messages)
+            # 回写消息历史 (有 checkpointer 时 state 已自动持久化)
+            out_messages = final_output.get("messages", [])
+            if out_messages:
+                self._messages = list(out_messages)
             # drain 执行期间可能到达的残余 inbox 消息并追加
             late_inbox = await self._message_bus.read_inbox(self.name)
             for msg in late_inbox:

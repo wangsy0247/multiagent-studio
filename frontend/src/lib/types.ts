@@ -110,6 +110,7 @@ export interface SSEEvent {
   task?: ProjectTask;
   task_id?: string;
   task_title?: string;
+  started_at?: string;
   message?: TeamMessage;
   members?: string[];
   mode?: string;
@@ -239,9 +240,11 @@ export interface Project {
   updated_at: string;
 }
 
+/** 任务状态 — 与后端 TeamTaskStatus 5 态对齐 (A2A 兼容).
+ *  pending → in_progress → completed / failed / cancelled.
+ */
 export type ProjectTaskStatus =
-  | "todo" | "in_progress" | "in_review"
-  | "completed" | "failed" | "rejected" | "merged";
+  | "pending" | "in_progress" | "completed" | "failed" | "cancelled";
 
 export interface ProjectTask {
   id: string;
@@ -267,6 +270,8 @@ export interface TeamMemberRuntime {
   current_task_id?: string;
   current_task_title?: string;
   last_result?: string;
+  /** ISO 时间戳 — status=busy 时记录开始时间，前端用于显示计时 */
+  started_at?: string;
 }
 
 export type TeamMessageType =

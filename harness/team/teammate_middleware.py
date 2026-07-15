@@ -2,8 +2,7 @@
 
 与 Lead Agent 的 20 层链一致, 但排除:
   - ClarificationMiddleware  (teammate 不与用户交互)
-  - DynamicContextMiddleware  (teammate 从 Team 系统获取上下文)
-  - TitleMiddleware           (teammate 不生成对话标题)
+  - TitleMiddleware           (仅 Lead 通过 keep_title=True 启用)
 
 注册顺序与 AGENT_MIDDLEWARE_ORDER 对齐:
   [0-2]  Sandbox infrastructure
@@ -11,7 +10,8 @@
   [5]    Guardrail
   [6]    SandboxAudit
   [7]    ToolErrorHandling
-  [8]    Summarization (替换 DynamicContext)
+  [7.5]  DynamicContext
+  [8]    Summarization
   [9]    Todo (Plan Mode)
   [10]   TokenUsage
   [11]   Memory
@@ -20,6 +20,8 @@
   [14]   SubagentLimit
   [15]   LoopDetection
   [16]   SafetyFinishReason
+  [17]   Clarification (仅 Lead)
+  [18]   Title (仅 Lead)
   [+ custom: InboxDrain 等]
 """
 
@@ -72,6 +74,7 @@ def build_teammate_middlewares(
     # Lead 专属
     keep_dynamic_context: bool = False,
     keep_clarification: bool = False,
+    keep_title: bool = False,  # 仅 Lead 生成对话标题
     # loop_detection 配置
     loop_cfg: dict[str, Any] | None = None,
     # 自定义中间件 (InboxDrain 等)
@@ -84,13 +87,18 @@ def build_teammate_middlewares(
     api_key: str = "",
     base_url: str = "",
     user_id: str = "",
+    # TitleMiddleware 配置 (仅 Lead)
+    title_model: str = "gpt-4o-mini",
+    title_emitted_ref: list | None = None,  # mutable [bool] 去重标志
+    on_title: Callable | None = None,      # async callable(title: str)
 ) -> list[AgentMiddleware]:
-    """构建 Teammate 完整中间件链 (17 层).
+    """构建 Teammate 完整中间件链 (17-18 层).
 
-    与 Lead Agent 的 20 层链一致, 排除:
-      - DynamicContextMiddleware (上下文来自 Team 系统)
-      - TitleMiddleware (teammate 不生成对话标题)
-      - ClarificationMiddleware (teammate 不直接与用户交互)
+    Lead 专属 (keep_title=True/keep_clarification=True):
+      - TitleMiddleware (生成对话标题, 仅首次)
+      - ClarificationMiddleware (向用户提问澄清)
+    Member 专属:
+      - SubagentLimitMiddleware (可委派子任务)
     """
     loop_cfg = loop_cfg or {}
     middlewares: list[AgentMiddleware] = []
@@ -174,6 +182,21 @@ def build_teammate_middlewares(
     if keep_clarification:
         from harness.middleware.clarification import ClarificationMiddleware
         middlewares.append(ClarificationMiddleware())
+
+    # [18] Title (仅 Lead — 首次回复后生成对话标题)
+    if keep_title:
+        from harness.middleware.title import TitleMiddleware
+        title_config: dict[str, Any] = {
+            "title_model": title_model,
+            "api_key": api_key,
+            "base_url": base_url,
+            "user_id": user_id,
+        }
+        if title_emitted_ref is not None:
+            title_config["_title_emitted_ref"] = title_emitted_ref
+        if on_title is not None:
+            title_config["on_title"] = on_title
+        middlewares.append(TitleMiddleware(title_config))
 
     # [+] 自定义中间件 (InboxDrainMiddleware 等)
     if custom_middlewares:

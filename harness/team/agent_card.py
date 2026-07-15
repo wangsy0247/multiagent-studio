@@ -1,7 +1,7 @@
 """AgentCard — 团队成员能力快照。
 
 单文件存储: 每个 project 一个 agent_card.json, 包含该项目的所有成员卡片。
-存储路径: {data_root}/users/{user_id}/project/{project_id}/agent_card.json
+存储路径: {data_root}/users/{user_id}/projects/{project_id}/agent_card.json
 
 JSON 结构:
     {
@@ -73,7 +73,7 @@ class AgentCard(BaseModel):
 def _card_file_path(project_id: str, user_id: str) -> Path:
     """返回项目的 agent_card.json 路径."""
     paths = get_paths()
-    return paths.base_dir / "users" / user_id / "project" / project_id / "agent_card.json"
+    return paths.base_dir / "users" / user_id / "projects" / project_id / "agent_card.json"
 
 
 def _ensure_dir(file_path: Path) -> None:

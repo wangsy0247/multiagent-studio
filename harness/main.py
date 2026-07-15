@@ -735,6 +735,7 @@ class HarnessService(_BaseService):
                 subagent_manager=self.subagent_manager,
                 skill_storage=self.skill_storage,
                 effective_config=effective_config,
+                checkpointer=self._checkpointer,
             )
             await orchestrator.initialize()
 
