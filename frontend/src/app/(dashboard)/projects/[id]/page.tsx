@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X } from "lucide-react";
+import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Star, Wrench, Brain } from "lucide-react";
 import { projectsAPI, agentsAPI } from "@/lib/api-client";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
 import ChatPanel from "@/components/chat/ChatPanel";
-import type { ProjectTaskStatus } from "@/lib/types";
+import type { ProjectTaskStatus, AgentCard } from "@/lib/types";
 
 interface Project { id: string; name: string; description: string; members: string[]; thread_count: number; task_count: number; }
 interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; }
@@ -354,7 +354,12 @@ function TasksTab({ projectId }: { projectId: string }) {
                 <div key={task.id} className="border border-slate-200 rounded-lg p-2 bg-white text-xs group">
                   <p className="text-slate-800 font-medium truncate">{task.title}</p>
                   {task.assigned_agent && (
-                    <p className="text-slate-400 mt-0.5">@{task.assigned_agent}</p>
+                    <p className="text-slate-400 mt-0.5 flex items-center gap-1">
+                      @{task.assigned_agent}
+                      {task.status === "in_progress" && (
+                        <span className="text-[10px] px-1 py-0 bg-green-50 text-green-600 rounded" title="已认领并执行中">🎯 执行中</span>
+                      )}
+                    </p>
                   )}
                   <div className="flex items-center gap-0.5 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex-wrap">
                     {columns.filter((c) => c.key !== col.key).slice(0, 4).map((c) => (
@@ -384,17 +389,22 @@ function TasksTab({ projectId }: { projectId: string }) {
 
 function MembersTab({ projectId, members, onUpdate }: { projectId: string; members: string[]; onUpdate: () => void }) {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [cards, setCards] = useState<Record<string, AgentCard>>({});
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   // 从 team-store 读取成员运行时状态
   const memberStatuses = useTeamStore((state) => state.members);
 
-  useEffect(() => { loadAgents(); }, []);
+  useEffect(() => { loadAll(); }, []);
 
-  async function loadAgents() {
+  async function loadAll() {
     try {
-      const { data } = await agentsAPI.list();
-      setAgents(data.agents || []);
+      const [agentsRes, cardsRes] = await Promise.all([
+        agentsAPI.list(),
+        projectsAPI.getAgentCards(projectId).catch(() => ({ data: { cards: {} } })),
+      ]);
+      setAgents(agentsRes.data.agents || []);
+      setCards(cardsRes.data.cards || {});
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   }
@@ -423,9 +433,11 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
     return { name, display_name: agent?.display_name || name, description: agent?.description || "" };
   });
   const availableAgents = agents.filter((a) => !members.includes(a.name));
+  // Lead 是第一个 member (orchestrator 的 _resolve_lead_identity 保证)
+  const leadName = members.length > 0 ? members[0] : null;
 
-  const statusLabels: Record<string, string> = { idle: "空闲", busy: "执行中", done: "完成", failed: "失败" };
-  const statusColors: Record<string, string> = { idle: "bg-slate-300", busy: "bg-blue-500", done: "bg-green-500", failed: "bg-red-500" };
+  const statusLabels: Record<string, string> = { idle: "空闲", working: "执行中", spawning: "启动中", shutting_down: "关闭中", failed: "失败" };
+  const statusColors: Record<string, string> = { idle: "bg-slate-300", working: "bg-blue-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
 
   return (
     <div className="max-w-2xl mx-auto p-6">
@@ -453,26 +465,81 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
       {memberAgents.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-10">暂无团队成员，请添加 Agent</p>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {memberAgents.map((a) => {
             const runtime = memberStatuses.find((m) => m.agent_name === a.name);
             const status = runtime?.status || "idle";
+            const card = cards[a.name];
+            const isLead = a.name === leadName;
             return (
-              <div key={a.name} className="flex items-center justify-between border border-slate-200 rounded-lg p-3">
-                <div className="flex items-center gap-3">
-                  <span className={`w-2.5 h-2.5 rounded-full ${statusColors[status] || "bg-slate-300"} ${status === "busy" ? "animate-pulse" : ""}`} />
-                  <div>
-                    <p className="text-sm font-medium text-slate-700">
-                      🤖 {a.display_name || a.name}
-                      <span className="ml-2 text-xs text-slate-400">({statusLabels[status] || status})</span>
-                    </p>
-                    <p className="text-xs text-slate-400">{a.description?.slice(0, 60)}</p>
-                    {runtime?.current_task_title && (
-                      <p className="text-xs text-blue-600 mt-0.5">📋 {runtime.current_task_title}</p>
-                    )}
+              <div key={a.name} className={`border rounded-xl p-4 bg-white transition-all ${isLead ? "border-amber-200 bg-amber-50/30" : "border-slate-200"}`}>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColors[status] || "bg-slate-300"}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5 flex-wrap">
+                        {isLead ? <Star className="w-3.5 h-3.5 text-amber-500" /> : <span>🤖</span>}
+                        {a.display_name || a.name}
+                        <span className="text-xs text-slate-400 font-normal">({statusLabels[status] || status})</span>
+                        {isLead && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">
+                            Team Lead
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">{a.description?.slice(0, 80)}</p>
+
+                      {/* ── Agent Card 能力展示 ── */}
+                      {card && (
+                        <div className="mt-3 space-y-2">
+                          {/* 模型 + 工具 */}
+                          <div className="flex items-center gap-3 text-[10px] text-slate-500 flex-wrap">
+                            {card.model && (
+                              <span className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-100 rounded">
+                                <Brain className="w-3 h-3" />
+                                {card.model}
+                              </span>
+                            )}
+                            {card.tools.length > 0 && (
+                              <span className="flex items-center gap-1">
+                                <Wrench className="w-3 h-3" />
+                                <span className="flex gap-1 flex-wrap">
+                                  {card.tools.slice(0, 6).map((t) => (
+                                    <span key={t} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-mono">{t}</span>
+                                  ))}
+                                  {card.tools.length > 6 && (
+                                    <span className="text-slate-400">…+{card.tools.length - 6}</span>
+                                  )}
+                                </span>
+                              </span>
+                            )}
+                          </div>
+                          {/* 技能 */}
+                          {card.skills.length > 0 && (
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <span className="text-[10px] text-slate-400 mr-1">技能:</span>
+                              {card.skills.map((s) => (
+                                <span key={s} className="text-[10px] px-1.5 py-0.5 bg-purple-50 text-purple-600 rounded">{s}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Lead 配置提示 */}
+                      {isLead && (
+                        <p className="text-[10px] text-amber-600 mt-2 bg-amber-50 rounded-lg px-2 py-1 inline-block">
+                          ⚙️ 使用 Default Agent 的模型配置 + 系统内置 Lead 行为指令
+                        </p>
+                      )}
+
+                      {runtime?.current_task_title && (
+                        <p className="text-xs text-blue-600 mt-1.5">📋 {runtime.current_task_title}</p>
+                      )}
+                    </div>
                   </div>
+                  <button onClick={() => handleRemove(a.name)} className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50 shrink-0">移除</button>
                 </div>
-                <button onClick={() => handleRemove(a.name)} className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">移除</button>
               </div>
             );
           })}

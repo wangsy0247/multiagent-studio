@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -442,11 +443,27 @@ class MemoryUpdater:
                 if fk is not None:
                     existing_keys.add(fk)
 
-        # Enforce max facts
+        # ── TTL 过期清理 ──
+        if config.memory_ttl_days > 0:
+            cutoff = datetime.now(UTC) - timedelta(days=config.memory_ttl_days)
+            cutoff_iso = cutoff.isoformat()
+            before_count = len(current_memory["facts"])
+            current_memory["facts"] = [
+                f for f in current_memory["facts"]
+                if f.get("createdAt", "") >= cutoff_iso
+            ]
+            removed = before_count - len(current_memory["facts"])
+            if removed > 0:
+                logger.info(
+                    "Memory TTL cleanup: removed %d expired facts (ttl=%d days)",
+                    removed, config.memory_ttl_days,
+                )
+
+        # ── 强制 max_facts: 保留最新的 N 条 (按 createdAt 降序) ──
         if len(current_memory["facts"]) > config.max_facts:
             current_memory["facts"] = sorted(
                 current_memory["facts"],
-                key=lambda f: f.get("confidence", 0), reverse=True,
+                key=lambda f: f.get("createdAt", ""), reverse=True,
             )[:config.max_facts]
 
         return current_memory

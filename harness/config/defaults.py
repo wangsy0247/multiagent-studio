@@ -26,6 +26,7 @@ SYSTEM_DEFAULTS: dict = {
     "memory": {
         "backend": "file",
         "max_facts": 10,
+        "ttl_days": 90,
         "injection_enabled": True,
         "max_injection_tokens": 500,
         "debounce_seconds": 120,

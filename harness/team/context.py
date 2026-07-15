@@ -2,7 +2,8 @@
 
 提供:
 - 项目元数据
-- 成员列表摘要
+- 成员列表摘要 (运行时状态)
+- 团队能力矩阵 (从 agent-card.json 加载)
 - 任务板摘要
 - 消息历史摘要
 
@@ -11,9 +12,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from harness.team.models import TeamMemberRuntime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,12 +30,21 @@ class TeamContext:
     project_description: str = ""
     thread_id: str = ""
     user_id: str = "default"
+    lead_name: str = ""  # Lead Agent 的名称 (用于消息路由)
 
     # 成员列表（运行时状态）
     members: list[TeamMemberRuntime] = field(default_factory=list)
 
+    # ── 团队能力缓存 (由 Orchestrator 注入) ──
+    _team_capabilities: dict[str, Any] = field(default_factory=dict, repr=False)
+    _team_capabilities_xml: str = ""  # 预格式化的 XML 片段
+
+    # ------------------------------------------------------------------
+    # 成员摘要 (运行时状态)
+    # ------------------------------------------------------------------
+
     def get_member_summary(self) -> str:
-        """生成成员摘要文本，用于注入 system prompt."""
+        """生成成员摘要文本 (运行时状态), 用于注入 system prompt."""
         if not self.members:
             return "(无成员)"
 
@@ -38,8 +52,10 @@ class TeamContext:
         for m in self.members:
             status_icon = {
                 "idle": "🟢",
-                "busy": "🔵",
-                "done": "✅",
+                "spawning": "🟡",
+                "working": "🔵",
+                "shutting_down": "🟠",
+                "shutdown": "⚫",
                 "failed": "❌",
             }.get(m.status, "⚪")
             task_info = f" (当前任务: {m.current_task_id})" if m.current_task_id else ""
@@ -49,7 +65,7 @@ class TeamContext:
         return "\n".join(lines)
 
     def get_project_context_xml(self) -> str:
-        """生成项目上下文的 XML 片段."""
+        """生成项目上下文 XML (含成员运行时状态)."""
         return f"""<project_context>
 <project_name>{self.project_name}</project_name>
 <project_description>{self.project_description}</project_description>
@@ -58,6 +74,37 @@ class TeamContext:
 {self.get_member_summary()}
 </team_members>
 </project_context>"""
+
+    # ------------------------------------------------------------------
+    # 团队能力矩阵 (agent cards)
+    # ------------------------------------------------------------------
+
+    def set_team_capabilities(self, cards: dict[str, Any]) -> None:
+        """设置团队能力矩阵并预格式化 XML.
+
+        由 Orchestrator.initialize() 在生成 agent cards 后调用.
+        """
+        from harness.team.agent_card import format_cards_for_prompt
+        self._team_capabilities = cards
+        if cards:
+            self._team_capabilities_xml = (
+                "<team_capabilities>\n"
+                + format_cards_for_prompt(cards)
+                + "\n</team_capabilities>"
+            )
+        else:
+            self._team_capabilities_xml = ""
+
+    def get_team_capabilities_xml(self) -> str:
+        """返回预格式化的团队能力 XML 片段.
+
+        包含每个 member 的工具、技能、描述, 用于 Lead 做任务分配决策.
+        """
+        return self._team_capabilities_xml
+
+    # ------------------------------------------------------------------
+    # 协作规则
+    # ------------------------------------------------------------------
 
     def get_team_collaboration_rules(self) -> str:
         """返回 Team 协作规则文本."""

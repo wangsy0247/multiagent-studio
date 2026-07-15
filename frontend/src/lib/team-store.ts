@@ -16,8 +16,11 @@ interface TeamState {
   messages: TeamMessage[];
   currentRound: number;
   maxRounds: number;
+  /** Lead triage result: null=未开始 self_solve=自处理 decompose=拆解分发 */
+  triageResult: "self_solve" | "decompose" | null;
 
   setRunning: (running: boolean) => void;
+  setTriageResult: (result: "self_solve" | "decompose" | null) => void;
   initMembers: (agentNames: string[], displayNames?: Record<string, string>) => void;
   updateMemberStatus: (
     agentName: string,
@@ -40,8 +43,10 @@ export const useTeamStore = create<TeamState>((set) => ({
   messages: [],
   currentRound: 0,
   maxRounds: 100,
+  triageResult: null,
 
   setRunning: (running) => set({ isRunning: running }),
+  setTriageResult: (result) => set({ triageResult: result }),
 
   initMembers: (agentNames, displayNames) =>
     set({
@@ -100,5 +105,6 @@ export const useTeamStore = create<TeamState>((set) => ({
       messages: [],
       currentRound: 0,
       maxRounds: 100,
+      triageResult: null,
     }),
 }));

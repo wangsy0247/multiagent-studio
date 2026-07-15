@@ -344,7 +344,10 @@ export default function AgentEditPage() {
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={canBeLead} onChange={(e) => setCanBeLead(e.target.checked)}
                 className="w-3.5 h-3.5 rounded border-slate-300" />
-              <span className="text-xs text-slate-600">可担任 Project Lead</span>
+              <span className="text-xs text-slate-600">可被选为 Team Lead (优先选择)</span>
+              <span className="text-[10px] text-slate-400 ml-1">
+                — Lead 使用 Default Agent 的模型配置 + 系统内置 Lead 行为指令
+              </span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={canDelegate} onChange={(e) => setCanDelegate(e.target.checked)}

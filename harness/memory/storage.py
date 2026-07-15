@@ -97,10 +97,42 @@ class FileMemoryStorage(MemoryStorage):
             return create_empty_memory()
         try:
             with open(file_path, encoding="utf-8") as f:
-                return json.load(f)
+                memory_data = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load memory file: %s", e)
             return create_empty_memory()
+
+        # ── 惰性清理: 过滤过期 facts ──
+        memory_data = self._maybe_cleanup_expired(memory_data)
+        return memory_data
+
+    def _maybe_cleanup_expired(self, memory_data: dict[str, Any]) -> dict[str, Any]:
+        """惰性清理过期 facts (仅当 TTL > 0 时生效)."""
+        cfg = get_memory_config()
+        ttl_days = getattr(cfg, "memory_ttl_days", 0)
+        if ttl_days <= 0:
+            return memory_data
+
+        facts: list[dict] = memory_data.get("facts", [])
+        if not facts:
+            return memory_data
+
+        from datetime import UTC, datetime, timedelta
+        cutoff = datetime.now(UTC) - timedelta(days=ttl_days)
+        cutoff_iso = cutoff.isoformat()
+
+        before = len(facts)
+        memory_data["facts"] = [
+            f for f in facts
+            if f.get("createdAt", "") >= cutoff_iso
+        ]
+        after = len(memory_data["facts"])
+        if after < before:
+            logger.info(
+                "Lazy cleanup: removed %d expired facts from memory file (ttl=%d days)",
+                before - after, ttl_days,
+            )
+        return memory_data
 
     @staticmethod
     def _cache_key(agent_name: str | None = None, *,

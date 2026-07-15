@@ -158,6 +158,7 @@ class EffectiveConfig:
     # 记忆
     memory_backend: str = "file"
     memory_max_facts: int = 10
+    memory_ttl_days: int = 90
     memory_injection_enabled: bool = True
     memory_max_injection_tokens: int = 500
     memory_debounce_seconds: float = 120.0
@@ -242,6 +243,7 @@ class EffectiveConfig:
             skills=merged.get("skills", []),
             memory_backend=mem.get("backend", "file"),
             memory_max_facts=int(mem.get("max_facts", 10)),
+            memory_ttl_days=int(mem.get("ttl_days", 90)),
             memory_injection_enabled=bool(mem.get("injection_enabled", True)),
             memory_max_injection_tokens=int(mem.get("max_injection_tokens", 500)),
             memory_debounce_seconds=float(mem.get("debounce_seconds", 120)),

@@ -197,6 +197,7 @@ class HarnessService(_BaseService):
             api_key="",
             base_url="",
             max_facts=bootstrap_eff.memory_max_facts,
+            memory_ttl_days=bootstrap_eff.memory_ttl_days,
             fact_confidence_threshold=bootstrap_eff.memory_fact_confidence_threshold,
             injection_enabled=bootstrap_eff.memory_injection_enabled,
             max_injection_tokens=bootstrap_eff.memory_max_injection_tokens,
@@ -495,8 +496,8 @@ class HarnessService(_BaseService):
             from harness.worktree.manager import GitWorktreeManager
 
             workspace = str(get_paths().sandbox_work_dir("cleanup"))
-            # 确保父目录存在
-            Path(workspace).parent.mkdir(parents=True, exist_ok=True)
+            # 确保 workspace 目录存在 (GitWorktreeManager.__init__ 会调用 Path.resolve()，要求路径存在)
+            Path(workspace).mkdir(parents=True, exist_ok=True)
             mgr = GitWorktreeManager(workspace)
             removed = await mgr.cleanup_stale()
             if removed:

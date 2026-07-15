@@ -1,6 +1,6 @@
 """TeammateAgent — 持久化 Teammate, 拥有自己的 agent loop.
 
-参考 learn-claude-code  _teammate_loop 设计:
+_teammate_loop 设计:
 - 独立 asyncio Task 持续运行
 - WORKING 阶段: 完整 ReAct agent loop, 多轮 LLM 推理
 - IDLE 阶段: 事件驱动等待 (消息 / 新任务), 不再 sleep() 轮询
@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
@@ -43,6 +44,11 @@ logger = logging.getLogger(__name__)
 IDLE_POLL_INTERVAL = 5.0       # IDLE 时 inbox 检查间隔 (秒)
 MAX_WORK_TURNS = 50            # WORKING 阶段最大 LLM 轮次
 
+# ── 方案 5: 任务认领常量 ──
+STARVATION_THRESHOLD_MINUTES = 2.0  # 任务创建 N 分钟后无人认领 → 饥饿预防
+CLAIM_THRESHOLD = 25.0              # 匹配分 ≥ 此值 → 认领
+STARVATION_SCORE = 100              # 饥饿加成 (超出阈值后任意 agent 可认领)
+
 
 class TeammateAgent:
     """持久化 Teammate Agent — 拥有自己的 agent loop + SOUL + 工具 + 记忆.
@@ -69,6 +75,7 @@ class TeammateAgent:
         lead_name: str | None = None,
         tracer: Any = None,
         effective_config: Any = None,
+        soul_override: str | None = None,
     ) -> None:
         self.name = agent_name
         self.llm = llm
@@ -85,7 +92,12 @@ class TeammateAgent:
         # ── EffectiveConfig (优先) + 向后兼容旧 AgentConfig ──
         self._effective_config = effective_config
         self._user_id = team_context.user_id
-        if effective_config is not None:
+
+        # ── SOUL 解析: soul_override > effective_config.agent_soul > SOUL.md ──
+        if soul_override is not None:
+            self._agent_config = None
+            self._agent_soul = soul_override
+        elif effective_config is not None:
             self._agent_config = None  # 统一用 effective_config
             self._agent_soul = effective_config.agent_soul
         else:
@@ -148,13 +160,18 @@ class TeammateAgent:
                 f"专注于 {self._agent_config.description}。"
             )
 
-        # 2. 项目上下文
+        # 2. 项目上下文 (含成员能力卡片)
         parts.append(self._team_context.get_project_context_xml())
 
-        # 3. 协作规则
+        # 3. 团队能力矩阵 (agent cards — 所有成员可见)
+        capabilities_xml = self._team_context.get_team_capabilities_xml()
+        if capabilities_xml:
+            parts.append(capabilities_xml)
+
+        # 4. 协作规则
         parts.append(self._team_context.get_team_collaboration_rules())
 
-        # 4. Teammate 特定指令 (按角色区分 Lead/Member, 含协议工具说明)
+        # 5. Teammate 特定指令 (按角色区分 Lead/Member, 含协议工具说明)
         parts.append(self._get_teammate_instructions())
 
         return "\n\n".join(parts)
@@ -170,18 +187,30 @@ class TeammateAgent:
         return f"""<teammate_instructions>
 你是 Team 的 Project Lead Agent, 名字是 **{self.name}**。
 
-**你的核心职责:**
-1. 使用 task_create 将用户目标拆解为细粒度子任务 (不指定 assigned_agent, 让 Member 自主认领)
-2. 使用 spawn_teammate 动态扩充团队 (如需要特定专业领域的成员)
-3. 使用 list_teammates 查看团队状态, 使用 task_list 跟踪进度
-4. 使用 read_inbox 检查 Member 发来的消息 (任务完成 summary) 和审批请求
-5. 收到 Member 的完成 summary 后, 评估是否需要创建新任务或调整依赖
-6. 全部完成后汇总最终结果
+<task_triage>
+收到用户目标后, 首先判断:
+1. 这个任务是否可以由你(Lead Agent)独立完成?
+2. 是否需要拆解为子任务分配给团队成员?
 
-**动态扩充团队:**
-- 使用 spawn_teammate(agent_name="...") 创建新的 teammate
-- 新 teammate 将自动进入 IDLE 并开始自主认领任务
-- 使用 shutdown_teammate 关闭不再需要的 teammate
+✅ 独立完成的场景:
+- 简单信息查询、搜索、文件读取
+- 单一工具即可完成的操作
+- 闲聊、咨询、解释说明
+
+✅ 拆解分发的场景:
+- 需要多个不同领域的专业知识
+- 任务可以并行加速(如同时搜索+编码)
+- 用户明确要求团队协作
+- 需要特定 Member 的专属工具
+- 任务需要拆成的步骤数≥5
+</task_triage>
+
+**你的核心职责:**
+1. 使用 task_create 将用户目标拆解为细粒度子任务 (可选择是否指定 assigned_agent)
+2. 使用 list_teammates 查看团队状态, 使用 task_list 跟踪进度
+3. 使用 read_inbox 检查 Member 发来的消息 (任务完成 summary) 和审批请求
+4. 收到 Member 的完成 summary 后, 评估是否需要创建新任务或调整依赖
+5. 全部完成后汇总最终结果
 
 **澄清用户需求:**
 当用户目标不清晰时, 使用 ask_clarification 工具向用户提问:
@@ -198,16 +227,16 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 - 收到 shutdown_response 时, 记录 teammate 的关机确认
 
 **通信:**
-- 使用 broadcast 向全员发送通知
-- 使用 send_message 向特定 Member 发送私聊
-- 使用 read_inbox 检查收件箱
+- 使用 broadcast 向全体 Member 发送通知（如：全体注意，XX任务优先级提升）
+- 使用 send_message 向特定 Member 发送私聊消息（如：补充说明、追问细节）
+- 使用 read_inbox 读取自己的收件箱，查看其他 Agent 发来的消息
 </teammate_instructions>"""
 
     def _get_member_instructions(self) -> str:
         """Member Agent 专属指令 —  关机由 LLM 决策."""
         return f"""<teammate_instructions>
 你是 Team 中的一名成员, 名字是 **{self.name}**。
-你是一个 **持久化运行的 Agent**, 不是一次性工具调用。
+你是一个 **持久化运行的 Agent**
 
 **你的生命周期:**
 - WORKING: 执行分配的任务或自主认领的任务, 使用你的工具和专业知识
@@ -706,60 +735,148 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             self.status = TeammateStatus.WORKING
 
     # ------------------------------------------------------------------
-    #  预留: 自主认领
+    # 方案 5: 自主认领 — 三级优先级 + 领域匹配 + 饥饿预防
     # ------------------------------------------------------------------
 
     async def _maybe_claim_task(self) -> bool:
-        """: IDLE 时自主扫描任务板并认领未分配的任务.
+        """IDLE 时自主扫描任务板并认领任务.
 
-        认领条件:
-        1. _can_claim == True (orchestrator 在 Lead 规划完成后开启)
-        2. status == PENDING
-        3. assigned_agent is None (无 owner)
-        4. 所有依赖已完成
+        认领优先级:
+        1. 强制分配 (task.assigned_agent == me) → 立即认领
+        2. 饥饿预防 (task 创建超过 N 分钟无人认领) → 任意 agent 可认领
+        3. 领域匹配 (score ≥ CLAIM_THRESHOLD) → 与自身能力相关的任务优先认领
 
         Returns:
             True 如果成功认领了一个任务.
         """
-        #  门控: 等待 orchestrator 开启 auto-claim
+        # 门控: 等待 orchestrator 开启 auto-claim
         if not self._can_claim:
+            return False
+
+        # Lead 不认领执行任务
+        if self._role == "lead":
             return False
 
         try:
             unclaimed = await self._task_store.get_unclaimed_tasks()
         except AttributeError:
-            return False  # task_store 版本不支持此方法
+            return False
 
         if not unclaimed:
             return False
 
-        # 角色过滤: Lead 不认领执行任务
-        role = "lead" if (self._agent_config and self._agent_config.can_be_lead) else "member"
+        my_card = self._get_my_card()
 
         for task in unclaimed:
-            # 跳过自己创建的任务 (Lead 创建的规划任务)
-            # 简单启发: 标题包含 "规划:" 的不认领
-            if task.title.startswith("规划:"):
+            # 跳过 triage 任务 (标题以 "用户目标:" 或 "规划:" 开头)
+            if task.title.startswith("用户目标:") or task.title.startswith("规划:"):
                 continue
-            # 认领第一个符合条件的任务
-            await self._task_store.update_task(
-                task.id,
-                assigned_agent=self.name,
-                status=TeamTaskStatus.IN_PROGRESS,
-            )
-            self.current_task_id = task.id
-            self._messages.append(HumanMessage(
-                content=(
-                    f"[自主认领任务 {task.id}] {task.title}\n\n{task.description}\n\n"
-                    f"请完成上述任务。完成后使用 task_update 将状态改为 completed 并附上结果。"
-                )
-            ))
-            self.status = TeammateStatus.WORKING
-            logger.info("Teammate '%s' (role=%s) auto-claimed task '%s': %s",
-                        self.name, role, task.id, task.title[:60])
-            return True
+
+            # ── Tier 1: 强制分配给我 → 立即认领 ──
+            if task.assigned_agent == self.name:
+                return await self._claim(task)
+
+            # ── Tier 2: 分配给他人 → 等待饥饿 ──
+            if task.assigned_agent and task.assigned_agent != self.name:
+                age = self._task_age_minutes(task)
+                if age < STARVATION_THRESHOLD_MINUTES:
+                    continue  # 尊重分配, 等待
+                # 饥饿: 计入评分 (带加成)
+
+            # ── Tier 3: 未分配或饥饿 → 领域匹配 ──
+            score = self._compute_task_match(task, my_card)
+            if task.assigned_agent and task.assigned_agent != self.name:
+                score += STARVATION_SCORE  # 饥饿加成
+
+            if score >= CLAIM_THRESHOLD:
+                return await self._claim(task)
 
         return False
+
+    async def _claim(self, task: TeamTask) -> bool:
+        """认领任务 — 原子更新 task_store + 设置自身状态."""
+        await self._task_store.update_task(
+            task.id,
+            assigned_agent=self.name,
+            status=TeamTaskStatus.IN_PROGRESS,
+        )
+        self.current_task_id = task.id
+        self._messages.append(HumanMessage(
+            content=(
+                f"[认领任务 {task.id}] {task.title}\n\n{task.description}\n\n"
+                f"请完成上述任务。完成后使用 task_update 将状态改为 completed 并附上结果。"
+            )
+        ))
+        self.status = TeammateStatus.WORKING
+        logger.info(
+            "Teammate '%s' claimed task '%s': %s",
+            self.name, task.id, task.title[:60],
+        )
+        return True
+
+    def _compute_task_match(self, task: TeamTask, card: dict | None) -> float:
+        """计算任务与自身能力的匹配分.
+
+        评分维度:
+        - 工具匹配: 任务描述中提到我的工具 → +25/个
+        - 技能匹配: 任务描述中提到我的技能 → +30/个
+        - 关键词重叠: 描述词与任务词的 Jaccard 重叠 → +2/个
+
+        card 为 None 时返回默认低分 10, 不会完全排除该 agent.
+        """
+        if card is None:
+            return CLAIM_THRESHOLD  # 无 card → FIFO 行为 (退化为旧版认领逻辑)
+
+        score = 0.0
+        task_text = f"{task.title} {task.description}".lower()
+
+        # 工具匹配
+        for tool in card.get("tools", []):
+            if tool.lower() in task_text:
+                score += 25
+
+        # 技能匹配
+        for skill in card.get("skills", []):
+            if skill.lower() in task_text:
+                score += 30
+
+        # 关键词重叠 (排除停用词)
+        stop_words = {"的", "了", "在", "是", "和", "与", "或", "the", "a", "an", "is", "of", "to", "in", "and"}
+        card_words = set(card.get("description", "").lower().split()) - stop_words
+        task_words = set(task_text.split()) - stop_words
+        score += len(card_words & task_words) * 2
+
+        return score
+
+    def _get_my_card(self) -> dict | None:
+        """加载自己的 AgentCard (用于领域匹配)."""
+        try:
+            from harness.team.agent_card import get_card
+            card = get_card(
+                self._team_context.project_id,
+                self.name,
+                user_id=self._user_id,
+            )
+            if card is not None:
+                return {
+                    "tools": card.tools,
+                    "skills": card.skills,
+                    "description": card.description,
+                }
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _task_age_minutes(task: TeamTask) -> float:
+        """计算任务已等待的分钟数."""
+        if not task.created_at:
+            return 0.0
+        try:
+            created = datetime.fromisoformat(task.created_at)
+            return (datetime.now(timezone.utc) - created).total_seconds() / 60.0
+        except Exception:
+            return 0.0
 
     def _inject_identity(self) -> None:
         """: 注入身份块 — 防止长上下文后遗忘自己是谁.
@@ -797,9 +914,18 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
     def to_runtime(self) -> TeamMemberRuntime:
         """导出为 TeamMemberRuntime (兼容现有接口)."""
+        # 优先用 _role (直接指定), 回退到 config 检查
+        if self._role:
+            role = self._role
+        elif self._effective_config and self._effective_config.can_be_lead:
+            role = "lead"
+        elif self._agent_config and self._agent_config.can_be_lead:
+            role = "lead"
+        else:
+            role = "member"
         return TeamMemberRuntime(
             agent_name=self.name,
-            role="lead" if (self._agent_config and self._agent_config.can_be_lead) else "member",
+            role=role,
             status=self.status,
             current_task_id=self.current_task_id,
             completed_tasks=self.completed_tasks,

@@ -38,7 +38,11 @@ class MemoryConfig(BaseModel):
     )
     max_facts: int = Field(
         default=100, ge=10, le=500,
-        description="Maximum number of facts to store",
+        description="Maximum number of facts to store (newest N retained when exceeded)",
+    )
+    memory_ttl_days: int = Field(
+        default=90, ge=0, le=730,
+        description="事实过期天数。0 = 永不过期。超过此天数的 facts 会被自动清理",
     )
     fact_confidence_threshold: float = Field(
         default=0.7, ge=0.0, le=1.0,

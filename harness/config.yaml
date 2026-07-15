@@ -124,7 +124,7 @@ memory:
   backend: file                 # ← file 模式：DynamicContextMiddleware 用 memory.json 被动注入
   debounce_seconds: 120
   # ── file backend 配置 ──
-  max_facts: 10
+  max_facts: 30
   fact_confidence_threshold: 0.9
   injection_enabled: true
   max_injection_tokens: 500

@@ -46,6 +46,8 @@ from harness.middleware.deferred_tool_filter import DeferredToolFilterMiddleware
 from harness.middleware.subagent_limit import SubagentLimitMiddleware
 from harness.middleware.loop_detection import LoopDetectionMiddleware
 
+from harness.middleware.dynamic_context import DynamicContextMiddleware
+
 try:
     from harness.middleware.summarization import create_summarization_middleware as _create_summarization
     _has_summarization = True
@@ -112,10 +114,8 @@ def build_teammate_middlewares(
     # [7] ToolErrorHandling
     middlewares.append(ToolErrorHandlingMiddleware({"max_retries": tool_max_retries}))
 
-    # [7.5] DynamicContext (仅 Lead — 注入用户记忆和日期上下文, Member 从 Team 系统获取)
-    if keep_dynamic_context:
-        from harness.middleware.dynamic_context import DynamicContextMiddleware
-        middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
+    # [7.5] DynamicContext — 所有 teammate (Lead + Member) 注入记忆 + 日期上下文
+    middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
 
     # [8] Summarization (长运行 teammate 需要上下文压缩)
     if summarization_enabled and _has_summarization:

@@ -137,6 +137,8 @@ export const projectsAPI = {
     apiClient.post(`/v1/projects/${id}/members`, { agent_name: agentName, user_id: getCurrentUserId() }),
   removeMember: (id: string, agentName: string) =>
     apiClient.delete(`/v1/projects/${id}/members/${agentName}?user_id=${getCurrentUserId()}`),
+  getAgentCards: (id: string) =>
+    apiClient.get(`/v1/projects/${id}/agent-cards?user_id=${getCurrentUserId()}`),
   // Tasks
   listTasks: (id: string) => apiClient.get(`/v1/projects/${id}/tasks?user_id=${getCurrentUserId()}`),
   createTask: (id: string, data: object) => apiClient.post(`/v1/projects/${id}/tasks`, { ...data, user_id: getCurrentUserId() }),

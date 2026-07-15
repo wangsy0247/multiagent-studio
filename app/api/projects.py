@@ -238,6 +238,28 @@ async def update_task(project_id: str, task_id: str, request: Request):
     raise HTTPException(404, "Task not found")
 
 
+# ── Agent Cards ──
+
+@router.get("/{project_id}/agent-cards")
+async def get_agent_cards(
+    project_id: str,
+    user_id: str = "default",
+    authorization: str | None = Header(None, include_in_schema=False),
+):
+    """获取项目的 agent-card.json 内容 (成员能力快照)."""
+    uid = _resolve_user_id(user_id, authorization)
+    try:
+        from harness.team.agent_card import load_project_cards
+        cards = load_project_cards(project_id, user_id=uid)
+        return {
+            "project_id": project_id,
+            "cards": {name: card.model_dump() for name, card in cards.items()},
+            "count": len(cards),
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to load agent cards: {exc}")
+
+
 @router.delete("/{project_id}/tasks/{task_id}")
 async def delete_task(
     project_id: str,

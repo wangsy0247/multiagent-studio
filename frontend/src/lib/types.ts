@@ -292,6 +292,19 @@ export interface TeamExecutionState {
   maxRounds: number;
 }
 
+/** Agent 能力卡片 (对齐后端 AgentCard) */
+export interface AgentCard {
+  name: string;
+  display_name: string;
+  description: string;
+  tools: string[];
+  skills: string[];
+  model: string;
+  role: "lead" | "member";
+  created_at: string;
+  updated_at: string;
+}
+
 /** Agent 记忆配置 (对齐后端 AgentMemoryFields) */
 export interface AgentMemoryConfig {
   backend: "file" | "mem0";
@@ -329,7 +342,7 @@ export interface AgentDefinition {
   updated_at?: string;
 }
 
-/** 后端 agents API 直接返回的 agent 对象 (不含嵌套子模型) */
+/** 后端 agents API 直接返回的 agent 对象 */
 export interface AgentListItem {
   name: string;
   display_name: string;
@@ -337,6 +350,7 @@ export interface AgentListItem {
   model: string;
   tool_groups: string[];
   skills?: string[] | null;
+  team?: { can_be_lead: boolean; can_delegate: boolean; memory_scope: string };
   created_at: string;
   updated_at: string;
 }

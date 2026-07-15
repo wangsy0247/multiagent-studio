@@ -29,8 +29,15 @@ DEFAULT_AGENT_NAME = "default"
 
 
 def validate_agent_name(name: str) -> str:
+    if not name:
+        raise ValueError("Agent 名称不能为空")
     if not AGENT_NAME_PATTERN.fullmatch(name):
-        raise ValueError(f"Invalid agent name '{name}'. Must match: {AGENT_NAME_PATTERN.pattern}")
+        raise ValueError(
+            f"Agent 名称 '{name}' 不合法。"
+            f" 名称只能包含英文字母、数字、下划线 (_) 和短横线 (-)，"
+            f" 不能包含空格或特殊字符。"
+            f" 建议将空格替换为短横线，例如 'Ai-Engineer'。"
+        )
     return name
 
 

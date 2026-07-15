@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Bot, Plus, Trash2, Edit, Brain, Clock, Wrench, Zap, User, BookOpen, Shield, AlertTriangle } from "lucide-react";
+import { Bot, Plus, Trash2, Edit, Brain, Clock, Wrench, Zap, User, BookOpen, Shield, AlertTriangle, Star } from "lucide-react";
 import { agentsAPI } from "@/lib/api-client";
 
 // ── 预设 Agent 定义 (与后端 presets.py 对齐) ──────────────────────────
@@ -225,6 +225,11 @@ export default function AgentsPage() {
                       {agent.display_name || agent.name}
                       {agent.name === "default" && (
                         <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">系统默认</span>
+                      )}
+                      {agent.team?.can_be_lead && agent.name !== "default" && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded font-medium flex items-center gap-0.5">
+                          <Star className="w-3 h-3" /> Team Lead
+                        </span>
                       )}
                     </h3>
                   </Link>

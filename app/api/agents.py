@@ -57,7 +57,10 @@ async def create_agent(request: Request):
     )
     body = await request.json()
     logger.info(f"[create_agent] body user_id={body.get('user_id', 'NOT_SET')}")
-    name = validate_agent_name(body.get("name", ""))
+    try:
+        name = validate_agent_name(body.get("name", ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # model 必选
     model = body.get("model", "")

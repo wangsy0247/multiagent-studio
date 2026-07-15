@@ -47,6 +47,8 @@ export default function SettingsPage() {
   const [titleModel, setTitleModel] = useState("");
   const [memoryModel, setMemoryModel] = useState("");
   // ── 记忆配置 ──
+  const [memoryMaxFacts, setMemoryMaxFacts] = useState(100);
+  const [memoryTtlDays, setMemoryTtlDays] = useState(90);
   const [memoryMaxInjectionTokens, setMemoryMaxInjectionTokens] = useState(500);
   const [memoryDebounceSeconds, setMemoryDebounceSeconds] = useState(120);
   const [memoryFactConfidenceThreshold, setMemoryFactConfidenceThreshold] = useState(0.7);
@@ -79,6 +81,8 @@ export default function SettingsPage() {
         setMemoryModel(cfg.memory_model || "");
         // Memory
         const mem = cfg.memory || {};
+        setMemoryMaxFacts(mem.max_facts ?? 100);
+        setMemoryTtlDays(mem.ttl_days ?? 90);
         setMemoryMaxInjectionTokens(mem.max_injection_tokens ?? 500);
         setMemoryDebounceSeconds(mem.debounce_seconds ?? 120);
         setMemoryFactConfidenceThreshold(mem.fact_confidence_threshold ?? 0.7);
@@ -115,6 +119,8 @@ export default function SettingsPage() {
         title_model: titleModel,
         memory_model: memoryModel,
         memory: {
+          max_facts: memoryMaxFacts,
+          ttl_days: memoryTtlDays,
           max_injection_tokens: memoryMaxInjectionTokens,
           debounce_seconds: memoryDebounceSeconds,
           fact_confidence_threshold: memoryFactConfidenceThreshold,
@@ -350,6 +356,44 @@ export default function SettingsPage() {
         <div className="space-y-5 animate-fade-in">
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
             记忆系统在对话过程中提取用户偏好和重要信息，下次对话时自动注入到 System Prompt 中。
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                最大事实数
+              </label>
+              <p className="text-[10px] text-slate-400 mb-1.5">
+                保留最新的 N 条事实 (10-500)，超出后淘汰最旧的
+              </p>
+              <input
+                type="number"
+                value={memoryMaxFacts}
+                onChange={(e) => setMemoryMaxFacts(Number(e.target.value))}
+                min={10}
+                max={500}
+                step={10}
+                className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl input-focus"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                事实过期天数
+              </label>
+              <p className="text-[10px] text-slate-400 mb-1.5">
+                超过 N 天的事实自动清理 (0=永不过期)
+              </p>
+              <input
+                type="number"
+                value={memoryTtlDays}
+                onChange={(e) => setMemoryTtlDays(Number(e.target.value))}
+                min={0}
+                max={730}
+                step={30}
+                className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl input-focus"
+              />
+            </div>
           </div>
 
           <div>
