@@ -1,0 +1,2 @@
+{"ts": "2026-07-15T12:17:36.928656+00:00", "action": "create", "file": "SKILL.md"}
+{"ts": "2026-07-15T12:21:24.858105+00:00", "action": "delete", "archived_content": "---\nname: test-deep-research\ndescription: Test skill for deep-research auto-trigger validation\nlicense: MIT\nversion: \"1.0\"\n---\n# Test Deep Research Skill\n\nThis is a test skill to validate the deep-research auto-trigger mechanism."}

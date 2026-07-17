@@ -50,10 +50,14 @@ def _normalize_virtual_path(path: str) -> str:
     Absolute paths that already use the virtual namespace are returned as-is.
     Relative paths are treated as workspace-relative.
     """
-    from harness.config.paths import VIRTUAL_PATH_PREFIX
+    from harness.config.paths import VIRTUAL_PATH_PREFIX, VIRTUAL_SKILLS_PATH
 
     path = path.strip()
-    if path.startswith(VIRTUAL_PATH_PREFIX) or path.startswith("/mnt/acp-workspace"):
+    if (
+        path.startswith(VIRTUAL_PATH_PREFIX)
+        or path.startswith("/mnt/acp-workspace")
+        or path.startswith(VIRTUAL_SKILLS_PATH)
+    ):
         return path
     if path.startswith("/"):
         # Reject host absolute paths to prevent accidental host access.

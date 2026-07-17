@@ -168,7 +168,7 @@ class TeammateAgent:
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
-        """构建 Teammate system prompt: SOUL + Team 上下文 + 协作规则."""
+        """构建 Teammate system prompt: SOUL + Team 上下文 + 协作规则 + Skills."""
         parts: list[str] = []
 
         # 1. Agent SOUL
@@ -194,7 +194,73 @@ class TeammateAgent:
         # 5. Teammate 特定指令 (按角色区分 Lead/Member, 含协议工具说明)
         parts.append(self._get_teammate_instructions())
 
+        # 6. Skills (per-user + per-agent 过滤, 与 LeadAgent 一致的渐进加载模式)
+        skills_section = self._build_skills_section()
+        if skills_section:
+            parts.append(skills_section)
+
         return "\n\n".join(parts)
+
+    def _get_skill_whitelist(self) -> set[str] | None:
+        """Return the agent-level skill whitelist from effective config.
+
+        * ``None`` — no whitelist configured → all enabled skills available.
+        * ``set()`` (empty) — explicitly empty → no skills at all.
+        * ``{"a", "b"}`` — only the named skills.
+        """
+        # EffectiveConfig.skills (default factory=list → [] = "not configured")
+        if self._effective_config is not None:
+            raw = self._effective_config.skills
+            if raw:  # non-empty list → explicit whitelist
+                return set(raw)
+            # empty list + has agent_config skills? → fall through to check
+        # Fallback: old-style agent_config
+        if self._agent_config is not None:
+            skills_attr = getattr(self._agent_config, "skills", None)
+            if skills_attr is not None:
+                return set(skills_attr)
+        return None
+
+    def _build_skills_section(self) -> str:
+        """Build the ``<skill_system>`` prompt block for this teammate.
+
+        Loads enabled skills scoped to the current user, then applies the
+        agent-level whitelist.  Returns an empty string when no skills are
+        available or skill_storage is not configured.
+        """
+        if self._skill_storage is None:
+            return ""
+
+        try:
+            skills = self._skill_storage.load_skills(
+                enabled_only=True, user_id=self._user_id,
+            )
+        except Exception:
+            logger.exception("Failed to load skills for teammate '%s'", self.name)
+            return ""
+
+        # Apply agent-level whitelist
+        whitelist = self._get_skill_whitelist()
+        if whitelist is not None:
+            skills = [s for s in skills if s.name in whitelist]
+
+        if not skills:
+            return ""
+
+        from harness.skills.prompt import get_skills_prompt_section
+
+        try:
+            from harness.skills.cache import (
+                build_skills_signature,
+                get_cached_skills_prompt_section,
+            )
+            sig = build_skills_signature(skills)
+            return get_cached_skills_prompt_section(
+                sig,
+                lambda: get_skills_prompt_section(skills),
+            )
+        except Exception:
+            return get_skills_prompt_section(skills)
 
     def _get_teammate_instructions(self) -> str:
         """Teammate 特定的行为指令 — 支持持续运行 +  结构化协议."""
@@ -509,14 +575,21 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 callbacks=callbacks if callbacks else None,
             )
 
-            # input_state: 仅传入新任务消息 → checkpointer 恢复历史 + add_messages 合并
-            recent = self._messages[-50:] if len(self._messages) > 50 else self._messages
+            # ── 消息策略 ──
+            # 有 checkpointer: 只传增量消息 (上次 run 之后新增的). 历史由 checkpointer 恢复.
+            # 无 checkpointer: 传最近 50 条, 手动管理历史.
+            if self._checkpointer is not None:
+                # self._messages 是 staging buffer: 两次 graph run 之间累积的新消息
+                # (assign_task 的 HumanMessage, _inject_identity, inbox 消息等)
+                new_msgs = list(self._messages)
+                self._messages.clear()
+            else:
+                new_msgs = list(self._messages[-50:] if len(self._messages) > 50 else self._messages)
             input_state: dict[str, Any] = {
-                "messages": recent,
+                "messages": new_msgs,
                 "thread_id": self._thread_id,
                 "user_id": self._user_id,
             }
-            final_output: dict[str, Any] = {}
 
             # astream_events — 推送实时思考 / 工具调用事件到 SSE 流
             async for event in agent.astream_events(input_state, config, version="v2"):
@@ -554,20 +627,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                         "tool_result": output_str,
                     })
 
-                elif kind == "on_chain_end" and event.get("name") == "LangGraph":
-                    result = data.get("output", {})
-                    if isinstance(result, dict):
-                        final_output = result
-
-            # 回写消息历史 (有 checkpointer 时 state 已自动持久化)
-            out_messages = final_output.get("messages", [])
-            if out_messages:
-                self._messages = list(out_messages)
-            # drain 执行期间可能到达的残余 inbox 消息并追加
+            # drain 执行期间可能到达的残余 inbox 消息并追加到 staging buffer
             late_inbox = await self._message_bus.read_inbox(self.name)
             for msg in late_inbox:
                 await self._handle_inbox_message(msg)
-            logger.info("Teammate '%s' completed task (output: %d messages, late inbox: %d)",
+            logger.info("Teammate '%s' completed task (staging: %d msgs, late inbox: %d)",
                         self.name, len(self._messages), len(late_inbox))
 
         except asyncio.CancelledError:

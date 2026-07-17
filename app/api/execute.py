@@ -64,6 +64,18 @@ async def execute(
 
     async def event_generator():
         """SSE 事件流生成器 — 转发 Harness SSE 事件并持久化关键事件"""
+        # ── 持久化用户消息 (HumanMessage 不会通过 SSE 事件发送) ──
+        human_msg = Message(
+            thread_id=req.thread_id,
+            role="human",
+            content=req.message,
+            msg_type="text",
+            extra_metadata={},
+            token_count=0,
+        )
+        db.add(human_msg)
+        await db.commit()
+
         # 追踪最后一条 AI 消息的 ID，用于 token_usage 回填
         _last_ai_message_id: str | None = None
         # 累积 token 流式输出的 AI 回复文本（在 finished 时持久化）

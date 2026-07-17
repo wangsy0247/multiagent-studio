@@ -20,7 +20,9 @@ from typing import Any
 from harness.config.paths import (
     ACP_WORKSPACE_VIRTUAL_PATH,
     VIRTUAL_PATH_PREFIX,
+    VIRTUAL_SKILLS_PATH,
     get_paths,
+    get_skills_root,
 )
 from harness.services.sandbox_provider import Sandbox, SandboxProvider
 
@@ -55,7 +57,7 @@ class LocalSandbox(Sandbox):
         paths = get_paths()
         paths.ensure_thread_dirs(self.thread_id, user_id=self.user_id)
 
-        return [
+        mappings = [
             PathMapping(
                 container_path=f"{VIRTUAL_PATH_PREFIX}/workspace",
                 local_path=paths.sandbox_work_dir(self.thread_id, user_id=self.user_id),
@@ -82,6 +84,25 @@ class LocalSandbox(Sandbox):
                 read_only=False,
             ),
         ]
+
+        # Skills mapping (static, read-only — shared across all threads).
+        # User-private skills are exposed via a symlink <skills_root>/my →
+        # users/<uid>/skills/ inside the source directory.
+        skills_root = get_skills_root()
+        if skills_root.exists():
+            from harness.config.paths import ensure_user_skills_symlink
+            ensure_user_skills_symlink(
+                skills_root, self.user_id or "default", paths,
+            )
+            mappings.append(
+                PathMapping(
+                    container_path=VIRTUAL_SKILLS_PATH,
+                    local_path=skills_root,
+                    read_only=True,
+                )
+            )
+
+        return mappings
 
     def _find_mapping(self, virtual_path: str) -> PathMapping | None:
         """Find the most specific mapping for a virtual path."""
@@ -152,6 +173,12 @@ class LocalSandbox(Sandbox):
                 return self._reverse_resolve(matched)
 
             result = pattern.sub(replace_match, result)
+
+        # Also mask the project skills root (separate from data_root/skills
+        # which may already be covered by the PathMapping above).
+        from harness.config.paths import get_skills_root
+        _skills_root = str(get_skills_root().resolve())
+        result = result.replace(_skills_root, "/mnt/skills")
 
         result = result.replace(str(get_paths().base_dir.resolve()), "<data-root>")
         result = result.replace(os.path.expanduser("~"), "~")

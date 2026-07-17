@@ -520,6 +520,7 @@ class LeadAgent:
         *,
         skill_storage: Any | None = None,
         agent_config: Any | None = None,
+        user_id: str | None = None,
     ):
         self.tool_registry = tool_registry
         self.subagent_manager = subagent_manager
@@ -528,6 +529,7 @@ class LeadAgent:
         self.config_manager = config_manager
         self.skill_storage = skill_storage
         self.agent_config = agent_config
+        self._user_id = user_id
 
     # ------------------------------------------------------------------
     # system prompt
@@ -555,7 +557,9 @@ class LeadAgent:
         skills_section = ""
         if self.skill_storage is not None:
             try:
-                enabled_skills = self.skill_storage.load_skills(enabled_only=True)
+                enabled_skills = self.skill_storage.load_skills(
+                    enabled_only=True, user_id=self._user_id,
+                )
 
                 # Apply per-agent skills whitelist
                 whitelist = self._available_skill_names()
@@ -647,7 +651,9 @@ class LeadAgent:
         # ── Apply skill allowed-tools filtering ──
         if self.skill_storage is not None:
             try:
-                enabled_skills = self.skill_storage.load_skills(enabled_only=True)
+                enabled_skills = self.skill_storage.load_skills(
+                    enabled_only=True, user_id=self._user_id,
+                )
 
                 # Apply per-agent skills whitelist
                 whitelist = self._available_skill_names()

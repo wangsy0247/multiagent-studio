@@ -16,11 +16,21 @@ Every write operation follows the pipeline:
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any, Literal
 
 from langchain_core.tools import BaseTool, tool
 
 logger = logging.getLogger(__name__)
+
+# Context var set by HarnessService before graph execution.
+# When not set (tests, legacy), skill_manage operates on project shared skills.
+_skill_user_id: ContextVar[str | None] = ContextVar("skill_user_id", default=None)
+
+
+def set_skill_user_id(user_id: str | None) -> None:
+    """Set the current user for skill management operations."""
+    _skill_user_id.set(user_id)
 
 # ---------------------------------------------------------------------------
 # Valid action types
@@ -160,12 +170,17 @@ def create_skill_manage_tool(
     # Action handlers
     # ═════════════════════════════════════════════════════════════════════
 
+    def _uid() -> str | None:
+        """Return the current user_id for skill operations (from context var)."""
+        return _skill_user_id.get()
+
     async def _handle_create(name: str, content: str) -> str:
         if not content.strip():
             return "Error: 'content' is required for create action."
 
+        uid = _uid()
         # Check not already exists
-        if skill_storage.custom_skill_exists(name):
+        if skill_storage.custom_skill_exists(name, user_id=uid):
             return f"Error: Custom skill '{name}' already exists. Use edit to modify it."
 
         # Validate + scan
@@ -177,23 +192,24 @@ def create_skill_manage_tool(
             )
 
         # Write
-        skill_storage.write_custom_skill(name, "SKILL.md", content)
+        skill_storage.write_custom_skill(name, "SKILL.md", content, user_id=uid)
         skill_storage.append_history(name, {
             "action": "create",
             "file": "SKILL.md",
-        })
+        }, user_id=uid)
 
         # Refresh cache
         _refresh_cache()
 
-        logger.info("skill_manage: created custom skill '%s'", name)
+        logger.info("skill_manage: created custom skill '%s' (user=%s)", name, uid)
         return f"Custom skill '{name}' created successfully."
 
     async def _handle_edit(name: str, content: str) -> str:
         if not content.strip():
             return "Error: 'content' is required for edit action."
 
-        if not skill_storage.custom_skill_exists(name):
+        uid = _uid()
+        if not skill_storage.custom_skill_exists(name, user_id=uid):
             return f"Error: Custom skill '{name}' not found. Use create to make a new one."
 
         # Validate + scan
@@ -206,26 +222,25 @@ def create_skill_manage_tool(
 
         # Save old content for history
         try:
-            old_content = skill_storage.read_custom_skill(name)
+            old_content = skill_storage.read_custom_skill(name, user_id=uid)
         except FileNotFoundError:
             old_content = ""
 
         # Write
-        skill_storage.write_custom_skill(name, "SKILL.md", content)
+        skill_storage.write_custom_skill(name, "SKILL.md", content, user_id=uid)
         skill_storage.append_history(name, {
             "action": "edit",
             "file": "SKILL.md",
             "old_length": len(old_content),
             "new_length": len(content),
-        })
+        }, user_id=uid)
 
         _refresh_cache()
 
-        logger.info("skill_manage: edited custom skill '%s'", name)
+        logger.info("skill_manage: edited custom skill '%s' (user=%s)", name, uid)
         return f"Custom skill '{name}' updated successfully."
 
     async def _handle_patch(
-        self,
         name: str,
         content: str,
         operation: str,
@@ -234,11 +249,12 @@ def create_skill_manage_tool(
         if not content.strip():
             return "Error: 'content' is required for patch action."
 
-        if not skill_storage.custom_skill_exists(name):
+        uid = _uid()
+        if not skill_storage.custom_skill_exists(name, user_id=uid):
             return f"Error: Custom skill '{name}' not found."
 
         try:
-            current = skill_storage.read_custom_skill(name)
+            current = skill_storage.read_custom_skill(name, user_id=uid)
         except FileNotFoundError:
             return f"Error: Cannot read SKILL.md for '{name}'."
 
@@ -261,38 +277,39 @@ def create_skill_manage_tool(
                 f"'{validated_name}' — not allowed."
             )
 
-        skill_storage.write_custom_skill(name, "SKILL.md", new_content)
+        skill_storage.write_custom_skill(name, "SKILL.md", new_content, user_id=uid)
         skill_storage.append_history(name, {
             "action": "patch",
             "operation": operation,
             "target": target,
             "patch_length": len(content),
-        })
+        }, user_id=uid)
 
         _refresh_cache()
 
-        logger.info("skill_manage: patched custom skill '%s' (op=%s)", name, operation)
+        logger.info("skill_manage: patched custom skill '%s' (op=%s, user=%s)", name, operation, uid)
         return f"Custom skill '{name}' patched successfully ({operation})."
 
     async def _handle_delete(name: str) -> str:
-        if not skill_storage.custom_skill_exists(name):
+        uid = _uid()
+        if not skill_storage.custom_skill_exists(name, user_id=uid):
             return f"Error: Custom skill '{name}' not found."
 
         # Archive before delete — save current SKILL.md to history
         try:
-            current = skill_storage.read_custom_skill(name)
+            current = skill_storage.read_custom_skill(name, user_id=uid)
             skill_storage.append_history(name, {
                 "action": "delete",
                 "archived_content": current,
-            })
+            }, user_id=uid)
         except Exception:
             logger.warning("Failed to archive skill '%s' before delete", name)
 
-        skill_storage.delete_custom_skill(name)
+        skill_storage.delete_custom_skill(name, user_id=uid)
 
         _refresh_cache()
 
-        logger.info("skill_manage: deleted custom skill '%s'", name)
+        logger.info("skill_manage: deleted custom skill '%s' (user=%s)", name, uid)
         return f"Custom skill '{name}' deleted successfully."
 
     async def _handle_write_file(name: str, relative_path: str, content: str) -> str:
@@ -301,6 +318,7 @@ def create_skill_manage_tool(
         if not content.strip():
             return "Error: 'content' is required for write_file action."
 
+        uid = _uid()
         # Validate support file path
         from harness.skills.installer import ensure_safe_support_path
 
@@ -314,18 +332,18 @@ def create_skill_manage_tool(
         await _do_security_scan(content, executable=is_executable)
 
         # Write
-        skill_storage.write_custom_skill(name, str(safe_path), content)
+        skill_storage.write_custom_skill(name, str(safe_path), content, user_id=uid)
         skill_storage.append_history(name, {
             "action": "write_file",
             "file": str(safe_path),
             "length": len(content),
-        })
+        }, user_id=uid)
 
         _refresh_cache()
 
         logger.info(
-            "skill_manage: wrote support file '%s' in skill '%s'",
-            safe_path, name,
+            "skill_manage: wrote support file '%s' in skill '%s' (user=%s)",
+            safe_path, name, uid,
         )
         return f"Support file '{safe_path}' written in skill '{name}'."
 
@@ -333,6 +351,7 @@ def create_skill_manage_tool(
         if not relative_path.strip():
             return "Error: 'relative_path' is required for remove_file action."
 
+        uid = _uid()
         from harness.skills.installer import ensure_safe_support_path
 
         try:
@@ -340,7 +359,7 @@ def create_skill_manage_tool(
         except ValueError as e:
             return f"Error: Invalid path — {e}"
 
-        skill_dir = skill_storage.get_custom_skill_dir(name)
+        skill_dir = skill_storage.get_custom_skill_dir(name, user_id=uid)
         target = skill_dir / safe_path
 
         if not target.exists():
@@ -350,13 +369,13 @@ def create_skill_manage_tool(
         skill_storage.append_history(name, {
             "action": "remove_file",
             "file": str(safe_path),
-        })
+        }, user_id=uid)
 
         _refresh_cache()
 
         logger.info(
-            "skill_manage: removed support file '%s' from skill '%s'",
-            safe_path, name,
+            "skill_manage: removed support file '%s' from skill '%s' (user=%s)",
+            safe_path, name, uid,
         )
         return f"Support file '{safe_path}' removed from skill '{name}'."
 

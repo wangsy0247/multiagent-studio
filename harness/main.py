@@ -85,6 +85,57 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Skill sync utility — copies project skills to data_root for sandbox access
+# ---------------------------------------------------------------------------
+
+def _sync_skills_to_data_root(src: Path, dst: Path) -> None:
+    """Copy skills from *src* to *dst* (incremental — skips unchanged files).
+
+    OpenSandbox only allows bind-mounting paths under the configured data root.
+    Project skills live outside that tree, so they must be mirrored into the
+    data root at startup.  File size + mtime is used as a cheap "changed?"
+    check to avoid unnecessary copies on every restart.
+
+    Uses ``copyfile`` (not ``copy2``) to avoid preserving host UID/GID —
+    the container may not have a matching user, causing "unknown userid"
+    errors when listing files.
+    """
+    import shutil
+
+    if not src.exists():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+
+    for src_file in src.rglob("*"):
+        if src_file.is_dir():
+            continue
+        # Skip hidden / history files
+        if any(part.startswith(".") for part in src_file.parts):
+            continue
+        rel = src_file.relative_to(src)
+        dst_file = dst / rel
+        # Copy only if missing or changed (also re-copy if permissions are
+        # wrong — fixes stale files from previous copy2 that preserved host UID).
+        if dst_file.exists():
+            try:
+                src_stat = src_file.stat()
+                dst_stat = dst_file.stat()
+                if (
+                    src_stat.st_size == dst_stat.st_size
+                    and abs(src_stat.st_mtime - dst_stat.st_mtime) < 1.0
+                    and (dst_stat.st_mode & 0o777) == 0o644
+                ):
+                    continue  # unchanged
+            except OSError:
+                pass
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src_file, dst_file)
+        # Normalise permissions so the container can read them (avoids
+        # "unknown userid" errors from OpenSandbox file listing).
+        dst_file.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
 # HarnessService
 # ---------------------------------------------------------------------------
 
@@ -229,7 +280,25 @@ class HarnessService(_BaseService):
         _project_skills_root.mkdir(parents=True, exist_ok=True)
         (_project_skills_root / "public").mkdir(exist_ok=True)
         (_project_skills_root / "custom").mkdir(exist_ok=True)
-        self.skill_storage = SkillStorage(_project_skills_root)
+        # 6b. Sync skills → data_root for sandbox mount (OpenSandbox 只允许
+        # data_root 前缀下的路径, 项目 skills/ 路径不在允许范围内).
+        _data_skills_root = Path(self.config.data_root).expanduser().resolve() / "skills"
+        try:
+            _sync_skills_to_data_root(_project_skills_root, _data_skills_root)
+            from harness.config.paths import set_skills_root
+            set_skills_root(_data_skills_root)
+            logger.info("Skills synced to data root: %s", _data_skills_root)
+        except Exception:
+            logger.warning("Failed to sync skills to data root, sandbox skill access may fail",
+                           exc_info=True)
+            _data_skills_root = None  # sync failed → don't pass to SkillStorage
+
+        _user_skills_base = Path(self.config.data_root).expanduser().resolve() / "users"
+        self.skill_storage = SkillStorage(
+            _project_skills_root,
+            sandbox_sync_root=_data_skills_root,
+            user_skills_base=_user_skills_base,
+        )
         self.skills = self.skill_storage.load_skills(enabled_only=True)
         logger.info("Skills loaded: %d enabled", len(self.skills))
 
@@ -366,7 +435,9 @@ class HarnessService(_BaseService):
         })
 
         # 5. 创建 per-user skill_manage 工具 (需要 per-user LLM)
-        from harness.tools.skill_manage_tool import create_skill_manage_tool
+        from harness.tools.skill_manage_tool import create_skill_manage_tool, set_skill_user_id
+        # ---- 设置 skill 操作的当前用户 ID ----
+        set_skill_user_id(user_id)
         skill_manage = create_skill_manage_tool(
             skill_storage=self.skill_storage,
             model_client=llm,
@@ -381,6 +452,7 @@ class HarnessService(_BaseService):
             config_manager=self.config_manager,
             skill_storage=self.skill_storage,
             agent_name=eff.agent_display_name or agent_name,
+            user_id=user_id,
         )
 
         # 7. 编译 graph
@@ -716,6 +788,10 @@ class HarnessService(_BaseService):
         Yields:
             SSE 事件字典
         """
+        # ---- 设置 skill 操作的当前用户 ID ----
+        from harness.tools.skill_manage_tool import set_skill_user_id
+        set_skill_user_id(user_id)
+
         from harness.team.orchestrator import TeamOrchestrator
 
         # 注册运行期取消标记

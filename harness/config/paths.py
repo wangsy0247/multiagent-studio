@@ -22,6 +22,66 @@ from pathlib import Path, PureWindowsPath
 # Virtual path prefix seen by agents inside the sandbox
 VIRTUAL_PATH_PREFIX = "/mnt/user-data"
 ACP_WORKSPACE_VIRTUAL_PATH = "/mnt/acp-workspace"
+VIRTUAL_SKILLS_PATH = "/mnt/skills"
+
+# Module-level skills dir override (set by HarnessService.initialize())
+_skills_dir: Path | None = None
+
+
+def _default_skills_dir() -> Path:
+    """Return the project skills directory (public + custom)."""
+    import os
+
+    _this_file = Path(os.path.dirname(os.path.abspath(__file__)))
+    # harness/config/paths.py → harness/config → harness → project_root
+    _project_root = _this_file.parent.parent
+    return (_project_root / "skills").resolve()
+
+
+def get_skills_root() -> Path:
+    """Return the configured skills root directory."""
+    if _skills_dir is not None:
+        return _skills_dir
+    return _default_skills_dir()
+
+
+def set_skills_root(path: str | Path) -> None:
+    """Override the skills root directory (called during HarnessService.initialize())."""
+    global _skills_dir
+    _skills_dir = Path(path).resolve()
+
+
+def ensure_user_skills_symlink(skills_root: Path, user_id: str, *, _paths: Paths | None = None) -> None:
+    """Create/refresh ``<skills_root>/my`` symlink → ``users/<uid>/skills/``.
+
+    Docker follows symlinks in bind-mount source directories, so a single
+    ``/mnt/skills`` volume exposes both project and user-private skills
+    without nested read-only mounts (which trigger overlay2 bugs).
+    """
+    import os as _os
+
+    if _paths is None:
+        _paths = get_paths()
+
+    my_link = skills_root / "my"
+    user_skills = _paths.user_skills_dir(user_id)
+
+    if not user_skills.exists():
+        if my_link.is_symlink():
+            my_link.unlink()
+        elif my_link.exists():
+            import shutil
+            shutil.rmtree(my_link)
+        return
+
+    if my_link.is_symlink() and _os.readlink(str(my_link)) == str(user_skills):
+        return
+
+    if my_link.is_symlink() or my_link.exists():
+        my_link.unlink()
+
+    my_link.symlink_to(user_skills, target_is_directory=True)
+
 
 _SAFE_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 _SAFE_USER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -150,6 +210,39 @@ class Paths:
         """Host path for the ACP workspace of a specific thread."""
         effective_user_id = user_id if user_id is not None else "default"
         return self.thread_dir(thread_id, user_id=effective_user_id) / "acp-workspace"
+
+    # ------------------------------------------------------------------
+    # Skills paths (project-level and per-user)
+    # ------------------------------------------------------------------
+
+    @property
+    def skills_dir(self) -> Path:
+        """Host path for the project skills directory (public + custom)."""
+        return get_skills_root()
+
+    @property
+    def host_skills_dir(self) -> str:
+        """Host-visible skills dir for Docker bind mounts (DoD compatible).
+
+        Uses ``HARNESS_HOST_SKILLS_PATH`` env var when set, so the host Docker
+        daemon can resolve the path when the harness runs inside a container.
+        """
+        import os
+
+        if env := os.getenv("HARNESS_HOST_SKILLS_PATH"):
+            return env
+        return str(self.skills_dir)
+
+    def user_skills_dir(self, user_id: str) -> Path:
+        """Host path for a user's private custom skills.
+
+        ``{base_dir}/users/{user_id}/skills/``
+        """
+        return self.user_dir(user_id) / "skills"
+
+    # ------------------------------------------------------------------
+    # Host-prefixed paths (DooD)
+    # ------------------------------------------------------------------
 
     def host_user_dir(self, user_id: str) -> str:
         """Host path for a user directory, preserving Windows path syntax."""

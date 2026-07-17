@@ -5,6 +5,15 @@ chain when only the skill prompt section is needed.
 """
 
 
+def _skill_label(skill) -> str:
+    """Human-readable ownership label for a skill."""
+    if skill.user_id:
+        return "mine"
+    if skill.category == "public":
+        return "built-in"
+    return "shared"
+
+
 def get_skills_prompt_section(
     skills: list,
     container_base_path: str = "/mnt/skills",
@@ -26,7 +35,7 @@ def get_skills_prompt_section(
     skill_items = "\n".join(
         f"""    <skill>
         <name>{s.name}</name>
-        <description>{s.description} [{s.category}]</description>
+        <description>{s.description} [{_skill_label(s)}]</description>
         <location>{s.get_container_file_path(container_base_path)}</location>
     </skill>"""
         for s in skills

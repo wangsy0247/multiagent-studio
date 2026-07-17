@@ -607,11 +607,12 @@ class TeamOrchestrator:
             )
             await self.task_store.update_task(root_task.id, status=TeamTaskStatus.COMPLETED)
 
-            # ── 开启 Member 自主认领 ──
-            for name, tm in self.teammates.items():
-                if tm._role != "lead":
-                    tm.enable_auto_claim()
-            logger.info("Auto-claim enabled for all members after triage")
+            # ── 开启 Member 自主认领 (仅拆解模式) ──
+            if has_sub_tasks:
+                for name, tm in self.teammates.items():
+                    if tm._role != "lead":
+                        tm.enable_auto_claim()
+                logger.info("Auto-claim enabled for all members after triage")
 
             # ── Phase 2: Event-Driven Dispatch Loop (仅拆解模式) ──
             if has_sub_tasks:
@@ -698,10 +699,17 @@ class TeamOrchestrator:
             self.tracer.trace_team_end(status=final_status, total_rounds=self._round)
             self.tracer.shutdown()
 
-            # 清理: shutdown 所有 teammate
+            # 清理: shutdown 所有 teammate (带超时, 防止文件 I/O 阻塞)
+            _shutdown_timeout = 10  # 每个 teammate 最多等待 10 秒
             for tm in self.teammates.values():
                 if tm.status not in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
-                    await tm.shutdown()
+                    try:
+                        await asyncio.wait_for(tm.shutdown(), timeout=_shutdown_timeout)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Teammate '%s' shutdown timed out after %ds — forcing exit",
+                            tm.name, _shutdown_timeout,
+                        )
 
             status = "completed" if await self._is_complete() else "cancelled" if self._cancelled else "error"
             yield {

@@ -23,7 +23,9 @@ from opensandbox.models.sandboxes import Host, Volume
 from harness.config.paths import (
     ACP_WORKSPACE_VIRTUAL_PATH,
     VIRTUAL_PATH_PREFIX,
+    VIRTUAL_SKILLS_PATH,
     get_paths,
+    get_skills_root,
 )
 from harness.services.sandbox_provider import Sandbox, SandboxProvider
 
@@ -54,13 +56,14 @@ class OpenSandbox(Sandbox):
 
     def resolve_path(self, virtual_path: str) -> str:
         """Return the in-container path for a virtual path."""
-        if not virtual_path.startswith((VIRTUAL_PATH_PREFIX, ACP_WORKSPACE_VIRTUAL_PATH)):
-            if not virtual_path.startswith("/"):
-                return f"{VIRTUAL_PATH_PREFIX}/workspace/{virtual_path}"
-            raise ValueError(
-                f"Path '{virtual_path}' is not under a known virtual prefix"
-            )
-        return virtual_path
+        # Allow /mnt/skills paths (single volume mount, read-only).
+        if virtual_path.startswith((VIRTUAL_PATH_PREFIX, ACP_WORKSPACE_VIRTUAL_PATH, VIRTUAL_SKILLS_PATH)):
+            return virtual_path
+        if not virtual_path.startswith("/"):
+            return f"{VIRTUAL_PATH_PREFIX}/workspace/{virtual_path}"
+        raise ValueError(
+            f"Path '{virtual_path}' is not under a known virtual prefix"
+        )
 
     def sanitize_output(self, output: str) -> str:
         """Sanitize command output by masking physical paths."""
@@ -234,7 +237,7 @@ class OpenSandboxProvider(SandboxProvider):
         safe_id = thread_id.replace("/", "_").replace("\\", "_")[:32]
         base_name = f"harness-{safe_id}"
 
-        return [
+        volumes = [
             _vol(
                 f"{base_name}-workspace",
                 paths.host_sandbox_work_dir(thread_id, user_id=user_id),
@@ -257,6 +260,26 @@ class OpenSandboxProvider(SandboxProvider):
                 read_only=False,
             ),
         ]
+
+        # ── Skills: 单一卷 /mnt/skills → data_root/skills/ ──
+        # 通过符号链接将用户私有技能合并到源目录, 避免 Docker 嵌套只读挂载的
+        # overlay2 bug（子目录挂载点创建失败 → read-only file system）。
+        skills_root = get_skills_root()
+        if skills_root.exists():
+            from harness.config.paths import ensure_user_skills_symlink
+            ensure_user_skills_symlink(
+                skills_root, user_id or "default", _paths=paths,
+            )
+            volumes.append(
+                _vol(
+                    f"{base_name}-skills",
+                    paths.host_skills_dir,
+                    VIRTUAL_SKILLS_PATH,
+                    read_only=True,
+                )
+            )
+
+        return volumes
 
     async def acquire(
         self, thread_id: str, workspace: str, *, user_id: str | None = None
