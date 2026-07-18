@@ -27,10 +27,19 @@ logger = logging.getLogger(__name__)
 # When not set (tests, legacy), skill_manage operates on project shared skills.
 _skill_user_id: ContextVar[str | None] = ContextVar("skill_user_id", default=None)
 
+# Access gate — only background review forks are allowed to call skill_manage.
+# Prevents the Lead Agent from impulsively creating/editing skills mid-conversation.
+_skill_manage_gate: ContextVar[bool] = ContextVar("skill_manage_gate", default=False)
+
 
 def set_skill_user_id(user_id: str | None) -> None:
     """Set the current user for skill management operations."""
     _skill_user_id.set(user_id)
+
+
+def allow_skill_manage() -> None:
+    """Grant ``skill_manage`` access (called by background review fork)."""
+    _skill_manage_gate.set(True)
 
 # ---------------------------------------------------------------------------
 # Valid action types
@@ -137,6 +146,14 @@ def create_skill_manage_tool(
         if skill_storage is None:
             return "Error: Skill storage is not initialised."
 
+        # ── Access gate: only background review forks are allowed ──
+        if not _skill_manage_gate.get():
+            return (
+                "Error: skill_manage is only available during background skill "
+                "review. Skills are automatically created and updated after "
+                "complex tasks — you do not need to call this tool directly."
+            )
+
         try:
             skill_storage.validate_skill_name(name)
         except ValueError as e:
@@ -198,6 +215,15 @@ def create_skill_manage_tool(
             "file": "SKILL.md",
         }, user_id=uid)
 
+        # ── 遥测: 标记 agent-created (curator 管理) ──
+        try:
+            from harness.skills.evolution.provenance import is_curator_managed
+            if is_curator_managed():
+                from harness.skills.evolution.usage import mark_agent_created
+                mark_agent_created(uid, name)
+        except Exception:
+            pass
+
         # Refresh cache
         _refresh_cache()
 
@@ -234,6 +260,13 @@ def create_skill_manage_tool(
             "old_length": len(old_content),
             "new_length": len(content),
         }, user_id=uid)
+
+        # ── 遥测 ──
+        try:
+            from harness.skills.evolution.usage import bump_patch
+            bump_patch(uid, name)
+        except Exception:
+            pass
 
         _refresh_cache()
 
@@ -285,6 +318,13 @@ def create_skill_manage_tool(
             "patch_length": len(content),
         }, user_id=uid)
 
+        # ── 遥测 ──
+        try:
+            from harness.skills.evolution.usage import bump_patch
+            bump_patch(uid, name)
+        except Exception:
+            pass
+
         _refresh_cache()
 
         logger.info("skill_manage: patched custom skill '%s' (op=%s, user=%s)", name, operation, uid)
@@ -306,6 +346,13 @@ def create_skill_manage_tool(
             logger.warning("Failed to archive skill '%s' before delete", name)
 
         skill_storage.delete_custom_skill(name, user_id=uid)
+
+        # ── 遥测 ──
+        try:
+            from harness.skills.evolution.usage import forget
+            forget(uid, name)
+        except Exception:
+            pass
 
         _refresh_cache()
 

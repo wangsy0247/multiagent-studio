@@ -367,6 +367,8 @@ You are {agent_name}, an AI assistant with multi-agent orchestration capabilitie
 
 {skills_section}
 
+{review_note}
+
 {memory_tool_section}
 
 {citations_section}
@@ -448,6 +450,7 @@ def apply_prompt_template(
     agent_soul: str = "",
     skills_section: str = "",
     language_section: str = "",
+    review_note: str = "",
 ) -> str:
     """Assemble the full Lead Agent system prompt from sections.
 
@@ -491,6 +494,7 @@ def apply_prompt_template(
         subagent_section=subagent_section,
         working_directory_section=working_directory_section,
         skills_section=skills_section,
+        review_note=review_note,
         memory_tool_section=memory_tool_section,
         citations_section=citations_section,
         response_style_section=response_style_section,
@@ -594,6 +598,23 @@ class LeadAgent:
             except Exception:
                 logger.exception("Failed to load skills for system prompt")
 
+        # Check for background skill review results from the previous turn
+        review_note = ""
+        try:
+            from harness.skills.evolution.review_fork import pop_review_notifications
+
+            if self._user_id:
+                notifications = pop_review_notifications(self._user_id)
+                if notifications:
+                    review_note = (
+                        "<review_updates>\n"
+                        "Background skill review completed last session: "
+                        + " · ".join(notifications)
+                        + "\n</review_updates>"
+                    )
+        except Exception:
+            pass
+
         return apply_prompt_template(
             agent_name=self.agent_name,
             max_concurrent_subagents=self.max_concurrent,
@@ -601,6 +622,7 @@ class LeadAgent:
             mem0_tool_enabled=mem_cfg.enabled and getattr(mem_cfg, "mem0_tool_enabled", False),
             agent_soul=self._agent_soul,
             skills_section=skills_section,
+            review_note=review_note,
         )
 
     # ------------------------------------------------------------------

@@ -128,6 +128,14 @@ class HarnessService(_BaseService):
         self._graph_cache: dict[tuple[str, str], GraphContext] = {}
         self._graph_cache_lock = asyncio.Lock()
 
+        # ── Skill self-evolution — per-thread counter + review fork ──
+        # 计数器跨轮累积 (同一 thread_id), 达到阈值触发后台 review 后归零.
+        self._thread_skill_iters: dict[str, int] = {}
+        self._skill_nudge_interval: int = 10  # trigger after 10 tool iterations
+
+        # ── Curator idle tracking ──
+        self._last_user_activity: dict[str, object] = {}  # user_id → datetime
+
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
@@ -289,6 +297,28 @@ class HarnessService(_BaseService):
         self._event_store = make_event_store()
         logger.info("RunStore=%s EventStore=%s", type(self._run_store).__name__, type(self._event_store).__name__)
 
+        # ── 后台 curator / lifecycle 调度 (不阻塞启动) ──
+        try:
+            from harness.skills.evolution.curator import maybe_run_curator
+
+            _model = eff.model
+            _skill_storage = self.skill_storage
+            _llm_factory = self._init_llm
+
+            async def _schedule_curator():
+                # 短暂延迟, 等基础设施完全就绪
+                await asyncio.sleep(5)
+                try:
+                    await maybe_run_curator(
+                        user_id, _skill_storage, _llm_factory, _model,
+                    )
+                except Exception:
+                    pass
+
+            asyncio.create_task(_schedule_curator())
+        except Exception:
+            logger.debug("Curator scheduling skipped", exc_info=True)
+
         self._initialized = True
         logger.info("HarnessService infrastructure initialized (user=%s agent=%s)", user_id, agent_name)
 
@@ -404,15 +434,9 @@ class HarnessService(_BaseService):
             "model": eff.model,
         })
 
-        # 5. 创建 per-user skill_manage 工具 (需要 per-user LLM)
-        from harness.tools.skill_manage_tool import create_skill_manage_tool, set_skill_user_id
-        # ---- 设置 skill 操作的当前用户 ID ----
+        # 5. 设置 skill 操作的当前用户 ID (skill_manage 仅后台 review fork 可用)
+        from harness.tools.skill_manage_tool import set_skill_user_id
         set_skill_user_id(user_id)
-        skill_manage = create_skill_manage_tool(
-            skill_storage=self.skill_storage,
-            model_client=llm,
-        )
-        self.tool_registry.register(skill_manage, "skills")
 
         # 6. 创建 per-user LeadAgent
         lead_agent = LeadAgent(
@@ -881,6 +905,7 @@ class HarnessService(_BaseService):
 
         # ── 获取/创建该用户的 GraphContext ──
         ctx = await self._get_or_create_graph_context(user_id, agent_name)
+        _review_model = ctx.effective_config.model  # captured for finally block
 
         # 确保 contextvar 已设置 — 缓存命中时 _build_graph_context 不会执行
         _current_req_creds.set({
@@ -991,6 +1016,15 @@ class HarnessService(_BaseService):
         active_subagents: dict[str, str] = {}  # run_id → subagent_name
         _collected_token_usage: dict[str, Any] = {}
         _title_emitted = False  # 防止重复发送 title_update
+        interrupted = False  # 技能进化器跳过中断的回合
+
+        # ── Per-thread skill evolution counter (跨轮累积) ──
+        _skill_iters = self._thread_skill_iters.get(thread_id, 0)
+        _called_tool_names: set[str] = set()
+
+        # ── Curator idle tracking ──
+        from datetime import datetime, timezone
+        self._last_user_activity[user_id] = datetime.now(timezone.utc)
 
         # ── SubAgent 实时流消费协程 ──
         _subagent_event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -1158,6 +1192,12 @@ class HarnessService(_BaseService):
                 # ── Tool start ─────────────────────────────────────
                 elif kind == "on_tool_start":
                     tool_name = evt_name  # tool name == event name
+
+                    # ── Skill evolution counter (per-thread, local var) ──
+                    _skill_iters += 1
+                    if tool_name == "skill_manage":
+                        _skill_iters = 0
+
                     tool_input: Any = evt_data.get("input", {})
                     run_id: str = event.get("run_id", "")
 
@@ -1305,12 +1345,15 @@ class HarnessService(_BaseService):
                 self.observability.finalize_trace(trace_id, "success")
 
         except asyncio.CancelledError:
+            interrupted = True
             if self._run_store:
                 await self._run_store.update_status(run_id, "interrupted")
             yield {"type": "error", "content": "执行已取消", "thread_id": thread_id}
             if self.observability:
                 self.observability.finalize_trace(trace_id, "cancelled")
         except Exception as exc:
+            interrupted = True
+            logger.exception("Execution failed for thread=%s", thread_id)
             logger.exception("Execution failed for thread=%s", thread_id)
             if self._run_store:
                 await self._run_store.update_status(run_id, "error", error=str(exc))
@@ -1341,10 +1384,48 @@ class HarnessService(_BaseService):
             ) is not None if final_state else False
             if not has_pending_clarification:
                 self._cleanup_middleware_state(thread_id)
+
+            # ── 后台技能 review (不阻塞用户) ──
+            # 触发条件: 累计 N 次工具调用, 回合正常结束, 有对话内容
+            if (
+                self._skill_nudge_interval > 0
+                and _skill_iters >= self._skill_nudge_interval
+                and final_state
+                and not interrupted
+            ):
+                final_messages = final_state.get("messages", [])
+                if final_messages:
+                    try:
+                        from harness.skills.evolution.review_fork import (
+                            spawn_background_review,
+                        )
+
+                        _task = asyncio.create_task(
+                            spawn_background_review(
+                                messages_snapshot=list(final_messages),
+                                skill_storage=self.skill_storage,
+                                llm_factory=self._init_llm,
+                                model=_review_model,
+                                user_id=user_id,
+                            )
+                        )
+                        logger.info(
+                            "Background skill review scheduled (thread=%s, iters=%d, messages=%d)",
+                            thread_id, _skill_iters, len(final_messages),
+                        )
+                    except Exception:
+                        pass  # best-effort
+                # 触发 review 后归零 — 下一轮重新开始累积
+                self._thread_skill_iters[thread_id] = 0
+            else:
+                # 未触发 — 保留当前计数, 跨轮累积
+                self._thread_skill_iters[thread_id] = _skill_iters
+
             # 正常完成（无待处理 clarification）时清理运行期标记
             # 有待处理 clarification 时保留标记，以便 stop() 可取消
             if not has_pending_clarification:
                 self._active_runs.pop(thread_id, None)
+                self._thread_skill_iters.pop(thread_id, None)  # 清理计数器
 
     async def respond_to_clarification(
         self,
