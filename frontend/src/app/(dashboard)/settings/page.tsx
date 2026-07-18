@@ -2,22 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { Save, CheckCircle, User, Cpu, Key, Brain, Shield, AlertTriangle } from "lucide-react";
-import { authAPI } from "@/lib/api-client";
+import { authAPI, getCurrentUserId } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import apiClient from "@/lib/api-client";
 
 type SettingsTab = "api" | "models" | "memory" | "profile";
 
+// 文件系统 user_id 统一为 username — 与 api-client.getCurrentUserId 保持一致
 function getUserId(): string {
-  if (typeof window === "undefined") return "default";
-  try {
-    const stored = localStorage.getItem("auth-storage");
-    if (stored) {
-      const { state } = JSON.parse(stored);
-      return state?.user?.id || "default";
-    }
-  } catch {}
-  return "default";
+  return getCurrentUserId();
 }
 
 const MODEL_OPTIONS = [

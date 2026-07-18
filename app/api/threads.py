@@ -150,7 +150,8 @@ async def delete_thread(
         raise HTTPException(status_code=404, detail="会话不存在")
 
     thread_id_str = str(thread_id)
-    user_id_str = str(current_user.id)
+    # 文件系统目录统一使用 username (~/.multiagent-studio/users/{username}/)
+    user_id_str = current_user.username
 
     # 1) 归档 — App DB 软删除
     thread.is_archived = True

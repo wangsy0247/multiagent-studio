@@ -4,7 +4,7 @@ import { useRef, useEffect, useCallback, useState } from "react";
 import { Send, Square, AlertTriangle } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
 import { SSEClient } from "@/lib/sse-client";
-import { threadsAPI, filesAPI } from "@/lib/api-client";
+import { threadsAPI, filesAPI, getCurrentUserId } from "@/lib/api-client";
 import { ChatMessage, AttachedFile } from "@/lib/types";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
@@ -179,16 +179,8 @@ export default function ChatPanel({
       const resolvedMode = propMode || (projectId ? "team" : "single");
       await sse.connect("/api/execute", {
         thread_id: currentThreadId,
-        user_id: (() => {
-          try {
-            const stored = localStorage.getItem("auth-storage");
-            if (stored) {
-              const { state } = JSON.parse(stored);
-              return state?.user?.id || "default";
-            }
-          } catch {}
-          return "default";
-        })(),
+        // 文件系统 user_id 统一为 username（后端 execute 以 JWT 用户为准，此字段仅作兼容）
+        user_id: getCurrentUserId(),
         message: text,
         files: filesPayload.length > 0 ? filesPayload : undefined,
         project_id: projectId || undefined,

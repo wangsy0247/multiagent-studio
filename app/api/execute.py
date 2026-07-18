@@ -83,7 +83,7 @@ async def execute(
         try:
             async for event_json in harness.stream_execute(
                 thread_id=req.thread_id,
-                user_id=str(current_user.id),
+                user_id=current_user.username,  # 文件系统目录统一使用 username
                 message=req.message,
                 execution_graph=req.execution_graph,
                 files=req.files,

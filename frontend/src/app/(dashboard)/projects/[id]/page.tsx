@@ -283,7 +283,6 @@ function TasksTab({ projectId }: { projectId: string }) {
     try {
       await projectsAPI.createTask(projectId, {
         title: newTitle,
-        user_id: "default",
         assigned_agent: newAssignedAgent || undefined,
       });
       setNewTitle(""); setNewAssignedAgent(""); setShowCreate(false);
@@ -293,13 +292,13 @@ function TasksTab({ projectId }: { projectId: string }) {
 
   async function handleStatusChange(taskId: string, newStatus: string) {
     try {
-      await projectsAPI.updateTask(projectId, taskId, { status: newStatus, user_id: "default" });
+      await projectsAPI.updateTask(projectId, taskId, { status: newStatus });
       loadTasks();
     } catch (err) { console.error(err); }
   }
 
   async function handleDelete(taskId: string) {
-    try { await projectsAPI.deleteTask(projectId, taskId, "default"); loadTasks(); }
+    try { await projectsAPI.deleteTask(projectId, taskId); loadTasks(); }
     catch (err) { console.error(err); }
   }
 

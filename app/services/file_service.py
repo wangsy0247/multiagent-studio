@@ -194,9 +194,22 @@ async def validate_file(file: UploadFile) -> None:
         raise ValueError(f"文件过大 (最大 {UPLOAD_MAX_SIZE_MB}MB)")
 
 
-async def save_upload(file: UploadFile, user_id: str, thread_id: str) -> FileRecord:
-    """保存上传文件到 Harness uploads 目录并返回元数据记录."""
-    upload_dir = get_upload_dir(user_id, thread_id)
+async def save_upload(
+    file: UploadFile,
+    user_id: str,
+    thread_id: str,
+    *,
+    fs_user_id: str | None = None,
+) -> FileRecord:
+    """保存上传文件到 Harness uploads 目录并返回元数据记录.
+
+    Args:
+        user_id: 数据库外键 (users.id, uuid) — 写入 FileRecord.
+        thread_id: 所属会话.
+        fs_user_id: 文件系统目录名 (username)。为空时回退到 user_id。
+    """
+    dir_uid = fs_user_id or user_id
+    upload_dir = get_upload_dir(dir_uid, thread_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
     # 沙箱内部需要目录可写
     try:
@@ -223,7 +236,7 @@ async def save_upload(file: UploadFile, user_id: str, thread_id: str) -> FileRec
             os.close(fd)
 
     # storage_path 使用相对于 harness_data_root 的路径, 便于前端/后端复用
-    rel_path = str(Path("users") / user_id / "threads" / thread_id / "user-data" / "uploads" / stored_name)
+    rel_path = str(Path("users") / dir_uid / "threads" / thread_id / "user-data" / "uploads" / stored_name)
 
     return FileRecord(
         user_id=user_id,

@@ -175,7 +175,7 @@ L0: SYSTEM_DEFAULTS (defaults.py)
     summarization={enabled:true, ...}
     ...
 
-  + L1: ~/.multiagent-studio/users/{uid}/config.yaml
+  + L1: ~/.multiagent-studio/users/{username}/config.yaml
     api_key: "sk-xxx"
     base_url: "https://..."
     default_model: "qwen3.6-plus"
@@ -184,7 +184,7 @@ L0: SYSTEM_DEFAULTS (defaults.py)
     memory: {max_injection_tokens: 500, ...}
     ...
 
-  + L2: ~/.multiagent-studio/users/{uid}/agents/{name}/config.yaml
+  + L2: ~/.multiagent-studio/users/{username}/agents/{name}/config.yaml
     model: "gpt-4o"
     temperature: 0.3
     tool_groups: ["files"]       ← 扩展到 L0

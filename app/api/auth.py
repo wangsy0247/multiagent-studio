@@ -40,13 +40,14 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
 
     # ── 为新用户创建全局配置 + default agent ──
+    # 文件系统目录统一使用 username (~/.multiagent-studio/users/{username}/)
     config_status = "created"
     try:
         from harness.config import create_user_configs
-        create_user_configs(str(user.id))
-        logger.info("Created user configs for new user '%s'", user.id)
+        create_user_configs(user.username)
+        logger.info("Created user configs for new user '%s'", user.username)
     except Exception as exc:
-        logger.warning("Failed to create user configs for '%s': %s", user.id, exc)
+        logger.warning("Failed to create user configs for '%s': %s", user.username, exc)
         config_status = f"failed: {exc}"
 
     token = create_access_token(str(user.id), user.role)
@@ -69,6 +70,14 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="账户已被禁用")
+
+    # ── 自愈：确保 username 目录下的全局配置 + default agent 存在 (幂等) ──
+    # 兼容统一目录标识之前注册的老用户 (其配置在 uuid 目录或从未创建)
+    try:
+        from harness.config import create_user_configs
+        create_user_configs(user.username)
+    except Exception as exc:
+        logger.warning("Failed to ensure user configs for '%s': %s", user.username, exc)
 
     token = create_access_token(str(user.id), user.role)
     return TokenResponse(

@@ -31,7 +31,10 @@ async def upload_file(
     await validate_file(file)
 
     try:
-        record = await save_upload(file, str(current_user.id), str(thread_id))
+        # DB 记录用 uuid 外键，文件系统路径统一用 username
+        record = await save_upload(
+            file, str(current_user.id), str(thread_id), fs_user_id=current_user.username
+        )
         db.add(record)
         await db.commit()
         await db.refresh(record)
@@ -93,7 +96,8 @@ async def download_file(
     if record is None:
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    full_path = get_upload_dir(str(record.user_id), str(record.thread_id)) / record.filename
+    # 文件系统目录统一使用 username（record.user_id 是 uuid 外键，仅用于 DB 归属校验）
+    full_path = get_upload_dir(current_user.username, str(record.thread_id)) / record.filename
     if not full_path.is_file():
         raise HTTPException(status_code=404, detail="文件已丢失")
 
@@ -118,8 +122,8 @@ async def delete_file(
     if record is None:
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    # 删除物理文件
-    full_path = get_upload_dir(str(record.user_id), str(record.thread_id)) / record.filename
+    # 删除物理文件（文件系统目录统一使用 username）
+    full_path = get_upload_dir(current_user.username, str(record.thread_id)) / record.filename
     if full_path.is_file():
         try:
             full_path.unlink()

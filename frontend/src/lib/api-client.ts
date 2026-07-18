@@ -45,8 +45,8 @@ apiClient.interceptors.response.use(
 
 export default apiClient;
 
-/** 获取当前登录用户的 ID，优先使用 username（可读性更好），兜底 id，再兜底 "default" */
-function getCurrentUserId(): string {
+/** 获取当前登录用户的文件系统 ID — 统一为 username（目录 ~/.multiagent-studio/users/{username}/），兜底 id，再兜底 "default" */
+export function getCurrentUserId(): string {
   if (typeof window === "undefined") return "default";
   try {
     const stored = localStorage.getItem("auth-storage");

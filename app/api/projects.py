@@ -7,40 +7,15 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import resolve_fs_user_id
+from app.db.engine import get_db
 from harness.config.paths import get_paths
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["项目管理"])
-
-
-# ── JWT 兜底：从 Authorization header 提取真实 user_id ──
-
-def _extract_jwt_sub(authorization: str | None) -> str | None:
-    """从 Authorization: Bearer <token> 的 JWT 中提取 user_id (sub 字段)。"""
-    if not authorization or not authorization.startswith("Bearer "):
-        return None
-    try:
-        from jose import jwt, JWTError
-        from app.config import get_settings
-        token = authorization[7:]
-        settings = get_settings()
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        return payload.get("sub")
-    except (JWTError, Exception):
-        return None
-
-
-def _resolve_user_id(explicit: str | None, authorization: str | None = None) -> str:
-    """解析真实 user_id：explicit 非 default → 直接使用；否则从 JWT 提取；兜底 default。"""
-    if explicit and explicit != "default":
-        return explicit
-    jwt_uid = _extract_jwt_sub(authorization)
-    if jwt_uid:
-        logger.info(f"[_resolve_user_id] JWT 兜底 → user_id={jwt_uid}")
-        return jwt_uid
-    return "default"
 
 
 # ── 路径工具 ──
@@ -102,8 +77,9 @@ def _save_tasks(project_id: str, tasks: list, user_id: str):
 async def list_projects(
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     d = _proj_dir(uid)
     if not d.exists():
         return {"projects": [], "count": 0}
@@ -131,10 +107,10 @@ async def list_projects(
 
 
 @router.post("")
-async def create_project(request: Request):
+async def create_project(request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     auth_header = request.headers.get("Authorization")
-    user_id = _resolve_user_id(body.get("user_id"), auth_header)
+    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
     d = _proj_dir(user_id)
     d.mkdir(parents=True, exist_ok=True)
     pid = body.get("id", str(uuid.uuid4())[:8])
@@ -160,8 +136,9 @@ async def get_project(
     project_id: str,
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     p = _project_file(project_id, uid)
     if not p.exists():
         raise HTTPException(404, "Project not found")
@@ -169,10 +146,10 @@ async def get_project(
 
 
 @router.put("/{project_id}")
-async def update_project(project_id: str, request: Request):
+async def update_project(project_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     auth_header = request.headers.get("Authorization")
-    user_id = _resolve_user_id(body.get("user_id"), auth_header)
+    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
     p = _project_file(project_id, user_id)
     if not p.exists():
         raise HTTPException(404, "Project not found")
@@ -190,8 +167,9 @@ async def delete_project(
     project_id: str,
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     # 删除新格式目录 (如果存在)
     d = _project_dir(project_id, uid)
     if d.exists():
@@ -206,10 +184,10 @@ async def delete_project(
 
 
 @router.post("/{project_id}/members")
-async def add_member(project_id: str, request: Request):
+async def add_member(project_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     auth_header = request.headers.get("Authorization")
-    user_id = _resolve_user_id(body.get("user_id"), auth_header)
+    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
     agent_name = body.get("agent_name", "")
     p = _project_file(project_id, user_id)
     if not p.exists():
@@ -230,8 +208,9 @@ async def remove_member(
     agent_name: str,
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     p = _project_file(project_id, uid)
     if not p.exists():
         raise HTTPException(404, "Project not found")
@@ -247,16 +226,17 @@ async def list_tasks(
     project_id: str,
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     return {"tasks": _load_tasks(project_id, uid)}
 
 
 @router.post("/{project_id}/tasks")
-async def create_task(project_id: str, request: Request):
+async def create_task(project_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     auth_header = request.headers.get("Authorization")
-    user_id = _resolve_user_id(body.get("user_id"), auth_header)
+    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
     tasks = _load_tasks(project_id, user_id)
     # 校验 status (与后端 TeamTaskStatus 5 态保持一致)
     valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
@@ -281,10 +261,10 @@ async def create_task(project_id: str, request: Request):
 
 
 @router.put("/{project_id}/tasks/{task_id}")
-async def update_task(project_id: str, task_id: str, request: Request):
+async def update_task(project_id: str, task_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     auth_header = request.headers.get("Authorization")
-    user_id = _resolve_user_id(body.get("user_id"), auth_header)
+    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
     tasks = _load_tasks(project_id, user_id)
     for t in tasks:
         if t["id"] == task_id:
@@ -309,9 +289,10 @@ async def get_agent_cards(
     project_id: str,
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
     """获取项目的 agent-card.json 内容 (成员能力快照)."""
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     try:
         from harness.team.agent_card import load_project_cards
         cards = load_project_cards(project_id, user_id=uid)
@@ -330,8 +311,9 @@ async def delete_task(
     task_id: str,
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
 ):
-    uid = _resolve_user_id(user_id, authorization)
+    uid = await resolve_fs_user_id(user_id, authorization, db)
     tasks = _load_tasks(project_id, uid)
     tasks = [t for t in tasks if t["id"] != task_id]
     _save_tasks(project_id, tasks, uid)
