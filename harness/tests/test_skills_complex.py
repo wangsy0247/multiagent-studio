@@ -36,12 +36,12 @@ class TestSkillDiscovery:
             "system-architecture-review",
         }, f"Expected 6 skills, got: {names}"
 
-    def test_three_public_three_custom(self, storage):
+    def test_builtin_and_user_skills(self, storage):
         skills = storage.load_skills()
-        public = [s for s in skills if s.category == SkillCategory.PUBLIC]
-        custom = [s for s in skills if s.category == SkillCategory.CUSTOM]
-        assert len(public) == 4, f"Expected 4 public, got: {[s.name for s in public]}"
-        assert len(custom) == 2, f"Expected 2 custom, got: {[s.name for s in custom]}"
+        builtin = [s for s in skills if s.user_id is None]
+        user = [s for s in skills if s.user_id is not None]
+        assert len(builtin) == 6, f"Expected 6 builtin, got: {[s.name for s in builtin]}"
+        assert len(user) == 0, f"Expected 0 user skills, got: {[s.name for s in user]}"
 
 
 # ===================================================================
@@ -60,15 +60,15 @@ class TestComplexSkillMetadata:
         s = {s.name: s for s in storage.load_skills()}["system-architecture-review"]
         assert s.license == "MIT"
 
-    def test_deployment_checklist_is_custom(self, storage):
+    def test_deployment_checklist_is_builtin(self, storage):
         s = {s.name: s for s in storage.load_skills()}["deployment-checklist"]
-        assert s.category == SkillCategory.CUSTOM
+        assert s.category == SkillCategory.BUILTIN
         # allowed-tools removed — legacy allow-all
         assert s.allowed_tools is None
 
     def test_deployment_checklist_has_support_files(self):
-        """Verify the custom skill directory contains its references and scripts."""
-        skill_dir = _SKILLS_ROOT / "custom" / "deployment-checklist"
+        """Verify the builtin skill directory contains its references and scripts."""
+        skill_dir = _SKILLS_ROOT / "builtin" / "deployment-checklist"
         assert (skill_dir / "references" / "rollback_procedures.md").exists()
         assert (skill_dir / "scripts" / "preflight_check.sh").exists()
         # preflight_check.sh should be executable
@@ -77,7 +77,7 @@ class TestComplexSkillMetadata:
 
     def test_architecture_review_has_support_files(self):
         """Public skill should have references and templates."""
-        skill_dir = _SKILLS_ROOT / "public" / "system-architecture-review"
+        skill_dir = _SKILLS_ROOT / "builtin" / "system-architecture-review"
         assert (skill_dir / "references" / "review_checklist.md").exists()
         assert (skill_dir / "references" / "common_anti_patterns.md").exists()
         assert (skill_dir / "templates" / "architecture_report.md").exists()
@@ -90,14 +90,14 @@ class TestComplexSkillMetadata:
 
 class TestSupportFileContent:
     def test_checklist_has_50_items(self):
-        path = _SKILLS_ROOT / "public" / "system-architecture-review" / "references" / "review_checklist.md"
+        path = _SKILLS_ROOT / "builtin" / "system-architecture-review" / "references" / "review_checklist.md"
         content = path.read_text()
         # Count checkbox items
         checkbox_count = content.count("[ ]")
         assert checkbox_count == 50, f"Expected 50 checklist items, found {checkbox_count}"
 
     def test_anti_patterns_catalog_complete(self):
-        path = _SKILLS_ROOT / "public" / "system-architecture-review" / "references" / "common_anti_patterns.md"
+        path = _SKILLS_ROOT / "builtin" / "system-architecture-review" / "references" / "common_anti_patterns.md"
         content = path.read_text()
         for pattern in [
             "Distributed Monolith",
@@ -112,7 +112,7 @@ class TestSupportFileContent:
             assert pattern in content, f"Missing anti-pattern: {pattern}"
 
     def test_report_template_has_all_sections(self):
-        path = _SKILLS_ROOT / "public" / "system-architecture-review" / "templates" / "architecture_report.md"
+        path = _SKILLS_ROOT / "builtin" / "system-architecture-review" / "templates" / "architecture_report.md"
         content = path.read_text()
         for section in [
             "Executive Summary",
@@ -124,14 +124,14 @@ class TestSupportFileContent:
             assert section in content, f"Missing template section: {section}"
 
     def test_preflight_script_is_valid_bash(self):
-        path = _SKILLS_ROOT / "custom" / "deployment-checklist" / "scripts" / "preflight_check.sh"
+        path = _SKILLS_ROOT / "builtin" / "deployment-checklist" / "scripts" / "preflight_check.sh"
         content = path.read_text()
         assert content.startswith("#!/bin/bash")
         assert "set -euo pipefail" in content
         assert "pre-flight" in content.lower()
 
     def test_rollback_procedures_covers_multiple_platforms(self):
-        path = _SKILLS_ROOT / "custom" / "deployment-checklist" / "references" / "rollback_procedures.md"
+        path = _SKILLS_ROOT / "builtin" / "deployment-checklist" / "references" / "rollback_procedures.md"
         content = path.read_text()
         assert "Kubernetes" in content
         assert "Docker Compose" in content
@@ -145,34 +145,46 @@ class TestSupportFileContent:
 
 
 class TestComplexSkillCRUD:
-    def test_read_custom_deployment_checklist(self, storage):
-        """Storage.read_custom_skill should return full SKILL.md content."""
-        content = storage.read_custom_skill("deployment-checklist")
+    def test_read_custom_deployment_checklist(self, storage, tmp_path):
+        """Read SKILL.md content for a builtin skill directly (builtin is read-only)."""
+        md_path = storage._root / "builtin" / "deployment-checklist" / "SKILL.md"
+        content = md_path.read_text()
         assert "Production deployment safety checklist" in content
         assert "Phase 1: Pre-Flight" in content
         assert "Phase 2: Canary" in content
         assert "Phase 3: Post-Deployment" in content
         assert "Phase 4: Rollback Decision" in content
 
-    def test_write_support_file_to_custom_skill(self, storage, tmp_path):
-        """Write a new reference file to a custom skill and verify."""
-        name = "deployment-checklist"
-        content = "# Test Reference\n\nThis was written by a test."
-        storage.write_custom_skill(name, "references/test_written.md", content)
+    @pytest.fixture
+    def user_storage(self, tmp_path) -> SkillStorage:
+        """Storage with user_skills_base for per-user CRUD tests."""
+        from harness.skills.storage import SkillStorage as _SkillStorage
+        import shutil
+        user_base = tmp_path / "users"
+        root = tmp_path / "skills_copy"
+        shutil.copytree(_SKILLS_ROOT / "builtin" / "deployment-checklist",
+                        root / "deployment-checklist", dirs_exist_ok=True)
+        return _SkillStorage(root, user_skills_base=user_base)
 
-        skill_dir = storage.get_custom_skill_dir(name)
+    def test_write_support_file_to_custom_skill(self, user_storage):
+        """Write a new reference file to a user skill and verify."""
+        name = "deployment-checklist"
+        uid = "testuser"
+        content = "# Test Reference\n\nThis was written by a test."
+        storage = user_storage
+        storage.write_custom_skill(name, "references/test_written.md", content, user_id=uid)
+
+        skill_dir = storage.get_custom_skill_dir(name, user_id=uid)
         written = skill_dir / "references" / "test_written.md"
         assert written.exists()
         assert written.read_text() == content
 
-        # Cleanup — remove the test file
-        written.unlink()
-
-    def test_path_traversal_blocked_on_complex_skill(self, storage):
+    def test_path_traversal_blocked_on_complex_skill(self, user_storage):
         """Even on skills with deep subdirectories, traversal is blocked."""
         name = "deployment-checklist"
+        uid = "testuser"
         with pytest.raises(ValueError, match="resolve within"):
-            storage.write_custom_skill(name, "../../../etc/passwd", "evil")
+            user_storage.write_custom_skill(name, "../../../etc/passwd", "evil", user_id=uid)
 
 
 # ===================================================================
@@ -195,14 +207,12 @@ class TestPromptWithAllSkills:
         ]:
             assert f"<name>{name}</name>" in section, f"Missing {name}"
 
-    def test_prompt_distinguishes_public_from_custom(self, storage):
+    def test_prompt_labels_are_builtin(self, storage):
         skills = storage.load_skills(enabled_only=True)
         section = get_skills_prompt_section(skills)
 
-        # All public skills labeled [public]
-        assert section.count("[public]") == 4
-        # All custom skills labeled [custom]
-        assert section.count("[custom]") == 2
+        # All 6 skills labeled [built-in]
+        assert section.count("[built-in]") == 6
 
     def test_prompt_size_scales_reasonably(self, storage):
         """6 skills should produce a prompt section under 5KB."""
@@ -282,10 +292,10 @@ class TestComplexToolFiltering:
 class TestParseThenLoadRoundTrip:
     def test_parse_architecture_review_then_load(self):
         """Verify that individually parsed skills match what storage loads."""
-        md_path = _SKILLS_ROOT / "public" / "system-architecture-review" / SKILL_MD_FILE
+        md_path = _SKILLS_ROOT / "builtin" / "system-architecture-review" / SKILL_MD_FILE
         parsed = parse_skill_file(
             md_path,
-            SkillCategory.PUBLIC,
+            SkillCategory.BUILTIN,
             relative_path=Path("system-architecture-review"),
         )
         assert parsed is not None
@@ -293,25 +303,25 @@ class TestParseThenLoadRoundTrip:
         assert parsed.description.startswith("Conduct comprehensive system architecture reviews")
         # allowed-tools removed — legacy allow-all
         assert parsed.allowed_tools is None
-        assert parsed.category == SkillCategory.PUBLIC
+        assert parsed.category == SkillCategory.BUILTIN
 
     def test_parse_deployment_checklist_then_load(self):
-        md_path = _SKILLS_ROOT / "custom" / "deployment-checklist" / SKILL_MD_FILE
+        md_path = _SKILLS_ROOT / "builtin" / "deployment-checklist" / SKILL_MD_FILE
         parsed = parse_skill_file(
             md_path,
-            SkillCategory.CUSTOM,
+            SkillCategory.BUILTIN,
             relative_path=Path("deployment-checklist"),
         )
         assert parsed is not None
         assert parsed.name == "deployment-checklist"
-        assert parsed.category == SkillCategory.CUSTOM
+        assert parsed.category == SkillCategory.BUILTIN
         # allowed-tools removed — legacy allow-all
         assert parsed.allowed_tools is None
 
     def test_container_path_for_nested_skill(self):
         """Skill in a flat directory gets correct container path."""
-        md_path = _SKILLS_ROOT / "public" / "system-architecture-review" / SKILL_MD_FILE
-        parsed = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        md_path = _SKILLS_ROOT / "builtin" / "system-architecture-review" / SKILL_MD_FILE
+        parsed = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert parsed is not None
-        assert parsed.get_container_path() == "/mnt/skills/public/system-architecture-review"
-        assert parsed.get_container_file_path() == "/mnt/skills/public/system-architecture-review/SKILL.md"
+        assert parsed.get_container_path() == "/mnt/skills/builtin/system-architecture-review"
+        assert parsed.get_container_file_path() == "/mnt/skills/builtin/system-architecture-review/SKILL.md"

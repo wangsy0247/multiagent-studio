@@ -19,7 +19,6 @@ ALLOWED_FRONTMATTER_PROPERTIES: frozenset[str] = frozenset(
         "license",
         "allowed-tools",
         "metadata",
-        "compatibility",
         "version",
         "author",
     }
@@ -29,6 +28,29 @@ ALLOWED_FRONTMATTER_PROPERTIES: frozenset[str] = frozenset(
 _NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
+
+
+def validate_skill_name(name: str) -> str:
+    """Validate and normalise a skill name; return the normalised form.
+
+    Shared by ``SkillStorage`` and ``_validate_skill_frontmatter`` so the
+    rules are defined in exactly one place.
+
+    Raises:
+        ValueError: Name does not match the required convention.
+    """
+    normalized = name.strip()
+    if not _NAME_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "Skill name must be hyphen-case using lowercase letters, "
+            "digits, and hyphens only."
+        )
+    if len(normalized) > _MAX_NAME_LENGTH:
+        raise ValueError(
+            f"Skill name must be {_MAX_NAME_LENGTH} characters or fewer "
+            f"(got {len(normalized)})."
+        )
+    return normalized
 
 
 def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]:
@@ -81,20 +103,10 @@ def _validate_skill_frontmatter(skill_dir: Path) -> tuple[bool, str, str | None]
     description = description.strip()
 
     # --- name validation ---------------------------------------------------------
-    if not _NAME_PATTERN.fullmatch(name):
-        return (
-            False,
-            f"Skill name '{name}' must use lowercase letters, digits, and hyphens "
-            f"(e.g. 'my-skill-name')",
-            None,
-        )
-    if len(name) > _MAX_NAME_LENGTH:
-        return (
-            False,
-            f"Skill name must be {_MAX_NAME_LENGTH} characters or fewer "
-            f"(got {len(name)})",
-            None,
-        )
+    try:
+        name = validate_skill_name(name)
+    except ValueError as e:
+        return False, str(e), None
 
     # --- description validation --------------------------------------------------
     if "<" in description or ">" in description:

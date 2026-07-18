@@ -102,6 +102,26 @@ class LocalSandbox(Sandbox):
                 )
             )
 
+        # Built-in skills — mounted directly from the project directory.
+        # This avoids the stale-copy problem of mirroring into data_root and
+        # the symlink-traversal problem (Path.resolve() would follow the
+        # symlink and fail the containment check).  The mapping is more
+        # specific than the /mnt/skills entry above so _find_mapping picks
+        # it first for any /mnt/skills/builtin/… path.
+        import os as _os
+        _this_file = Path(_os.path.dirname(_os.path.abspath(__file__)))
+        # harness/services/ → harness/ → project root
+        _project_root = _this_file.parent.parent
+        _builtin_skills = (_project_root / "skills" / "builtin").resolve()
+        if _builtin_skills.exists():
+            mappings.append(
+                PathMapping(
+                    container_path=f"{VIRTUAL_SKILLS_PATH}/builtin",
+                    local_path=_builtin_skills,
+                    read_only=True,
+                )
+            )
+
         return mappings
 
     def _find_mapping(self, virtual_path: str) -> PathMapping | None:

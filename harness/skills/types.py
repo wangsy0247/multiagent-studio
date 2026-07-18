@@ -14,12 +14,10 @@ SKILL_MD_FILE = "SKILL.md"
 class SkillCategory(StrEnum):
     """Source category for a skill.
 
-    - ``PUBLIC``: built-in skill bundled with the platform, read-only.
-    - ``CUSTOM``: user-authored skill that can be edited or deleted.
+    - ``BUILTIN``: built-in skill bundled with the platform, read-only.
     """
 
-    PUBLIC = "public"
-    CUSTOM = "custom"
+    BUILTIN = "builtin"
 
 
 @dataclass
@@ -32,7 +30,7 @@ class Skill:
     skill_dir: Path
     skill_file: Path
     relative_path: Path  # Relative path from category root to skill directory
-    category: SkillCategory  # 'public' or 'custom'
+    category: SkillCategory  # 'builtin'
     allowed_tools: list[str] | None = None
     enabled: bool = False  # Whether this skill is enabled
     user_id: str | None = None  # None → project skill; "alice" → user private skill
@@ -46,8 +44,8 @@ class Skill:
     def get_container_path(self, container_base_path: str = "/mnt/skills") -> str:
         """Get the full path to this skill directory in the sandbox container.
 
-        User-private skills live under ``/mnt/skills/my/`` (per-user mount).
-        Project-level skills keep the existing ``/mnt/skills/{category}/`` layout.
+        User-private skills live under ``/mnt/skills/my/``.
+        Built-in skills live under ``/mnt/skills/builtin/``.
 
         Args:
             container_base_path: Base path where skills are mounted.
@@ -56,13 +54,8 @@ class Skill:
             Full container path to the skill directory.
         """
         if self.user_id:
-            # User private: /mnt/skills/my/{name}/
             return f"{container_base_path}/my/{self.relative_path}"
-        category_base = f"{container_base_path}/{self.category}"
-        skill_path = self.skill_path
-        if skill_path:
-            return f"{category_base}/{skill_path}"
-        return category_base
+        return f"{container_base_path}/builtin/{self.relative_path}"
 
     def get_container_file_path(self, container_base_path: str = "/mnt/skills") -> str:
         """Get the full path to this skill's SKILL.md in the sandbox container."""

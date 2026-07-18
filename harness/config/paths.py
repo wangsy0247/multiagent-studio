@@ -29,7 +29,7 @@ _skills_dir: Path | None = None
 
 
 def _default_skills_dir() -> Path:
-    """Return the project skills directory (public + custom)."""
+    """Return the project skills directory (builtin)."""
     import os
 
     _this_file = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +81,44 @@ def ensure_user_skills_symlink(skills_root: Path, user_id: str, *, _paths: Paths
         my_link.unlink()
 
     my_link.symlink_to(user_skills, target_is_directory=True)
+
+
+def sync_builtin_skills(skills_root: Path) -> None:
+    """Copy project ``skills/builtin/`` → ``<skills_root>/builtin/``.
+
+    Project builtin skills are copied into the data-root skills directory so
+    that Docker bind mounts can access them.  Symlinks are NOT used because
+    the Docker daemon may not be able to resolve the project path (e.g. when
+    the project lives on a Windows drive that isn't shared with Docker
+    Desktop).
+
+    LocalSandbox ignores the copied directory — it uses a dedicated
+    ``PathMapping`` that points directly at the project tree.
+    """
+    import shutil
+
+    dest = skills_root / "builtin"
+    project_builtin = _default_skills_dir() / "builtin"
+
+    # If dest *is* the project builtin directory (not a symlink), skip.
+    # 注意: dest.resolve() 会跟随 symlink, 所以先检查 dest 不是 symlink.
+    if not dest.is_symlink() and dest.resolve() == project_builtin.resolve():
+        return
+
+    if not project_builtin.exists():
+        if dest.is_symlink():
+            dest.unlink()
+        elif dest.exists():
+            shutil.rmtree(dest)
+        return
+
+    # Remove any stale symlink before copying real files.
+    if dest.is_symlink():
+        dest.unlink()
+
+    # Copy project builtin skills into data-root.  dirs_exist_ok=True makes
+    # this idempotent — subsequent calls only update changed files.
+    shutil.copytree(project_builtin, dest, dirs_exist_ok=True)
 
 
 _SAFE_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -217,7 +255,7 @@ class Paths:
 
     @property
     def skills_dir(self) -> Path:
-        """Host path for the project skills directory (public + custom)."""
+        """Host path for the project skills directory (builtin)."""
         return get_skills_root()
 
     @property

@@ -7,11 +7,7 @@ chain when only the skill prompt section is needed.
 
 def _skill_label(skill) -> str:
     """Human-readable ownership label for a skill."""
-    if skill.user_id:
-        return "mine"
-    if skill.category == "public":
-        return "built-in"
-    return "shared"
+    return "mine" if skill.user_id else "built-in"
 
 
 def get_skills_prompt_section(

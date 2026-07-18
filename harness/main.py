@@ -85,57 +85,6 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Skill sync utility — copies project skills to data_root for sandbox access
-# ---------------------------------------------------------------------------
-
-def _sync_skills_to_data_root(src: Path, dst: Path) -> None:
-    """Copy skills from *src* to *dst* (incremental — skips unchanged files).
-
-    OpenSandbox only allows bind-mounting paths under the configured data root.
-    Project skills live outside that tree, so they must be mirrored into the
-    data root at startup.  File size + mtime is used as a cheap "changed?"
-    check to avoid unnecessary copies on every restart.
-
-    Uses ``copyfile`` (not ``copy2``) to avoid preserving host UID/GID —
-    the container may not have a matching user, causing "unknown userid"
-    errors when listing files.
-    """
-    import shutil
-
-    if not src.exists():
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-
-    for src_file in src.rglob("*"):
-        if src_file.is_dir():
-            continue
-        # Skip hidden / history files
-        if any(part.startswith(".") for part in src_file.parts):
-            continue
-        rel = src_file.relative_to(src)
-        dst_file = dst / rel
-        # Copy only if missing or changed (also re-copy if permissions are
-        # wrong — fixes stale files from previous copy2 that preserved host UID).
-        if dst_file.exists():
-            try:
-                src_stat = src_file.stat()
-                dst_stat = dst_file.stat()
-                if (
-                    src_stat.st_size == dst_stat.st_size
-                    and abs(src_stat.st_mtime - dst_stat.st_mtime) < 1.0
-                    and (dst_stat.st_mode & 0o777) == 0o644
-                ):
-                    continue  # unchanged
-            except OSError:
-                pass
-        dst_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src_file, dst_file)
-        # Normalise permissions so the container can read them (avoids
-        # "unknown userid" errors from OpenSandbox file listing).
-        dst_file.chmod(0o644)
-
-
-# ---------------------------------------------------------------------------
 # HarnessService
 # ---------------------------------------------------------------------------
 
@@ -278,25 +227,19 @@ class HarnessService(_BaseService):
             Path(os.path.dirname(os.path.abspath(__file__))).parent / "skills"
         )
         _project_skills_root.mkdir(parents=True, exist_ok=True)
-        (_project_skills_root / "public").mkdir(exist_ok=True)
-        (_project_skills_root / "custom").mkdir(exist_ok=True)
-        # 6b. Sync skills → data_root for sandbox mount (OpenSandbox 只允许
-        # data_root 前缀下的路径, 项目 skills/ 路径不在允许范围内).
+        (_project_skills_root / "builtin").mkdir(exist_ok=True)
+        # 6b. Skills: builtin 复制到 data_root (Docker 可访问), my/ 用 symlink.
+        # LocalSandbox 使用专用 PathMapping, 不使用这里的复制目录.
         _data_skills_root = Path(self.config.data_root).expanduser().resolve() / "skills"
-        try:
-            _sync_skills_to_data_root(_project_skills_root, _data_skills_root)
-            from harness.config.paths import set_skills_root
-            set_skills_root(_data_skills_root)
-            logger.info("Skills synced to data root: %s", _data_skills_root)
-        except Exception:
-            logger.warning("Failed to sync skills to data root, sandbox skill access may fail",
-                           exc_info=True)
-            _data_skills_root = None  # sync failed → don't pass to SkillStorage
+        _data_skills_root.mkdir(parents=True, exist_ok=True)
+        from harness.config.paths import set_skills_root, sync_builtin_skills
+        set_skills_root(_data_skills_root)
+        sync_builtin_skills(_data_skills_root)
+        logger.info("Skills root: data=%s project=%s", _data_skills_root, _project_skills_root)
 
         _user_skills_base = Path(self.config.data_root).expanduser().resolve() / "users"
         self.skill_storage = SkillStorage(
             _project_skills_root,
-            sandbox_sync_root=_data_skills_root,
             user_skills_base=_user_skills_base,
         )
         self.skills = self.skill_storage.load_skills(enabled_only=True)
@@ -374,6 +317,32 @@ class HarnessService(_BaseService):
         self._graph_cache.clear()
         logger.info("HarnessService shut down")
 
+    def invalidate_graph_cache(self, user_id: str | None = None) -> int:
+        """Invalidate cached graph contexts so they are rebuilt on next request.
+
+        Called by the skills API layer after any mutation that affects the
+        system prompt (toggle, create, update, delete, install, rollback).
+
+        Args:
+            user_id: If provided, only invalidate entries for this user.
+                     If ``None``, invalidate **all** cached entries.
+
+        Returns:
+            Number of entries removed.
+        """
+        if user_id is not None:
+            keys = [k for k in self._graph_cache if k[0] == user_id]
+        else:
+            keys = list(self._graph_cache)
+        for k in keys:
+            del self._graph_cache[k]
+        if keys:
+            logger.info(
+                "Graph cache invalidated: %d entries (user=%s)",
+                len(keys), user_id or "*",
+            )
+        return len(keys)
+
     # ------------------------------------------------------------------
     # Per-(user, agent) graph context — lazy compilation
     # ------------------------------------------------------------------
@@ -428,10 +397,11 @@ class HarnessService(_BaseService):
         # 3. 创建 per-user middlewares
         middlewares = self._build_middlewares_for(eff, user_id)
 
-        # 4. 设置 contextvar — 子 agent 通过 _init_llm 读取当前用户凭证
+        # 4. 设置 contextvar — 子 agent 通过 _init_llm 读取当前用户凭证和模型
         _current_req_creds.set({
             "api_key": eff.api_key,
             "base_url": eff.base_url,
+            "model": eff.model,
         })
 
         # 5. 创建 per-user skill_manage 工具 (需要 per-user LLM)
@@ -453,6 +423,7 @@ class HarnessService(_BaseService):
             skill_storage=self.skill_storage,
             agent_name=eff.agent_display_name or agent_name,
             user_id=user_id,
+            agent_soul=eff.agent_soul,
         )
 
         # 7. 编译 graph
@@ -516,18 +487,12 @@ class HarnessService(_BaseService):
         api_key: str = "",
         base_url: str = "",
     ) -> BaseChatModel:
-        model = model or "gpt-4o"
+        # 回退到 contextvar 中的 per-user 凭证 (SubagentManager 调用时模型/凭证均为空)
+        creds = _current_req_creds.get()
+        model = model or creds.get("model") or "gpt-4o"
+        api_key = api_key or creds.get("api_key", "")
+        base_url = base_url or creds.get("base_url", "")
         effective_base_url = base_url or "https://api.openai.com/v1"
-
-        # 回退到 contextvar 中的 per-user 凭证 (SubagentManager 调用时传入为空)
-        if not api_key or not base_url:
-            creds = _current_req_creds.get()
-            if not api_key:
-                api_key = creds.get("api_key", "")
-            if not base_url:
-                base_url = creds.get("base_url", "")
-            if base_url:
-                effective_base_url = base_url
 
         # 端到端调试: 输出实际使用的模型和 API 配置
         logger.info(
@@ -921,6 +886,7 @@ class HarnessService(_BaseService):
         _current_req_creds.set({
             "api_key": ctx.effective_config.api_key,
             "base_url": ctx.effective_config.base_url,
+            "model": ctx.effective_config.model,
         })
 
         # ── Team 模式路由 ──
@@ -1195,9 +1161,9 @@ class HarnessService(_BaseService):
                     tool_input: Any = evt_data.get("input", {})
                     run_id: str = event.get("run_id", "")
 
-                    # Detect SubAgent dispatch (the ``task`` tool)
-                    if tool_name == "task" and isinstance(tool_input, dict):
-                        sub_name = tool_input.get("agent_name", "unknown")
+                    # Detect SubAgent dispatch (via ``task`` or ``Agent`` tool)
+                    if tool_name in ("task", "Agent") and isinstance(tool_input, dict):
+                        sub_name = tool_input.get("name") or tool_input.get("agent_name", "unknown")
                         active_subagents[run_id] = str(sub_name)
                         # ── 查找 SubAgent 配置获取 max_turns ──
                         _max_turns = 50
@@ -1213,7 +1179,7 @@ class HarnessService(_BaseService):
                             "context": str(tool_input.get("context", "")),
                             "max_turns": _max_turns,
                         }
-                    elif tool_name not in ("task",):
+                    elif tool_name not in ("task", "Agent"):
                         yield {
                             "type": "tool_call",
                             "thread_id": thread_id,
@@ -1227,7 +1193,7 @@ class HarnessService(_BaseService):
                     run_id: str = event.get("run_id", "")
                     tool_output: Any = evt_data.get("output", "")
 
-                    if tool_name == "task":
+                    if tool_name in ("task", "Agent"):
                         # SubAgent completion
                         sub_name = active_subagents.pop(run_id, "unknown")
                         # ── 从 SubagentManager 获取完整结果 (含 ai_messages) ──
@@ -1263,7 +1229,7 @@ class HarnessService(_BaseService):
                                 else None
                             ),
                         }
-                    elif tool_name not in ("task",):
+                    elif tool_name not in ("task", "Agent"):
                         output_str = ""
                         if hasattr(tool_output, "content"):
                             output_str = str(tool_output.content)
@@ -1478,15 +1444,18 @@ class HarnessService(_BaseService):
                 elif kind == "on_tool_start":
                     tool_name = evt_name
                     tool_input: Any = evt_data.get("input", {})
-                    if tool_name == "task":
-                        sub_name = tool_input.get("agent_name", "unknown") if isinstance(tool_input, dict) else "unknown"
+                    if tool_name in ("task", "Agent"):
+                        sub_name = (
+                            (tool_input.get("name") or tool_input.get("agent_name", "unknown"))
+                            if isinstance(tool_input, dict) else "unknown"
+                        )
                         yield {
                             "type": "subagent_start", "thread_id": thread_id,
                             "subagent_name": str(sub_name),
                             "instruction": str(tool_input.get("instruction", "")) if isinstance(tool_input, dict) else "",
                             "context": str(tool_input.get("context", "")) if isinstance(tool_input, dict) else "",
                         }
-                    elif tool_name not in ("task",):
+                    elif tool_name not in ("task", "Agent"):
                         yield {
                             "type": "tool_call", "thread_id": thread_id,
                             "tool_name": tool_name,

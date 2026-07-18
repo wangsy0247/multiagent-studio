@@ -245,8 +245,7 @@ class ExtensionsConfig(BaseModel):
     ) -> bool:
         """Return ``True`` when *skill_name* is enabled.
 
-        Defaults to ``True`` for both ``public`` and ``custom`` skills when
-        no explicit state is configured.
+        Defaults to ``True`` when no explicit state is configured.
         """
         state = self.skills.get(skill_name)
         if state is not None:

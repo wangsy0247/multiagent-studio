@@ -30,8 +30,7 @@ class TestRealSkills:
 
     def test_skills_directory_exists(self):
         assert _SKILLS_ROOT.exists(), f"skills/ directory not found at {_SKILLS_ROOT}"
-        assert (_SKILLS_ROOT / "public").is_dir()
-        assert (_SKILLS_ROOT / "custom").is_dir()
+        assert (_SKILLS_ROOT / "builtin").is_dir()
 
     def test_load_all_skills(self, storage):
         skills = storage.load_skills()
@@ -43,17 +42,18 @@ class TestRealSkills:
         assert "deep-research" in names
         assert "my-workflow" in names  # custom skill
 
-    def test_public_skills_are_public(self, storage):
+    def test_builtin_skills_exist(self, storage):
         skills = storage.load_skills()
-        public = {s.name: s for s in skills if s.category == SkillCategory.PUBLIC}
-        assert "greeting-responder" in public
-        assert "code-reviewer" in public
-        assert "deep-research" in public
+        builtin = {s.name: s for s in skills if s.user_id is None}
+        assert "greeting-responder" in builtin
+        assert "code-reviewer" in builtin
+        assert "deep-research" in builtin
+        assert "my-workflow" in builtin  # also in builtin/ dir
 
-    def test_custom_skills_are_custom(self, storage):
+    def test_all_skills_are_builtin(self, storage):
         skills = storage.load_skills()
-        custom = {s.name: s for s in skills if s.category == SkillCategory.CUSTOM}
-        assert "my-workflow" in custom
+        for s in skills:
+            assert s.category == SkillCategory.BUILTIN
 
     def test_all_skills_enabled_by_default(self, storage):
         skills = storage.load_skills()
@@ -79,7 +79,7 @@ class TestSkillMetadata:
         skill = skills["greeting-responder"]
         assert skill.description.startswith("Respond to user greetings")
         assert skill.license == "MIT"
-        assert skill.category == SkillCategory.PUBLIC
+        assert skill.category == SkillCategory.BUILTIN
         assert skill.allowed_tools is None  # no restriction
 
     def test_code_reviewer_allowed_tools(self, storage):
@@ -94,12 +94,12 @@ class TestSkillMetadata:
         # allowed-tools removed — legacy allow-all
         assert skill.allowed_tools is None
 
-    def test_my_workflow_is_custom(self, storage):
+    def test_my_workflow_metadata(self, storage):
         skills = {s.name: s for s in storage.load_skills()}
         skill = skills["my-workflow"]
-        assert skill.category == SkillCategory.CUSTOM
+        assert skill.category == SkillCategory.BUILTIN
         assert skill.description.startswith("My custom daily workflow")
-        assert skill.allowed_tools is None  # no tool restriction for custom skill
+        assert skill.allowed_tools is None
 
 
 # ===================================================================
@@ -125,25 +125,24 @@ class TestPromptGeneration:
         skills = storage.load_skills(enabled_only=True)
         section = get_skills_prompt_section(skills)
 
-        assert "/mnt/skills/public/greeting-responder/SKILL.md" in section
-        assert "/mnt/skills/public/code-reviewer/SKILL.md" in section
-        assert "/mnt/skills/public/deep-research/SKILL.md" in section
-        assert "/mnt/skills/custom/my-workflow/SKILL.md" in section
+        assert "/mnt/skills/builtin/greeting-responder/SKILL.md" in section
+        assert "/mnt/skills/builtin/code-reviewer/SKILL.md" in section
+        assert "/mnt/skills/builtin/deep-research/SKILL.md" in section
+        assert "/mnt/skills/builtin/my-workflow/SKILL.md" in section
 
     def test_prompt_section_labels_categories(self, storage):
         skills = storage.load_skills(enabled_only=True)
         section = get_skills_prompt_section(skills)
 
-        # Public skills labeled [public], custom labeled [custom]
-        assert "[public]" in section
-        assert "[custom]" in section
+        # All skills labeled [built-in]
+        assert "[built-in]" in section
 
     def test_prompt_length_is_reasonable(self, storage):
-        """Prompt section shouldn't be excessively large even with 4 skills."""
+        """Prompt section shouldn't be excessively large even with 6 skills."""
         skills = storage.load_skills(enabled_only=True)
         section = get_skills_prompt_section(skills)
-        # Should be well under 4096 chars for 4 skills
-        assert len(section) < 3000, f"Prompt section too long: {len(section)} chars"
+        # Should be well under 4096 chars for 6 skills
+        assert len(section) < 3500, f"Prompt section too long: {len(section)} chars"
 
 
 # ===================================================================
@@ -179,7 +178,7 @@ class TestToolFiltering:
                 skill_dir=Path("/fake"),
                 skill_file=Path("/fake/SKILL.md"),
                 relative_path=Path("code-reviewer"),
-                category=SkillCategory.PUBLIC,
+                category=SkillCategory.BUILTIN,
                 allowed_tools=["file_read", "list_files", "grep_tool", "glob_tool"],
                 enabled=True,
             )
@@ -212,7 +211,7 @@ class TestToolFiltering:
                 skill_dir=Path("/fake1"),
                 skill_file=Path("/fake1/SKILL.md"),
                 relative_path=Path("code-reviewer"),
-                category=SkillCategory.PUBLIC,
+                category=SkillCategory.BUILTIN,
                 allowed_tools=["file_read"],
                 enabled=True,
             ),
@@ -223,7 +222,7 @@ class TestToolFiltering:
                 skill_dir=Path("/fake2"),
                 skill_file=Path("/fake2/SKILL.md"),
                 relative_path=Path("deep-research"),
-                category=SkillCategory.PUBLIC,
+                category=SkillCategory.BUILTIN,
                 allowed_tools=["web_search"],
                 enabled=True,
             ),

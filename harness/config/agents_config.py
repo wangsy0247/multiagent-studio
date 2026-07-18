@@ -401,8 +401,10 @@ def create_default_agent(user_id: str) -> AgentConfig:
     save_agent_config(DEFAULT_AGENT_NAME, cfg, user_id=user_id)
     save_agent_soul(
         DEFAULT_AGENT_NAME,
-        "# Default Agent\n\nYou are a helpful AI assistant. "
-        "Analyze user requests and use available tools to complete tasks.",
+        "# Default Agent — Multi-Agent Orchestrator\n\n"
+        "You are an intelligent AI assistant with multi-agent orchestration "
+        "capabilities. Your role is to understand user requests deeply, "
+        "decide on the best approach, and deliver high-quality results.\n\n",
         user_id=user_id,
     )
     _save_agent_extensions_template(DEFAULT_AGENT_NAME, user_id)

@@ -22,12 +22,11 @@ def _write_skill_md(skill_dir: Path, name: str, description: str = "A test skill
     return md_path
 
 
-def _make_storage(tmp_path: Path) -> SkillStorage:
-    """Create a SkillStorage rooted in *tmp_path* with public/ and custom/ dirs."""
+def _make_storage(tmp_path: Path, *, user_skills_base: Path | None = None) -> SkillStorage:
+    """Create a SkillStorage rooted in *tmp_path* with builtin/ dir."""
     root = tmp_path / "skills"
-    (root / "public").mkdir(parents=True, exist_ok=True)
-    (root / "custom").mkdir(parents=True, exist_ok=True)
-    return SkillStorage(root)
+    (root / "builtin").mkdir(parents=True, exist_ok=True)
+    return SkillStorage(root, user_skills_base=user_skills_base)
 
 
 # ===================================================================
@@ -77,40 +76,46 @@ class TestLoadSkills:
 
     def test_single_public_skill(self, tmp_path):
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "test-skill", "test-skill")
+        _write_skill_md(storage._root / "builtin" / "test-skill", "test-skill")
 
         skills = storage.load_skills()
         assert len(skills) == 1
         assert skills[0].name == "test-skill"
-        assert skills[0].category == SkillCategory.PUBLIC
+        assert skills[0].category == SkillCategory.BUILTIN
 
     def test_multiple_skills(self, tmp_path):
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "skill-a", "skill-a")
-        _write_skill_md(storage._root / "public" / "skill-b", "skill-b")
-        _write_skill_md(storage._root / "custom" / "skill-c", "skill-c")
+        _write_skill_md(storage._root / "builtin" / "skill-a", "skill-a")
+        _write_skill_md(storage._root / "builtin" / "skill-b", "skill-b")
+        _write_skill_md(storage._root / "builtin" / "skill-c", "skill-c")
 
         skills = storage.load_skills()
         assert len(skills) == 3
         names = {s.name for s in skills}
         assert names == {"skill-a", "skill-b", "skill-c"}
 
-    def test_custom_overrides_public(self, tmp_path):
-        """When the same skill name exists in both public/ and custom/, custom wins."""
-        storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "my-skill", "my-skill", "public version")
-        _write_skill_md(storage._root / "custom" / "my-skill", "my-skill", "custom version")
+    def test_user_overrides_builtin(self, tmp_path):
+        """When the same skill name exists in both builtin/ and user skills, user wins."""
+        user_base = tmp_path / "users"
+        storage = _make_storage(tmp_path, user_skills_base=user_base)
+        uid = "testuser"
 
-        skills = storage.load_skills()
+        # Built-in version
+        _write_skill_md(storage._root / "builtin" / "my-skill", "my-skill", "builtin version")
+        # User version
+        user_dir = storage.get_user_skill_dir(uid, "my-skill")
+        _write_skill_md(user_dir, "my-skill", "user version")
+
+        skills = storage.load_skills(user_id=uid)
         assert len(skills) == 1
-        assert skills[0].description == "custom version"
-        assert skills[0].category == SkillCategory.CUSTOM
+        assert skills[0].description == "user version"
+        assert skills[0].user_id == uid
 
     def test_skip_hidden_directories(self, tmp_path):
         """Skills in directories starting with '.' should be skipped."""
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / ".hidden-skill", "hidden-skill")
-        _write_skill_md(storage._root / "public" / "visible-skill", "visible-skill")
+        _write_skill_md(storage._root / "builtin" / ".hidden-skill", "hidden-skill")
+        _write_skill_md(storage._root / "builtin" / "visible-skill", "visible-skill")
 
         skills = storage.load_skills()
         assert len(skills) == 1
@@ -119,8 +124,8 @@ class TestLoadSkills:
     def test_enabled_only_filter(self, tmp_path):
         """With enabled_only=True, only enabled skills are returned."""
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "skill-a", "skill-a")
-        _write_skill_md(storage._root / "public" / "skill-b", "skill-b")
+        _write_skill_md(storage._root / "builtin" / "skill-a", "skill-a")
+        _write_skill_md(storage._root / "builtin" / "skill-b", "skill-b")
 
         # All skills default to enabled=True after loading
         skills = storage.load_skills()
@@ -138,7 +143,7 @@ class TestLoadSkills:
     def test_nested_subdirectory_skill(self, tmp_path):
         """Skills in nested subdirectories are discovered with correct relative_path."""
         storage = _make_storage(tmp_path)
-        nested = storage._root / "public" / "subdir" / "nested-skill"
+        nested = storage._root / "builtin" / "subdir" / "nested-skill"
         _write_skill_md(nested, "nested-skill")
 
         skills = storage.load_skills()
@@ -148,9 +153,9 @@ class TestLoadSkills:
 
     def test_skills_are_sorted_by_name(self, tmp_path):
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "z-skill", "z-skill")
-        _write_skill_md(storage._root / "public" / "a-skill", "a-skill")
-        _write_skill_md(storage._root / "public" / "m-skill", "m-skill")
+        _write_skill_md(storage._root / "builtin" / "z-skill", "z-skill")
+        _write_skill_md(storage._root / "builtin" / "a-skill", "a-skill")
+        _write_skill_md(storage._root / "builtin" / "m-skill", "m-skill")
 
         skills = storage.load_skills()
         names = [s.name for s in skills]
@@ -163,75 +168,89 @@ class TestLoadSkills:
 
 
 class TestCRUD:
-    def test_read_custom_skill(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    @pytest.fixture
+    def user_storage(self, tmp_path: Path) -> SkillStorage:
+        """Storage with user_skills_base configured for per-user CRUD."""
+        user_base = tmp_path / "users"
+        return _make_storage(tmp_path, user_skills_base=user_base)
+
+    _TEST_USER = "testuser"
+
+    def test_read_custom_skill(self, user_storage):
+        storage = user_storage
         name = "my-skill"
-        skill_dir = storage._root / "custom" / name
+        uid = self._TEST_USER
+        skill_dir = storage.get_custom_skill_dir(name, user_id=uid)
         _write_skill_md(skill_dir, name, "Hello, world!")
 
-        content = storage.read_custom_skill(name)
+        content = storage.read_custom_skill(name, user_id=uid)
         assert "Hello, world!" in content
         assert f"name: {name}" in content
 
-    def test_read_nonexistent_skill_raises(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    def test_read_nonexistent_skill_raises(self, user_storage):
+        storage = user_storage
         with pytest.raises(FileNotFoundError):
-            storage.read_custom_skill("nonexistent")
+            storage.read_custom_skill("nonexistent", user_id=self._TEST_USER)
 
-    def test_write_custom_skill(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    def test_write_custom_skill(self, user_storage):
+        storage = user_storage
         name = "my-skill"
-        storage.write_custom_skill(name, SKILL_MD_FILE, "---\nname: my-skill\ndescription: Created\n---\n")
+        uid = self._TEST_USER
+        storage.write_custom_skill(name, SKILL_MD_FILE, "---\nname: my-skill\ndescription: Created\n---\n", user_id=uid)
 
-        assert storage.custom_skill_exists(name)
-        content = storage.read_custom_skill(name)
+        assert storage.custom_skill_exists(name, user_id=uid)
+        content = storage.read_custom_skill(name, user_id=uid)
         assert "Created" in content
 
-    def test_write_custom_skill_support_file(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    def test_write_custom_skill_support_file(self, user_storage):
+        storage = user_storage
         name = "my-skill"
-        storage.write_custom_skill(name, "references/guide.md", "# Reference Guide")
+        uid = self._TEST_USER
+        storage.write_custom_skill(name, "references/guide.md", "# Reference Guide", user_id=uid)
 
-        ref_path = storage.get_custom_skill_dir(name) / "references" / "guide.md"
+        ref_path = storage.get_custom_skill_dir(name, user_id=uid) / "references" / "guide.md"
         assert ref_path.exists()
         assert ref_path.read_text() == "# Reference Guide"
 
-    def test_delete_custom_skill(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    def test_delete_custom_skill(self, user_storage):
+        storage = user_storage
         name = "my-skill"
-        _write_skill_md(storage._root / "custom" / name, name)
-        assert storage.custom_skill_exists(name)
+        uid = self._TEST_USER
+        _write_skill_md(storage.get_custom_skill_dir(name, user_id=uid), name)
+        assert storage.custom_skill_exists(name, user_id=uid)
 
-        storage.delete_custom_skill(name)
-        assert not storage.custom_skill_exists(name)
+        storage.delete_custom_skill(name, user_id=uid)
+        assert not storage.custom_skill_exists(name, user_id=uid)
 
-    def test_delete_nonexistent_skill_raises(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    def test_delete_nonexistent_skill_raises(self, user_storage):
+        storage = user_storage
         with pytest.raises(FileNotFoundError):
-            storage.delete_custom_skill("nonexistent")
+            storage.delete_custom_skill("nonexistent", user_id=self._TEST_USER)
 
-    def test_path_traversal_prevention(self, tmp_path):
+    def test_path_traversal_prevention(self, user_storage):
         """Writing to a relative_path with '..' should be rejected."""
-        storage = _make_storage(tmp_path)
+        storage = user_storage
         name = "my-skill"
-        _write_skill_md(storage._root / "custom" / name, name)
+        uid = self._TEST_USER
+        _write_skill_md(storage.get_custom_skill_dir(name, user_id=uid), name)
 
         with pytest.raises(ValueError, match="resolve within"):
-            storage.write_custom_skill(name, "../escape.txt", "evil")
+            storage.write_custom_skill(name, "../escape.txt", "evil", user_id=uid)
 
-    def test_public_skill_exists(self, tmp_path):
+    def test_builtin_skill_exists(self, tmp_path):
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "bundled", "bundled")
+        _write_skill_md(storage._root / "builtin" / "bundled", "bundled")
 
-        assert storage.public_skill_exists("bundled")
-        assert not storage.public_skill_exists("nonexistent")
+        assert storage.builtin_skill_exists("bundled")
+        assert not storage.builtin_skill_exists("nonexistent")
 
-    def test_custom_skill_exists(self, tmp_path):
-        storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "custom" / "user-made", "user-made")
+    def test_custom_skill_exists(self, user_storage):
+        storage = user_storage
+        uid = self._TEST_USER
+        _write_skill_md(storage.get_custom_skill_dir("user-made", user_id=uid), "user-made")
 
-        assert storage.custom_skill_exists("user-made")
-        assert not storage.custom_skill_exists("nonexistent")
+        assert storage.custom_skill_exists("user-made", user_id=uid)
+        assert not storage.custom_skill_exists("nonexistent", user_id=uid)
 
 
 # ===================================================================
@@ -240,22 +259,30 @@ class TestCRUD:
 
 
 class TestHistory:
-    def test_append_and_read_history(self, tmp_path):
-        storage = _make_storage(tmp_path)
+    @pytest.fixture
+    def user_storage(self, tmp_path: Path) -> SkillStorage:
+        user_base = tmp_path / "users"
+        return _make_storage(tmp_path, user_skills_base=user_base)
+
+    _TEST_USER = "testuser"
+
+    def test_append_and_read_history(self, user_storage):
+        storage = user_storage
         name = "my-skill"
-        _write_skill_md(storage._root / "custom" / name, name)
+        uid = self._TEST_USER
+        _write_skill_md(storage.get_custom_skill_dir(name, user_id=uid), name)
 
-        storage.append_history(name, {"action": "create", "author": "test"})
-        storage.append_history(name, {"action": "edit", "author": "test"})
+        storage.append_history(name, {"action": "create", "author": "test"}, user_id=uid)
+        storage.append_history(name, {"action": "edit", "author": "test"}, user_id=uid)
 
-        records = storage.read_history(name)
+        records = storage.read_history(name, user_id=uid)
         assert len(records) == 2
         assert records[0]["action"] == "create"
         assert records[1]["action"] == "edit"
 
-    def test_read_history_nonexistent_skill(self, tmp_path):
-        storage = _make_storage(tmp_path)
-        records = storage.read_history("nonexistent")
+    def test_read_history_nonexistent_skill(self, user_storage):
+        storage = user_storage
+        records = storage.read_history("nonexistent", user_id=self._TEST_USER)
         assert records == []
 
 
@@ -268,8 +295,8 @@ class TestExtensionsConfigIntegration:
     def test_default_enabled_state(self, tmp_path):
         """Without extensions_config.json, all skills default to enabled."""
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "skill-a", "skill-a")
-        _write_skill_md(storage._root / "custom" / "skill-b", "skill-b")
+        _write_skill_md(storage._root / "builtin" / "skill-a", "skill-a")
+        _write_skill_md(storage._root / "builtin" / "skill-b", "skill-b")
 
         skills = storage.load_skills()
         assert all(s.enabled for s in skills)
@@ -277,7 +304,7 @@ class TestExtensionsConfigIntegration:
     def test_disabled_skill_in_config(self, tmp_path):
         """When extensions_config.json disables a skill, it reflects in loading."""
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "skill-a", "skill-a")
+        _write_skill_md(storage._root / "builtin" / "skill-a", "skill-a")
 
         # Create a minimal extensions_config that disables skill-a
         import json

@@ -70,7 +70,7 @@ class TestMergeSkillAllowlists:
 # ===================================================================
 
 
-def _make_skill(name, category=SkillCategory.PUBLIC, enabled=True, allowed=None):
+def _make_skill(name, category=SkillCategory.BUILTIN, enabled=True, allowed=None):
     return Skill(
         name=name, description=f"Description for {name}", license=None,
         skill_dir=Path(f"/fake/skills/{category}/{name}"),
@@ -215,7 +215,7 @@ class TestBuildSkillMessages:
         skill = Skill(
             name="test-skill", description="desc", license=None,
             skill_dir=tmp_path, skill_file=skill_file,
-            relative_path=Path("."), category=SkillCategory.PUBLIC,
+            relative_path=Path("."), category=SkillCategory.BUILTIN,
         )
         executor = self._make_executor()
         msgs = executor._build_skill_messages([skill])
@@ -228,7 +228,7 @@ class TestBuildSkillMessages:
         skill = Skill(
             name="bad-skill", description="desc", license=None,
             skill_dir=Path("/nonexistent"), skill_file=Path("/nonexistent/SKILL.md"),
-            relative_path=Path("."), category=SkillCategory.PUBLIC,
+            relative_path=Path("."), category=SkillCategory.BUILTIN,
         )
         executor = self._make_executor()
         msgs = executor._build_skill_messages([skill])
@@ -245,10 +245,10 @@ class TestBuildSkillMessages:
         skills = [
             Skill(name="s1", description="d1", license=None,
                   skill_dir=f1.parent, skill_file=f1,
-                  relative_path=Path("."), category=SkillCategory.PUBLIC),
+                  relative_path=Path("."), category=SkillCategory.BUILTIN),
             Skill(name="s2", description="d2", license=None,
                   skill_dir=f2.parent, skill_file=f2,
-                  relative_path=Path("."), category=SkillCategory.PUBLIC),
+                  relative_path=Path("."), category=SkillCategory.BUILTIN),
         ]
         executor = self._make_executor()
         msgs = executor._build_skill_messages(skills)
@@ -271,7 +271,7 @@ class TestBuildInitialStateWithSkills:
         skill = Skill(
             name="test-skill", description="desc", license=None,
             skill_dir=tmp_path, skill_file=skill_file,
-            relative_path=Path("."), category=SkillCategory.PUBLIC,
+            relative_path=Path("."), category=SkillCategory.BUILTIN,
         )
 
         from harness.models import SubAgentConfig

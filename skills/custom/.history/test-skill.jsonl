@@ -1,5 +1,0 @@
-{"ts": "2026-07-15T08:46:42.813348+00:00", "action": "create", "file": "SKILL.md"}
-{"ts": "2026-07-15T08:46:58.775668+00:00", "action": "write_file", "file": "references/test-doc.md", "length": 31}
-{"ts": "2026-07-15T08:47:19.590674+00:00", "action": "edit", "file": "SKILL.md", "old_length": 195, "new_length": 235}
-{"ts": "2026-07-15T08:47:21.631885+00:00", "action": "remove_file", "file": "references/test-doc.md"}
-{"ts": "2026-07-15T08:47:25.563257+00:00", "action": "delete", "archived_content": "---\nname: test-skill\ndescription: 用于测试skill功能的示例skill\n---\n\n# Test Skill\n\n## Purpose\n这是一个用于测试skill功能的示例skill。\n\n## Workflow\n1. 接收用户输入\n2. 处理请求\n3. 返回结果\n\n## Commands\n- `test`: 执行测试操作\n- `status`: 检查状态\n\n## Additional Features\n- 新增功能A\n- 新增功能B\n"}

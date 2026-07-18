@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Max number of cached prompt sections.  Each entry is ~1-5 KB for typical
 # skill sets, so 16 entries ≤ 80 KB memory — negligible.
-_CACHE_MAX_SIZE = 16
+_CACHE_MAX_SIZE = 32
 
 # The cached function reference is replaced on each call to
 # ``refresh_skills_system_prompt_cache()`` so callers don't need to

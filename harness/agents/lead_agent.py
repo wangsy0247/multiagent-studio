@@ -345,6 +345,7 @@ SYSTEM_PROMPT_TEMPLATE = """<role>
 You are {agent_name}, an AI assistant with multi-agent orchestration capabilities.
 </role>
 
+{agent_soul}
 <language>
 {language_section}
 </language>
@@ -444,6 +445,7 @@ def apply_prompt_template(
     subagent_enabled: bool = True,
     mem0_tool_enabled: bool = False,
     *,
+    agent_soul: str = "",
     skills_section: str = "",
     language_section: str = "",
 ) -> str:
@@ -454,6 +456,7 @@ def apply_prompt_template(
         max_concurrent_subagents: Max parallel task calls
         subagent_enabled: Whether subagent orchestration is available
         mem0_tool_enabled: Whether memory_search tool is registered
+        agent_soul: Agent personality / behavioral definition (SOUL.md content)
         skills_section: Pre-built ``<skill_system>`` XML block (or empty string)
     """
     n = max_concurrent_subagents
@@ -476,8 +479,12 @@ def apply_prompt_template(
     response_style_section = _build_response_style_section()
     critical_reminders_section = _build_critical_reminders_section(n, subagent_enabled)
 
+    # 包装 SOUL: 有内容时加上 XML 标签，没有则完全占位为空
+    soul_block = f"<soul>\n{agent_soul}\n</soul>" if agent_soul else ""
+
     return SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name,
+        agent_soul=soul_block,
         language_section=language_section or _build_language_section(),
         subagent_thinking=subagent_thinking,
         clarification_section=clarification_section,
@@ -521,6 +528,7 @@ class LeadAgent:
         skill_storage: Any | None = None,
         agent_config: Any | None = None,
         user_id: str | None = None,
+        agent_soul: str = "",
     ):
         self.tool_registry = tool_registry
         self.subagent_manager = subagent_manager
@@ -530,6 +538,7 @@ class LeadAgent:
         self.skill_storage = skill_storage
         self.agent_config = agent_config
         self._user_id = user_id
+        self._agent_soul = agent_soul
 
     # ------------------------------------------------------------------
     # system prompt
@@ -590,6 +599,7 @@ class LeadAgent:
             max_concurrent_subagents=self.max_concurrent,
             subagent_enabled=self.subagent_manager is not None,
             mem0_tool_enabled=mem_cfg.enabled and getattr(mem_cfg, "mem0_tool_enabled", False),
+            agent_soul=self._agent_soul,
             skills_section=skills_section,
         )
 
@@ -603,7 +613,7 @@ class LeadAgent:
         Lead Agent tools are configured in ``config.yaml`` under
         ``lead_agent.tools``.  Each entry can be either an individual
         tool name or a tool group name.  Only the orchestration tools
-        (task, create_subagent, ask_clarification) are always present.
+        (Agent, ask_clarification) are always present.
 
         Example config::
 

@@ -51,7 +51,7 @@ When you complete the task, provide:
     tools=["web_search", "arxiv_search", "web_fetch"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=20,
+    max_turns=40,
 )
 
 CODER_CONFIG = SubAgentConfig(
@@ -94,7 +94,7 @@ For each task:
     tools=["bash", "file_read", "file_write", "list_files", "glob_tool", "grep_tool", "str_replace"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=30,
+    max_turns=60,
 )
 
 ANALYST_CONFIG = SubAgentConfig(
@@ -137,7 +137,7 @@ For each task:
     tools=["bash", "file_read", "file_write", "web_search"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=25,
+    max_turns=50,
 )
 
 WRITER_CONFIG = SubAgentConfig(
@@ -171,7 +171,7 @@ For each task:
     tools=["file_read", "file_write", "str_replace", "list_files"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=40,
+    max_turns=60,
 )
 
 REVIEWER_CONFIG = SubAgentConfig(
@@ -205,7 +205,7 @@ For each review:
     tools=["file_read", "list_files", "glob_tool", "grep_tool"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=30,
+    max_turns=50,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────

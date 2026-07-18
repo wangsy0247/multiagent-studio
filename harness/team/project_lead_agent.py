@@ -3,7 +3,7 @@
 与普通 LeadAgent 的区别:
 - system prompt 包含: 项目上下文、成员列表、任务板摘要、协作规则
 - 工具包含: Team 工具（delegate_to_member, task_create 等）
-- 排除: task、create_subagent（Team 模式用 delegate_to_member 代替）
+- 排除: Agent（Team 模式用 delegate_to_member 代替）
 """
 
 from __future__ import annotations
@@ -150,7 +150,7 @@ class ProjectLeadAgent:
         - ask_clarification（始终可用）
         - Team 工具（delegate_to_member, task_create 等）
         - Lead Agent 的基础工具（从 config.yaml 配置）
-        - 排除: task, create_subagent（Team 模式不适用）
+        - 排除: Agent（Team 模式不适用）
         """
         tools: list[BaseTool] = []
 
@@ -168,9 +168,9 @@ class ProjectLeadAgent:
         )
         tools.extend(team_tools)
 
-        # 3. Lead Agent 的基础工具（排除 task 和 create_subagent）
+        # 3. Lead Agent 的基础工具（排除 Agent — Team 模式用 delegate_to_member）
         lead_base = self._lead_agent.build_tools()
-        excluded_in_team = {"task", "create_subagent"}
+        excluded_in_team = {"Agent"}
         for t in lead_base:
             if t.name not in excluded_in_team:
                 # 避免重复添加（如 ask_clarification）

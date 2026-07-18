@@ -1,2 +1,0 @@
-{"ts": "2026-07-15T09:00:03.033424+00:00", "action": "create", "file": "SKILL.md"}
-{"ts": "2026-07-15T09:00:05.578590+00:00", "action": "delete", "archived_content": "---\nname: no-frontmatter\ndescription: 缺少frontmatter的skill\n---\n\n# No Frontmatter Test\n"}

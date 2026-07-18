@@ -262,11 +262,12 @@ class OpenSandboxProvider(SandboxProvider):
         ]
 
         # ── Skills: 单一卷 /mnt/skills → data_root/skills/ ──
-        # 通过符号链接将用户私有技能合并到源目录, 避免 Docker 嵌套只读挂载的
-        # overlay2 bug（子目录挂载点创建失败 → read-only file system）。
+        # builtin/ 是实际文件副本 (symlink 在 Docker/WSL2 跨盘场景不可靠),
+        # my/ 是 symlink → 用户私有技能 (目标在 WSL home 下, Docker 可访问).
         skills_root = get_skills_root()
         if skills_root.exists():
-            from harness.config.paths import ensure_user_skills_symlink
+            from harness.config.paths import ensure_user_skills_symlink, sync_builtin_skills
+            sync_builtin_skills(skills_root)
             ensure_user_skills_symlink(
                 skills_root, user_id or "default", _paths=paths,
             )

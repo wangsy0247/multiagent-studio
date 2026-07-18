@@ -4,8 +4,6 @@ description: Conduct comprehensive system architecture reviews covering scalabil
 license: MIT
 version: "2.1"
 author: multiagent-studio
-compatibility:
-  tools: ["file_read", "web_search"]
 ---
 # System Architecture Review Skill
 

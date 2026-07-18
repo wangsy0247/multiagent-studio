@@ -97,6 +97,22 @@ def _refresh_cache() -> None:
         logger.warning("Failed to refresh skills cache", exc_info=True)
 
 
+def _invalidate_graph_cache(user_id: str | None = None) -> None:
+    """Invalidate the per-user graph cache so system prompts are rebuilt.
+
+    Must be called after any skill mutation (toggle, create, update, delete,
+    install, rollback) because the ``<skill_system>`` block in the system
+    prompt is compiled into the graph at build time and cached until shutdown.
+    """
+    try:
+        from harness.api.server import get_harness
+
+        harness = get_harness()
+        harness.invalidate_graph_cache(user_id=user_id)
+    except Exception:
+        logger.warning("Failed to invalidate graph cache", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
@@ -107,7 +123,7 @@ class SkillSummary(BaseModel):
 
     name: str
     description: str
-    category: str  # "public" | "custom"
+    category: str  # "builtin" or user-private (has user_id)
     enabled: bool
     allowed_tools: list[str] | None = None
     license: str | None = None
@@ -260,6 +276,7 @@ async def toggle_skill(
     _write_extensions_config(config)
 
     _refresh_cache()
+    _invalidate_graph_cache()  # global toggle → invalidate all users
 
     logger.info("Skill '%s' %s via REST API", name, "enabled" if body.enabled else "disabled")
     return {"status": "ok", "name": name, "enabled": body.enabled}
@@ -288,11 +305,12 @@ async def install_skill(
         skill_name = await install_skill_from_archive(
             archive_path,
             storage.get_skills_root_path(),
-            category="custom",
+            category="builtin",
             force=body.force,
             model_client=None,  # No model client in REST context — write blocked
         )
         _refresh_cache()
+        _invalidate_graph_cache()  # builtin install → invalidate all users
         return {"status": "installed", "name": skill_name}
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -311,17 +329,16 @@ async def install_skill(
 @router.get("/custom")
 async def list_custom_skills(
     enabled_only: bool = Query(False),
+    user_id: str = Query("default", description="User ID for private skills"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """List only custom (user-authored) skills."""
+    """List only user-private (user-created) skills."""
     try:
-        all_skills = storage.load_skills(enabled_only=enabled_only)
+        all_skills = storage.load_skills(enabled_only=enabled_only, user_id=user_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load skills: {exc}")
 
-    from harness.skills.types import SkillCategory
-
-    custom = [s for s in all_skills if s.category == SkillCategory.CUSTOM]
+    custom = [s for s in all_skills if s.user_id is not None]
     return {
         "skills": [_skill_summary(s) for s in custom],
         "count": len(custom),
@@ -331,16 +348,17 @@ async def list_custom_skills(
 @router.get("/custom/{name}")
 async def read_custom_skill(
     name: str,
+    user_id: str = Query("default", description="User ID for private skills"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """Read the full SKILL.md content of a custom skill."""
+    """Read the full SKILL.md content of a user-private skill."""
     try:
         storage.validate_skill_name(name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        content = storage.read_custom_skill(name)
+        content = storage.read_custom_skill(name, user_id=user_id)
         return {"name": name, "content": content}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Custom skill '{name}' not found")
@@ -350,9 +368,10 @@ async def read_custom_skill(
 async def write_custom_skill(
     name: str,
     body: SkillContentRequest,
+    user_id: str = Query("default", description="User ID for private skills"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """Create or overwrite a custom skill's SKILL.md.
+    """Create or overwrite a user-private skill's SKILL.md.
 
     Validation + security scan are enforced.
     """
@@ -386,18 +405,19 @@ async def write_custom_skill(
             )
 
     # Write
-    is_new = not storage.custom_skill_exists(name)
+    is_new = not storage.custom_skill_exists(name, user_id=user_id)
     try:
-        storage.write_custom_skill(name, "SKILL.md", content)
+        storage.write_custom_skill(name, "SKILL.md", content, user_id=user_id)
         storage.append_history(name, {
             "action": "create" if is_new else "edit",
             "file": "SKILL.md",
-        })
+        }, user_id=user_id)
     except Exception as exc:
         logger.exception("Failed to write custom skill '%s'", name)
         raise HTTPException(status_code=500, detail=f"Write failed: {exc}")
 
     _refresh_cache()
+    _invalidate_graph_cache(user_id=user_id)  # user-private mutation
 
     logger.info(
         "Custom skill '%s' %s via REST API",
@@ -410,34 +430,36 @@ async def write_custom_skill(
 @router.delete("/custom/{name}")
 async def delete_custom_skill(
     name: str,
+    user_id: str = Query("default", description="User ID for private skills"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """Delete a custom skill, archiving content to history first."""
+    """Delete a user-private skill, archiving content to history first."""
     try:
         storage.validate_skill_name(name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    if not storage.custom_skill_exists(name):
+    if not storage.custom_skill_exists(name, user_id=user_id):
         raise HTTPException(status_code=404, detail=f"Custom skill '{name}' not found")
 
     # Archive before delete
     try:
-        content = storage.read_custom_skill(name)
+        content = storage.read_custom_skill(name, user_id=user_id)
         storage.append_history(name, {
             "action": "delete",
             "archived_content": content,
-        })
+        }, user_id=user_id)
     except Exception:
         logger.warning("Failed to archive skill '%s' before delete", name)
 
     try:
-        storage.delete_custom_skill(name)
+        storage.delete_custom_skill(name, user_id=user_id)
     except Exception as exc:
         logger.exception("Failed to delete custom skill '%s'", name)
         raise HTTPException(status_code=500, detail=f"Delete failed: {exc}")
 
     _refresh_cache()
+    _invalidate_graph_cache(user_id=user_id)  # user-private mutation
 
     logger.info("Custom skill '%s' deleted via REST API", name)
     return {"status": "deleted", "name": name}
@@ -446,16 +468,17 @@ async def delete_custom_skill(
 @router.get("/custom/{name}/history")
 async def read_skill_history(
     name: str,
+    user_id: str = Query("default", description="User ID for private skills"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """Read the JSONL history for a custom skill."""
+    """Read the JSONL history for a user-private skill."""
     try:
         storage.validate_skill_name(name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        records = storage.read_history(name)
+        records = storage.read_history(name, user_id=user_id)
         return {"name": name, "history": records, "count": len(records)}
     except Exception as exc:
         logger.exception("Failed to read history for '%s'", name)
@@ -466,15 +489,16 @@ async def read_skill_history(
 async def rollback_skill(
     name: str,
     body: SkillRollbackRequest,
+    user_id: str = Query("default", description="User ID for private skills"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """Rollback a custom skill to a previous version from history."""
+    """Rollback a user-private skill to a previous version from history."""
     try:
         storage.validate_skill_name(name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    records = storage.read_history(name)
+    records = storage.read_history(name, user_id=user_id)
     if not records:
         raise HTTPException(status_code=404, detail=f"No history found for skill '{name}'")
 
@@ -510,14 +534,15 @@ async def rollback_skill(
                 detail=f"Archived content failed validation: {msg}",
             )
 
-    storage.write_custom_skill(name, "SKILL.md", archived)
+    storage.write_custom_skill(name, "SKILL.md", archived, user_id=user_id)
     storage.append_history(name, {
         "action": "rollback",
         "from_index": body.target_index,
         "from_ts": target.get("ts", "unknown"),
-    })
+    }, user_id=user_id)
 
     _refresh_cache()
+    _invalidate_graph_cache(user_id=user_id)  # user-private mutation
 
     logger.info("Skill '%s' rolled back to history index %d", name, body.target_index)
     return {"status": "rolled_back", "name": name, "from_index": body.target_index}

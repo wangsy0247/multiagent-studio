@@ -26,8 +26,7 @@ def _write_skill_md(
 
 def _make_storage(tmp_path: Path) -> SkillStorage:
     root = tmp_path / "skills"
-    (root / "public").mkdir(parents=True, exist_ok=True)
-    (root / "custom").mkdir(parents=True, exist_ok=True)
+    (root / "builtin").mkdir(parents=True, exist_ok=True)
     return SkillStorage(root)
 
 
@@ -43,22 +42,22 @@ class TestGetSkillsPromptSection:
     def test_single_skill_in_section(self, tmp_path):
         skill_dir = tmp_path / "test-skill"
         md = _write_skill_md(skill_dir, "test-skill", "Does testing things")
-        skill = parse_skill_file(md, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md, SkillCategory.BUILTIN)
         assert skill is not None
 
         section = get_skills_prompt_section([skill])
         assert "<skill_system>" in section
         assert "<name>test-skill</name>" in section
         assert "Does testing things" in section
-        assert "[public]" in section
-        assert "/mnt/skills/public/test-skill/SKILL.md" in section
+        assert "[built-in]" in section
+        assert "/mnt/skills/builtin/test-skill/SKILL.md" in section
 
     def test_multiple_skills(self, tmp_path):
         skills = []
         for name in ["skill-a", "skill-b"]:
             skill_dir = tmp_path / name
             md = _write_skill_md(skill_dir, name)
-            s = parse_skill_file(md, SkillCategory.PUBLIC)
+            s = parse_skill_file(md, SkillCategory.BUILTIN)
             assert s is not None
             skills.append(s)
 
@@ -66,35 +65,35 @@ class TestGetSkillsPromptSection:
         assert "<name>skill-a</name>" in section
         assert "<name>skill-b</name>" in section
 
-    def test_custom_skill_labeled(self, tmp_path):
+    def test_builtin_skill_labeled(self, tmp_path):
         skill_dir = tmp_path / "my-skill"
         md = _write_skill_md(skill_dir, "my-skill")
-        skill = parse_skill_file(md, SkillCategory.CUSTOM)
+        skill = parse_skill_file(md, SkillCategory.BUILTIN)
         assert skill is not None
 
         section = get_skills_prompt_section([skill])
-        assert "[custom]" in section
-        assert "/mnt/skills/custom/my-skill/SKILL.md" in section
+        assert "[built-in]" in section
+        assert "/mnt/skills/builtin/my-skill/SKILL.md" in section
 
     def test_custom_container_path(self, tmp_path):
         skill_dir = tmp_path / "test-skill"
         md = _write_skill_md(skill_dir, "test-skill")
-        skill = parse_skill_file(md, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md, SkillCategory.BUILTIN)
         assert skill is not None
 
         section = get_skills_prompt_section([skill], container_base_path="/opt/skills")
-        assert "/opt/skills/public/test-skill/SKILL.md" in section
+        assert "/opt/skills/builtin/test-skill/SKILL.md" in section
 
     def test_nested_skill_container_path(self, tmp_path):
         nested = tmp_path / "subdir" / "nested-skill"
         md = _write_skill_md(nested, "nested-skill")
         skill = parse_skill_file(
-            md, SkillCategory.PUBLIC, relative_path=Path("subdir/nested-skill")
+            md, SkillCategory.BUILTIN, relative_path=Path("subdir/nested-skill")
         )
         assert skill is not None
 
         section = get_skills_prompt_section([skill])
-        assert "/mnt/skills/public/subdir/nested-skill/SKILL.md" in section
+        assert "/mnt/skills/builtin/subdir/nested-skill/SKILL.md" in section
 
 
 # ===================================================================
@@ -108,12 +107,12 @@ class TestStorageToPromptRoundTrip:
     def test_load_and_generate_prompt(self, tmp_path):
         storage = _make_storage(tmp_path)
         _write_skill_md(
-            storage._root / "public" / "deep-research",
+            storage._root / "builtin" / "deep-research",
             "deep-research",
             "Multi-source research with web search and citations",
         )
         _write_skill_md(
-            storage._root / "custom" / "my-workflow",
+            storage._root / "builtin" / "my-workflow",
             "my-workflow",
             "Custom workflow for my project",
         )
@@ -124,16 +123,15 @@ class TestStorageToPromptRoundTrip:
         section = get_skills_prompt_section(skills)
         assert "<name>deep-research</name>" in section
         assert "<name>my-workflow</name>" in section
-        assert "[public]" in section
-        assert "[custom]" in section
+        assert "[built-in]" in section
         assert "Multi-source research" in section
         assert "Custom workflow" in section
 
     def test_enabled_only_skills_in_prompt(self, tmp_path):
         """Only enabled skills appear in the prompt section."""
         storage = _make_storage(tmp_path)
-        _write_skill_md(storage._root / "public" / "skill-a", "skill-a")
-        _write_skill_md(storage._root / "public" / "skill-b", "skill-b")
+        _write_skill_md(storage._root / "builtin" / "skill-a", "skill-a")
+        _write_skill_md(storage._root / "builtin" / "skill-b", "skill-b")
 
         all_skills = storage.load_skills()
         assert len(all_skills) == 2

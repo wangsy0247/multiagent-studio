@@ -1,12 +1,18 @@
 """Local-filesystem skill storage — discovery, loading, and CRUD.
 
-Adapted from DeerFlow's ``local_skill_storage.py`` and ``skill_storage.py``
-base class.  Uses a single project-root directory layout:
+Two-tier directory layout::
 
-    <root>/
-    ├── public/<name>/SKILL.md    ← built-in skills (git-tracked, read-only)
-    ├── custom/<name>/SKILL.md    ← user skills (.gitignored, editable)
-    └── custom/.history/<name>.jsonl
+    <root>/                       ← project-level built-in skills
+    └── builtin/<name>/SKILL.md   ← platform-builtin (git-tracked, read-only)
+
+    <user_skills_base>/           ← per-user skills
+    └── {user_id}/
+        └── skills/
+            ├── <name>/SKILL.md
+            └── .history/<name>.jsonl
+
+All user-created skills go into per-user directories. No shared ``custom/``
+directory — each user's skills are private and managed via ``skill_manage``.
 """
 
 from __future__ import annotations
@@ -22,11 +28,9 @@ from pathlib import Path
 
 from .parser import parse_skill_file
 from .types import SKILL_MD_FILE, Skill, SkillCategory
+from .validation import validate_skill_name
 
 logger = logging.getLogger(__name__)
-
-# Skill name convention: lowercase letters, digits, hyphens.
-_SKILL_NAME_PATTERN = __import__("re").compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class SkillStorage:
@@ -34,31 +38,28 @@ class SkillStorage:
 
     Directory layout::
 
-        <root>/                        ← project-level skills
-        ├── public/<name>/SKILL.md     ← built-in (git-tracked, read-only)
-        ├── custom/<name>/SKILL.md     ← shared custom (.gitignored, editable)
-        └── custom/.history/<name>.jsonl
+        <root>/                        ← project-level built-in skills
+        └── builtin/<name>/SKILL.md    ← platform-builtin (git-tracked, read-only)
 
-        <user_skills_base>/            ← per-user skills (optional)
+        <user_skills_base>/            ← per-user skills
         └── {user_id}/
-            └── skills/<name>/SKILL.md
+            └── skills/
+                ├── <name>/SKILL.md
+                └── .history/<name>.jsonl
 
-    When *sandbox_sync_root* is set, every project-skill write / delete also
-    mirrors the change into that directory so Docker / OpenSandbox containers
-    can access the latest skill files.  User skills live under the data root
-    already (via *user_skills_base*) and don't need separate syncing.
+    User-created skills are per-user private — no shared ``custom/`` directory.
+    Built-in skills are mounted directly from the project directory by the
+    sandbox (see ``local_sandbox_provider.py``).
     """
 
     def __init__(
         self,
         root_path: Path,
         container_path: str = "/mnt/skills",
-        sandbox_sync_root: Path | None = None,
         user_skills_base: Path | None = None,
     ) -> None:
         self._root = root_path
         self._container_root = container_path
-        self._sandbox_sync_root = sandbox_sync_root
         self._user_skills_base = user_skills_base  # {base}/users/
 
     # ------------------------------------------------------------------
@@ -67,16 +68,12 @@ class SkillStorage:
 
     @staticmethod
     def validate_skill_name(name: str) -> str:
-        """Validate and normalise a skill name; return the normalised form."""
-        normalized = name.strip()
-        if not _SKILL_NAME_PATTERN.fullmatch(normalized):
-            raise ValueError(
-                "Skill name must be hyphen-case using lowercase letters, "
-                "digits, and hyphens only."
-            )
-        if len(normalized) > 64:
-            raise ValueError("Skill name must be 64 characters or fewer.")
-        return normalized
+        """Validate and normalise a skill name; return the normalised form.
+
+        Delegates to ``harness.skills.validation.validate_skill_name`` —
+        the single source of truth for skill name rules.
+        """
+        return validate_skill_name(name)
 
     # ------------------------------------------------------------------
     # path helpers
@@ -90,53 +87,19 @@ class SkillStorage:
         """Container path where skills are mounted (e.g. ``/mnt/skills``)."""
         return self._container_root
 
-    def _sync_to_sandbox(self, name: str) -> None:
-        """Copy a custom skill from the primary root to the sandbox sync root.
-
-        Uses ``copyfile`` + ``chmod`` instead of ``copy2`` to avoid
-        preserving host UID/GID (container may not have matching user).
-        """
-        if self._sandbox_sync_root is None:
-            return
-        import shutil
-
-        src_dir = self.get_custom_skill_dir(name)
-        if not src_dir.exists():
-            return
-        dst_dir = self._sandbox_sync_root / SkillCategory.CUSTOM.value / name
-        # Remove stale destination before copy (handles deletes).
-        if dst_dir.exists():
-            shutil.rmtree(dst_dir)
-
-        def _copy_tree(src: Path, dst: Path) -> None:
-            dst.mkdir(parents=True, exist_ok=True)
-            for item in src.iterdir():
-                if item.is_dir():
-                    _copy_tree(item, dst / item.name)
-                else:
-                    dst_file = dst / item.name
-                    shutil.copyfile(item, dst_file)
-                    dst_file.chmod(0o644)
-
-        _copy_tree(src_dir, dst_dir)
-
-    def _remove_from_sandbox(self, name: str) -> None:
-        """Remove a custom skill from the sandbox sync root."""
-        if self._sandbox_sync_root is None:
-            return
-        dst_dir = self._sandbox_sync_root / SkillCategory.CUSTOM.value / name
-        if dst_dir.exists():
-            import shutil
-            shutil.rmtree(dst_dir)
-
     def get_custom_skill_dir(
         self, name: str, *, user_id: str | None = None,
     ) -> Path:
-        """Path to a custom skill directory (project-shared or user-private)."""
-        if user_id:
-            return self.get_user_skill_dir(user_id, name)
-        normalized = self.validate_skill_name(name)
-        return self._root / SkillCategory.CUSTOM.value / normalized
+        """Path to a user-private skill directory.
+
+        Raises ValueError when *user_id* is None (shared skills no longer exist).
+        """
+        if not user_id:
+            raise ValueError(
+                "user_id is required for skill operations. "
+                "Shared custom skills have been removed — use per-user skills."
+            )
+        return self.get_user_skill_dir(user_id, name)
 
     def get_custom_skill_file(
         self, name: str, *, user_id: str | None = None,
@@ -147,24 +110,18 @@ class SkillStorage:
     def get_skill_history_file(
         self, name: str, *, user_id: str | None = None,
     ) -> Path:
-        """Path to ``.history/<name>.jsonl`` for a custom skill.
+        """Path to ``.history/<name>.jsonl`` for a user skill.
 
-        History lives at the category level (e.g. ``custom/.history/`` or
-        ``users/<uid>/skills/.history/``) — NOT inside the skill directory —
+        History lives at the user skills level — NOT inside the skill directory —
         so that deleting a skill does not wipe its history trail.
         """
+        if not user_id:
+            raise ValueError("user_id is required for skill history")
         normalized = self.validate_skill_name(name)
-        if user_id:
-            if self._user_skills_base is None:
-                raise RuntimeError("user_skills_base is not configured")
-            return (
-                self._user_skills_base / user_id / "skills"
-                / ".history"
-                / f"{normalized}.jsonl"
-            )
+        if self._user_skills_base is None:
+            raise RuntimeError("user_skills_base is not configured")
         return (
-            self._root
-            / SkillCategory.CUSTOM.value
+            self._user_skills_base / user_id / "skills"
             / ".history"
             / f"{normalized}.jsonl"
         )
@@ -174,9 +131,9 @@ class SkillStorage:
     ) -> bool:
         return self.get_custom_skill_file(name, user_id=user_id).exists()
 
-    def public_skill_exists(self, name: str) -> bool:
+    def builtin_skill_exists(self, name: str) -> bool:
         return (
-            self._root / SkillCategory.PUBLIC.value / name / SKILL_MD_FILE
+            self._root / SkillCategory.BUILTIN.value / name / SKILL_MD_FILE
         ).exists()
 
     # ------------------------------------------------------------------
@@ -201,23 +158,22 @@ class SkillStorage:
     # ------------------------------------------------------------------
 
     def _iter_skill_files(self) -> Iterable[tuple[SkillCategory, Path, Path]]:
-        """Yield ``(category, category_root, skill_md_path)`` for every SKILL.md."""
+        """Yield ``(category, category_root, skill_md_path)`` for built-in SKILL.md files."""
         if not self._root.exists():
             return
-        for category in SkillCategory:
-            category_path = self._root / category.value
-            if not category_path.exists() or not category_path.is_dir():
+        category = SkillCategory.BUILTIN
+        category_path = self._root / category.value
+        if not category_path.exists() or not category_path.is_dir():
+            return
+        for current_root, dir_names, file_names in os.walk(
+            category_path, followlinks=True
+        ):
+            dir_names[:] = sorted(
+                name for name in dir_names if not name.startswith(".")
+            )
+            if SKILL_MD_FILE not in file_names:
                 continue
-            for current_root, dir_names, file_names in os.walk(
-                category_path, followlinks=True
-            ):
-                # Skip hidden directories.
-                dir_names[:] = sorted(
-                    name for name in dir_names if not name.startswith(".")
-                )
-                if SKILL_MD_FILE not in file_names:
-                    continue
-                yield category, category_path, Path(current_root) / SKILL_MD_FILE
+            yield category, category_path, Path(current_root) / SKILL_MD_FILE
 
     def _iter_user_skill_files(
         self, user_id: str,
@@ -250,14 +206,14 @@ class SkillStorage:
         When *user_id* is provided, user-private skills from
         ``<user_skills_base>/<uid>/skills/`` are also loaded and tagged with
         ``user_id`` on the ``Skill`` object.  User skills take precedence over
-        same-named project skills.
+        same-named built-in skills.
 
         Re-reads ``extensions_config.json`` on every call so external changes
         (e.g. made by another process or the frontend) are picked up immediately.
         """
         skills_by_name: dict[str, Skill] = {}
 
-        # 1. Discover and parse project SKILL.md files.
+        # 1. Discover and parse built-in SKILL.md files.
         for category, category_root, md_path in self._iter_skill_files():
             skill = parse_skill_file(
                 md_path,
@@ -266,7 +222,6 @@ class SkillStorage:
             )
             if skill is None:
                 continue
-            # custom overrides public when names collide.
             skills_by_name[skill.name] = skill
 
         # 2. Discover and parse user-private SKILL.md files.
@@ -274,13 +229,13 @@ class SkillStorage:
             for user_root, md_path in self._iter_user_skill_files(user_id):
                 skill = parse_skill_file(
                     md_path,
-                    category=SkillCategory.CUSTOM,
+                    category=SkillCategory.BUILTIN,
                     relative_path=md_path.parent.relative_to(user_root),
                 )
                 if skill is None:
                     continue
                 skill.user_id = user_id
-                # User skills override same-named project skills.
+                # User skills override same-named built-in skills.
                 skills_by_name[skill.name] = skill
 
         skills = list(skills_by_name.values())
@@ -321,9 +276,10 @@ class SkillStorage:
         self, name: str, relative_path: str, content: str,
         *, user_id: str | None = None,
     ) -> None:
-        """Atomically write a text file under the custom skill directory.
+        """Atomically write a text file under the user skill directory.
 
-        Uses tempfile + rename to guarantee atomicity.
+        Uses tempfile + rename to guarantee atomicity.  User skills are already
+        under the data root so no separate sandbox sync is needed.
         """
         target_dir = self.get_custom_skill_dir(name, user_id=user_id)
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -349,25 +305,16 @@ class SkillStorage:
             tmp_path = Path(tmp_file.name)
         tmp_path.replace(target)
 
-        # Mirror to sandbox-accessible location (project skills only —
-        # user skills are already under the data root).
-        if user_id is None:
-            self._sync_to_sandbox(name)
-
     def delete_custom_skill(
         self, name: str, *, user_id: str | None = None,
     ) -> None:
-        """Delete a custom skill directory entirely."""
+        """Delete a user skill directory entirely."""
         self.validate_skill_name(name)
         if not self.custom_skill_exists(name, user_id=user_id):
             raise FileNotFoundError(f"Custom skill '{name}' not found.")
         target = self.get_custom_skill_dir(name, user_id=user_id)
         if target.exists():
             shutil.rmtree(target)
-
-        # Remove from sandbox mirror (project skills only).
-        if user_id is None:
-            self._remove_from_sandbox(name)
 
     def append_history(
         self, name: str, record: dict, *, user_id: str | None = None,

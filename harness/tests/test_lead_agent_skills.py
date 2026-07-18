@@ -27,7 +27,7 @@ class TestBuildSkillsSignature:
         skill = Skill(
             name="test", description="desc", license=None,
             skill_dir=Path("."), skill_file=Path("SKILL.md"),
-            relative_path=Path("."), category=SkillCategory.PUBLIC,
+            relative_path=Path("."), category=SkillCategory.BUILTIN,
         )
         sig = build_skills_signature([skill])
         assert sig == "test:0"
@@ -38,7 +38,7 @@ class TestBuildSkillsSignature:
         skill = Skill(
             name="test", description="desc", license=None,
             skill_dir=Path("."), skill_file=Path("SKILL.md"),
-            relative_path=Path("."), category=SkillCategory.PUBLIC,
+            relative_path=Path("."), category=SkillCategory.BUILTIN,
         )
         skill.version = "1.5"
         sig = build_skills_signature([skill])
@@ -48,10 +48,10 @@ class TestBuildSkillsSignature:
         skills = [
             Skill(name="z-skill", description="d", license=None,
                   skill_dir=Path("."), skill_file=Path("SKILL.md"),
-                  relative_path=Path("."), category=SkillCategory.PUBLIC),
+                  relative_path=Path("."), category=SkillCategory.BUILTIN),
             Skill(name="a-skill", description="d", license=None,
                   skill_dir=Path("."), skill_file=Path("SKILL.md"),
-                  relative_path=Path("."), category=SkillCategory.PUBLIC),
+                  relative_path=Path("."), category=SkillCategory.BUILTIN),
         ]
         sig = build_skills_signature(skills)
         assert sig == "a-skill:0;z-skill:0"
@@ -59,10 +59,10 @@ class TestBuildSkillsSignature:
     def test_different_skills_produce_different_signatures(self):
         s1 = Skill(name="a", description="d", license=None,
                    skill_dir=Path("."), skill_file=Path("SKILL.md"),
-                   relative_path=Path("."), category=SkillCategory.PUBLIC)
+                   relative_path=Path("."), category=SkillCategory.BUILTIN)
         s2 = Skill(name="b", description="d", license=None,
                    skill_dir=Path("."), skill_file=Path("SKILL.md"),
-                   relative_path=Path("."), category=SkillCategory.PUBLIC)
+                   relative_path=Path("."), category=SkillCategory.BUILTIN)
         assert build_skills_signature([s1]) != build_skills_signature([s2])
 
 
@@ -189,7 +189,7 @@ class TestToolPolicyWithWhitelist:
         return Skill(
             name=name, description="test", license=None,
             skill_dir=Path("."), skill_file=Path("SKILL.md"),
-            relative_path=Path("."), category=SkillCategory.PUBLIC,
+            relative_path=Path("."), category=SkillCategory.BUILTIN,
             allowed_tools=allowed_tools, enabled=True,
         )
 

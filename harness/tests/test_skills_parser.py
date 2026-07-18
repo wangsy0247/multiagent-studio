@@ -73,14 +73,14 @@ allowed-tools:
 This is the body of the skill.
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
 
         assert skill is not None
         assert skill.name == "test-skill"
         assert skill.description == "A test skill for unit testing"
         assert skill.license == "MIT"
         assert skill.allowed_tools == ["bash", "read_file"]
-        assert skill.category == SkillCategory.PUBLIC
+        assert skill.category == SkillCategory.BUILTIN
         assert skill.enabled is True
         assert skill.skill_file == md_path
         assert skill.skill_dir == tmp_path
@@ -93,14 +93,14 @@ description: Just the required fields
 Body here.
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.CUSTOM)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
 
         assert skill is not None
         assert skill.name == "minimal"
         assert skill.description == "Just the required fields"
         assert skill.license is None
         assert skill.allowed_tools is None
-        assert skill.category == SkillCategory.CUSTOM
+        assert skill.category == SkillCategory.BUILTIN
 
     def test_missing_name(self, tmp_path):
         content = """---
@@ -108,7 +108,7 @@ description: No name here
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_missing_description(self, tmp_path):
@@ -117,7 +117,7 @@ name: no-desc
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_no_frontmatter(self, tmp_path):
@@ -126,7 +126,7 @@ name: no-desc
 No YAML frontmatter here.
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_invalid_yaml_frontmatter(self, tmp_path):
@@ -136,7 +136,7 @@ description: Bad YAML
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_frontmatter_not_a_dict(self, tmp_path):
@@ -147,18 +147,18 @@ description: Bad YAML
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_missing_file(self, tmp_path):
         md_path = tmp_path / "nonexistent" / SKILL_MD_FILE
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_wrong_filename(self, tmp_path):
         not_md = tmp_path / "README.md"
         not_md.write_text("---\nname: test\ndescription: desc\n---\n")
-        skill = parse_skill_file(not_md, SkillCategory.PUBLIC)
+        skill = parse_skill_file(not_md, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_empty_name_string(self, tmp_path):
@@ -168,7 +168,7 @@ description: Some description
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_empty_description_string(self, tmp_path):
@@ -178,7 +178,7 @@ description: ""
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_empty_allowed_tools(self, tmp_path):
@@ -190,7 +190,7 @@ allowed-tools: []
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
 
         assert skill is not None
         assert skill.allowed_tools == []
@@ -203,7 +203,7 @@ allowed-tools: not-a-list
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is None
 
     def test_nested_in_subdirectory(self, tmp_path):
@@ -218,7 +218,7 @@ description: A skill in a subdirectory
         category_root = tmp_path
         skill = parse_skill_file(
             md_path,
-            SkillCategory.PUBLIC,
+            SkillCategory.BUILTIN,
             relative_path=nested.relative_to(category_root),
         )
 
@@ -234,7 +234,7 @@ description: Name with special chars
 ---
 """
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         # Parser is lenient — validation layer rejects bad names
         assert skill is not None
         assert skill.name == "My Skill!"
@@ -244,7 +244,7 @@ description: Name with special chars
         long_desc = "A" * 2000
         content = f"---\nname: long-desc\ndescription: {long_desc}\n---\n"
         md_path = _write_skill_md(tmp_path, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is not None
         assert len(skill.description) == 2000
 
@@ -256,29 +256,29 @@ description: Testing container path helpers
 """
         skill_dir = tmp_path / "path-test"
         md_path = _write_skill_md(skill_dir, content)
-        skill = parse_skill_file(md_path, SkillCategory.PUBLIC)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is not None
 
-        assert skill.get_container_path() == "/mnt/skills/public/path-test"
+        assert skill.get_container_path() == "/mnt/skills/builtin/path-test"
         assert (
             skill.get_container_file_path()
-            == "/mnt/skills/public/path-test/SKILL.md"
+            == "/mnt/skills/builtin/path-test/SKILL.md"
         )
         # Custom base path
         assert (
             skill.get_container_path("/opt/skills")
-            == "/opt/skills/public/path-test"
+            == "/opt/skills/builtin/path-test"
         )
 
-    def test_custom_skill_category(self, tmp_path):
+    def test_builtin_skill_path(self, tmp_path):
         content = """---
 name: my-skill
-description: A custom skill
+description: A built-in skill
 ---
 """
         skill_dir = tmp_path / "my-skill"
         md_path = _write_skill_md(skill_dir, content)
-        skill = parse_skill_file(md_path, SkillCategory.CUSTOM)
+        skill = parse_skill_file(md_path, SkillCategory.BUILTIN)
         assert skill is not None
-        assert skill.category == SkillCategory.CUSTOM
-        assert skill.get_container_path() == "/mnt/skills/custom/my-skill"
+        assert skill.category == SkillCategory.BUILTIN
+        assert skill.get_container_path() == "/mnt/skills/builtin/my-skill"

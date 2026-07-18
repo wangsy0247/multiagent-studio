@@ -352,37 +352,25 @@ class SubagentExecutor:
             )
             return []
 
-    def _build_skill_messages(self, skills: list[Any]) -> list[Any]:
-        """Build SystemMessage list injecting full skill content.
+    def _build_skills_prompt_section(self, skills: list[Any]) -> str:
+        """Build the ``<skill_system>`` XML block for the subagent system prompt.
 
-        Unlike the Lead Agent's progressive-loading pattern, subagents receive
-        the complete SKILL.md content directly as SystemMessages.  This avoids
-        an extra file_read round-trip in the subagent's limited turn budget.
+        Uses the same progressive-loading pattern as the Lead Agent: only
+        skill name + description + file path are listed.  The subagent calls
+        ``file_read`` on the skill path when it actually needs the content.
         """
-        from langchain_core.messages import SystemMessage
-
-        messages: list[Any] = []
-        for skill in skills:
-            try:
-                content = skill.skill_file.read_text(encoding="utf-8")
-                if content:
-                    messages.append(
-                        SystemMessage(
-                            content=(
-                                f'<skill name="{skill.name}">\n'
-                                f'{content}\n'
-                                f'</skill>'
-                            )
-                        )
-                    )
-            except Exception:
-                logger.debug(
-                    "Failed to read skill '%s' for subagent '%s'",
-                    skill.name,
-                    self.config.name,
-                    exc_info=True,
-                )
-        return messages
+        if not skills:
+            return ""
+        try:
+            from harness.skills.prompt import get_skills_prompt_section
+            return get_skills_prompt_section(skills)
+        except Exception:
+            logger.debug(
+                "Failed to build skills section for subagent '%s'",
+                self.config.name,
+                exc_info=True,
+            )
+            return ""
 
     # ------------------------------------------------------------------
     # external cancellation
@@ -456,13 +444,14 @@ class SubagentExecutor:
         """
         messages: list[Any] = []
 
-        # ── Inject skill messages first (before system prompt) ──
+        # ── Build system prompt with skills section (progressive loading) ──
+        system_prompt = self.config.system_prompt or ""
         if self._skills:
-            skill_msgs = self._build_skill_messages(self._skills)
-            messages.extend(skill_msgs)
-
-        if self.config.system_prompt:
-            messages.append(SystemMessage(content=self.config.system_prompt))
+            skills_section = self._build_skills_prompt_section(self._skills)
+            if skills_section:
+                system_prompt = skills_section + "\n\n" + system_prompt
+        if system_prompt:
+            messages.append(SystemMessage(content=system_prompt))
 
         # ── Worktree isolation: inject worktree context into task ──
         if self._worktree_ctx is not None:

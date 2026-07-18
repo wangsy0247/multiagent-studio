@@ -42,7 +42,7 @@ class SummarizationConfig(BaseModel):
     preserve_recent_skill_tokens: int = Field(default=25000, ge=0)
     preserve_recent_skill_tokens_per_skill: int = Field(default=5000, ge=0)
     skill_file_read_tool_names: list[str] = Field(
-        default_factory=lambda: ["read_file", "read", "view", "cat"],
+        default_factory=lambda: ["file_read", "read_file", "read", "view", "cat"],
     )
 
 

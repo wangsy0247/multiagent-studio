@@ -31,7 +31,7 @@ _EXECUTABLE_DIRS = frozenset({"scripts"})
 async def install_skill_from_archive(
     archive_path: Path,
     target_root: Path,
-    category: str = "custom",
+    category: str = "builtin",
     *,
     force: bool = False,
     model_client: Any | None = None,
@@ -49,9 +49,8 @@ async def install_skill_from_archive(
 
     Args:
         archive_path: Path to the ``.skill`` ZIP file.
-        target_root: Root directory containing ``public/`` and ``custom/``
-            skill category directories.
-        category: Target category — ``"custom"`` (default) or ``"public"``.
+        target_root: Root directory containing ``builtin/`` skill category directory.
+        category: Target category — ``"builtin"`` (default).
         force: When ``True``, overwrite an existing skill with the same name.
         model_client: LLM client for security scanning.  When ``None``,
             installation is blocked.

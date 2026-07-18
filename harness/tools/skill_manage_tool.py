@@ -114,8 +114,8 @@ def create_skill_manage_tool(
     ) -> str:
         """Manage custom skills — create, edit, patch, delete, and manage support files.
 
-        Built-in skills under public/ are READ-ONLY.  All write operations
-        go through validation + security scanning.
+        Built-in skills under builtin/ are READ-ONLY.  All write operations
+        target user-private skills and go through validation + security scanning.
 
         Args:
             action: The operation to perform.

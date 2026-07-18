@@ -26,7 +26,7 @@ def _make_skill(
     name: str = "test-skill",
     description: str = "A test skill",
     allowed_tools: list[str] | None = None,
-    category: SkillCategory = SkillCategory.PUBLIC,
+    category: SkillCategory = SkillCategory.BUILTIN,
     enabled: bool = True,
 ) -> Skill:
     return Skill(

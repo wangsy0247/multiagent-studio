@@ -323,8 +323,8 @@ class TeamOrchestrator:
 
             # Member 可委派子任务; Lead 通过 delegate_to_member + 任务板分配
             if role != "lead":
-                from harness.tools.builtins.lead_tools import task_tool
-                tools.append(task_tool(
+                from harness.tools.builtins.lead_tools import Agent_tool
+                tools.append(Agent_tool(
                     manager=self._subagent_manager,
                 ))
 

@@ -45,15 +45,14 @@ apiClient.interceptors.response.use(
 
 export default apiClient;
 
-/** 获取当前登录用户的 ID，从 localStorage 读取（auth-store subscribe 持久化保证同步），兜底 "default" */
+/** 获取当前登录用户的 ID，优先使用 username（可读性更好），兜底 id，再兜底 "default" */
 function getCurrentUserId(): string {
   if (typeof window === "undefined") return "default";
   try {
     const stored = localStorage.getItem("auth-storage");
     if (stored) {
       const { state } = JSON.parse(stored);
-      // user 可能在 state.user.id 或 state.user 顶层（取决于持久化格式）
-      const uid = state?.user?.id;
+      const uid = state?.user?.username || state?.user?.id;
       if (uid) return uid;
     }
   } catch {}
