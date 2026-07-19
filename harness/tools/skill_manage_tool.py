@@ -1,14 +1,25 @@
 """Agent self-management tool for skills — create, edit, patch, delete.
 
-Allows the Lead Agent (and authorised subagents) to manage custom skills
-programmatically.  Built-in ``public/`` skills are read-only — only skills
-under ``custom/`` can be mutated.
+Only usable from background review forks and the curator (gated by
+``_skill_manage_gate`` contextvar).  The Lead Agent and normal subagents
+do NOT have access to this tool.
+
+Writes go through ``SkillStorage`` → host filesystem at
+``~/.multiagent-studio/users/{uid}/skills/{name}/``.  This is the
+**authorised write path for skills** — it is separate from the sandbox
+filesystem layer because skill management requires frontmatter validation,
+security scanning, JSONL history, and prompt-cache refresh that sandbox
+tools do not provide.
+
+Security boundary: ``SkillStorage.write_custom_skill()`` enforces
+containment via ``Path.resolve() + relative_to()`` — writes outside the
+skill directory are rejected with ``ValueError``.
 
 Every write operation follows the pipeline:
-1. Acquire per-skill lock (via SkillStorage's atomic writes)
+1. Access gate check (_skill_manage_gate contextvar)
 2. Validate frontmatter
 3. Security scan content
-4. Atomic write via SkillStorage
+4. Atomic write via SkillStorage (tempfile + os.replace)
 5. Append JSONL history
 6. Refresh prompt cache
 """

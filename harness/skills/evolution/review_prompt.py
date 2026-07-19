@@ -1,14 +1,20 @@
 """Background skill review prompts — adapted from Hermes.
 
 These prompts are fed to the background review fork subagent.  The fork
-has access to ``skill_manage`` and can read existing skills via ``file_read``
-(progressive loading).  It runs silently — no user-visible output.
+uses progressive loading: ``skill_read(path)`` to load a skill's full
+SKILL.md content, then ``skill_manage`` to create/patch/delete.
+It runs silently — no user-visible output.
 """
 
 SKILL_REVIEW_PROMPT = """\
 Review the conversation above and update the skill library. Be ACTIVE —
 most sessions produce at least one skill update, even if small. A pass
 that does nothing is a missed learning opportunity, not a neutral outcome.
+
+WORKFLOW: use `skill_read(path)` to load a skill's content BEFORE you
+patch it. The Skills Catalog shows names, descriptions, and read paths —
+call `skill_read` on any skill you want to inspect or update. This is
+the same progressive-loading pattern the main agent uses with `file_read`.
 
 Target shape of the library: CLASS-LEVEL skills, each with a rich SKILL.md
 and a `references/` directory for session-specific detail. Not a long flat

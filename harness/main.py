@@ -39,6 +39,35 @@ _current_req_creds: contextvars.ContextVar[dict[str, str]] = contextvars.Context
     "_current_req_creds", default={},
 )
 
+
+def _get_memory_context(user_id: str) -> str:
+    """Extract memory facts for *user_id* to pass to the review fork.
+
+    Returns a ``<memory>`` XML block, or an empty string.
+    """
+    try:
+        from harness.memory.updater import get_memory_data
+
+        data = get_memory_data(agent_name=None, user_id=user_id)
+        if not data:
+            return ""
+        facts = data.get("facts", [])
+        if not facts:
+            return ""
+        # Build compact memory block (top 20 facts by confidence)
+        facts_sorted = sorted(
+            facts, key=lambda f: f.get("confidence", 0), reverse=True,
+        )[:20]
+        lines = ["<memory>"]
+        for f in facts_sorted:
+            content = str(f.get("content", ""))[:200]
+            category = f.get("category", "")
+            lines.append(f"  - [{category}] {content}")
+        lines.append("</memory>")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
 from harness.agents.lead_agent import LeadAgent
 from harness.agents.lead_agent import _build_middlewares as build_lead_middlewares
 from harness.agents.subagent_manager import SubagentManager
@@ -1400,6 +1429,12 @@ class HarnessService(_BaseService):
                             spawn_background_review,
                         )
 
+                        # ── 收集父 Agent 上下文 ──
+                        _enabled_skills = self.skill_storage.load_skills(
+                            enabled_only=True, user_id=user_id,
+                        ) if self.skill_storage else []
+                        _memory_context = _get_memory_context(user_id)
+
                         _task = asyncio.create_task(
                             spawn_background_review(
                                 messages_snapshot=list(final_messages),
@@ -1407,6 +1442,8 @@ class HarnessService(_BaseService):
                                 llm_factory=self._init_llm,
                                 model=_review_model,
                                 user_id=user_id,
+                                enabled_skills=_enabled_skills,
+                                memory_context=_memory_context,
                             )
                         )
                         logger.info(

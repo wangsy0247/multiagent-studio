@@ -68,12 +68,22 @@ async def spawn_background_review(
     llm_factory: Callable[..., BaseChatModel],
     model: str,
     user_id: str,
+    *,
+    enabled_skills: list[Any] | None = None,
+    memory_context: str = "",
 ) -> list[str]:
     """Fork a background subagent to review the conversation and update skills.
 
     Called via ``asyncio.create_task()`` from the ``finally`` block of
     ``HarnessService.execute()``.  Never raises — failures are logged and
     silently discarded.
+
+    Args:
+        enabled_skills: All enabled skills visible to the parent agent
+            (includes both builtin and user skills).  Passed so the review
+            fork knows what the parent agent can already do.
+        memory_context: ``<memory>`` block from the parent agent's context,
+            containing user facts and preferences.
 
     Results are pushed to ``_notifications[user_id]`` for surfacing on
     the next user turn.
@@ -83,13 +93,17 @@ async def spawn_background_review(
         from harness.skills.evolution.provenance import ORIGIN_BACKGROUND_REVIEW, set_write_origin
         set_write_origin(ORIGIN_BACKGROUND_REVIEW)
 
-        # ── Build task: review prompt + existing skills + conversation ──
+        # ── Build task: review prompt + parent context + existing skills + conversation ──
         loaded_skill_names = _find_loaded_skills(messages_snapshot)
-        existing_skills = _format_existing_skills(
+        existing_skills = _build_skills_catalog(
             skill_storage, user_id, loaded_skill_names,
         )
+        parent_context = _format_parent_context(
+            enabled_skills=enabled_skills or [],
+            memory_context=memory_context,
+        )
         conversation = _format_messages(messages_snapshot)
-        task = _build_task(existing_skills, conversation)
+        task = _build_task(existing_skills, parent_context, conversation)
 
         # ── Build config ──
         config = SubAgentConfig(
@@ -120,6 +134,7 @@ async def spawn_background_review(
             skill_storage=skill_storage,
             model_client=llm,
         )
+        skill_read = _create_skill_read_tool(skill_storage, user_id)
 
         # ── Run review agent ──
         logger.info(
@@ -130,7 +145,7 @@ async def spawn_background_review(
         review_agent = ReviewAgent(
             config=config,
             llm=llm,
-            tools=[skill_manage],
+            tools=[skill_read, skill_manage],
             user_id=user_id,
         )
 
@@ -162,15 +177,50 @@ async def spawn_background_review(
 from harness.skills.evolution.review_prompt import SKILL_REVIEW_PROMPT
 
 
-def _build_task(existing_skills: str, conversation: str) -> str:
+def _build_task(existing_skills: str, parent_context: str, conversation: str) -> str:
     """Assemble the full review task."""
-    return (
-        f"{SKILL_REVIEW_PROMPT}\n\n"
-        f"---\n\n"
-        f"{existing_skills}\n\n"
-        f"---\n\n"
-        f"{conversation}"
-    )
+    parts = [SKILL_REVIEW_PROMPT]
+    if parent_context:
+        parts.append(parent_context)
+    parts.append(existing_skills)
+    parts.append(conversation)
+    return "\n\n---\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Parent context formatter
+# ---------------------------------------------------------------------------
+
+
+def _format_parent_context(
+    enabled_skills: list[Any],
+    memory_context: str,
+) -> str:
+    """Build a summary of the parent agent's context for the review fork.
+
+    Includes:
+    - All enabled skills (name + description + trigger guidance)
+    - Memory facts about the user
+    """
+    parts: list[str] = []
+
+    # ── Enabled skills (what the parent agent can use) ──
+    if enabled_skills:
+        lines = ["## Parent Agent's Available Skills\n"]
+        for s in enabled_skills:
+            label = "mine" if getattr(s, "user_id", None) else "built-in"
+            container_path = getattr(s, "get_container_file_path", None)
+            loc = container_path() if container_path else "?"
+            lines.append(
+                f"- **{s.name}** [{label}]: {s.description}\n  Location: {loc}"
+            )
+        parts.append("\n".join(lines))
+
+    # ── Memory context ──
+    if memory_context:
+        parts.append(f"## User Memory (from parent agent)\n{memory_context}")
+
+    return "\n\n".join(parts) if parts else ""
 
 
 # ---------------------------------------------------------------------------
@@ -210,42 +260,36 @@ def _find_loaded_skills(messages: list[BaseMessage]) -> set[str]:
 # Existing skills summary (token-aware)
 # ---------------------------------------------------------------------------
 
-
-# Max number of skills whose full SKILL.md content is included.
-# Remaining skills get name + description only.
-_MAX_FULL_CONTENT_SKILLS = 5
-
-# Max chars per SKILL.md body in the review task (truncated after this).
-_MAX_SKILL_MD_CHARS = 3000
-
-
-def _format_existing_skills(
+def _build_skills_catalog(
     skill_storage: Any,
     user_id: str,
     loaded_skill_names: set[str] | None = None,
 ) -> str:
-    """Build a summary of existing user skills for the review agent.
+    """Build a progressive-loading skills catalog for the review fork.
 
-    Skills that were loaded/used during the session get their full
-    SKILL.md content included (so the review agent can patch them).
-    Other skills get name + description only.
-    Capped at ``_MAX_FULL_CONTENT_SKILLS`` to avoid token explosion.
+    ALL skills get name + description + file path only — NO full content
+    is included inline.  The review fork uses ``skill_read`` to load a
+    skill's full SKILL.md on demand, exactly like the Lead Agent uses
+    ``file_read`` for progressive loading.
+
+    Loaded skills are listed first with a ``[LOADED]`` marker so the
+    review fork knows which ones are most likely to need patching.
     """
     try:
         all_skills = skill_storage.load_skills(enabled_only=False, user_id=user_id)
     except Exception:
-        return "## Existing Skills\n\n(unable to load skills)"
+        return "## Skills Catalog\n\n(unable to load skills)"
 
     user_skills = [s for s in all_skills if s.user_id]
-    if not user_skills:
-        return "## Existing Skills\n\n(no user skills yet — create the first one)"
-
     loaded = loaded_skill_names or set()
 
-    # Sort: loaded skills first, then by name
+    if not user_skills:
+        return "## Skills Catalog\n\n(no user skills yet — create the first one)"
+
+    # Sort: loaded first, then by name
     user_skills.sort(key=lambda s: (s.name not in loaded, s.name))
 
-    # ── 遥测: bump_use for loaded skills (they were "in play") ──
+    # ── 遥测: bump_use for loaded skills ──
     for skill in user_skills:
         if skill.name in loaded:
             try:
@@ -254,32 +298,20 @@ def _format_existing_skills(
             except Exception:
                 pass
 
-    lines = ["## Existing User Skills\n"]
-    full_content_count = 0
+    lines = [
+        f"## Skills Catalog ({len(user_skills)} user skills)\n",
+        "**Progressive loading**: call `skill_read(path)` to load a skill's "
+        "full SKILL.md content before patching it. Do NOT patch a skill "
+        "without reading it first — the catalog only shows names and "
+        "descriptions.\n",
+    ]
+
     for skill in user_skills:
-        lines.append(f"- **{skill.name}**: {skill.description}")
-        lines.append(f"  Location: {skill.get_container_file_path()}")
-
-        include_full = (
-            skill.name in loaded
-            and full_content_count < _MAX_FULL_CONTENT_SKILLS
-        )
-        if include_full:
-            full_content_count += 1
-            try:
-                content = skill_storage.read_custom_skill(skill.name, user_id=user_id)
-                if len(content) > _MAX_SKILL_MD_CHARS:
-                    content = content[:_MAX_SKILL_MD_CHARS] + "\n... [truncated]"
-                lines.append(f"  Content:\n```markdown\n{content}\n```\n")
-            except Exception:
-                lines.append("  (unable to read content)\n")
-        else:
-            lines.append("")
-
-    if full_content_count >= _MAX_FULL_CONTENT_SKILLS:
+        marker = " ⬅ LOADED this session" if skill.name in loaded else ""
+        path = skill.get_container_file_path()
         lines.append(
-            f"  _(full content shown for {full_content_count} loaded skills; "
-            f"use skill_manage to read others if needed)_\n"
+            f"- **{skill.name}**{marker}: {skill.description}\n"
+            f"  `skill_read(\"{path}\")`"
         )
 
     return "\n".join(lines)
@@ -434,6 +466,55 @@ def _extract_actions(result: str | None) -> list[str]:
         actions.append(f"Removed '{name}'")
 
     return actions
+
+
+# ---------------------------------------------------------------------------
+# Progressive-loading: skill_read tool
+# ---------------------------------------------------------------------------
+
+
+def _create_skill_read_tool(skill_storage: Any, user_id: str):
+    """Create a ``skill_read`` tool for progressive loading of skill content.
+
+    The review fork uses this to load a skill's full SKILL.md on demand,
+    instead of having all content dumped into the task.  Directly reads
+    from SkillStorage — no sandbox needed.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def skill_read(path: str) -> str:
+        """Read the full content of a skill's SKILL.md file.
+
+        Use this BEFORE calling skill_manage(action='patch') to see the
+        current content.  The path must be one of the locations listed
+        in the Skills Catalog above.
+
+        Args:
+            path: Full path from the catalog, e.g.
+                  "/mnt/skills/my/greeting-responder/SKILL.md"
+        """
+        # Parse skill name from path: /mnt/skills/my/<name>/SKILL.md
+        # or /mnt/skills/builtin/<name>/SKILL.md
+        import re
+
+        match = re.match(r"/mnt/skills/(?:builtin|my)/([a-z0-9-]+)/SKILL\.md$", path)
+        if not match:
+            return (
+                f"Error: invalid skill path '{path}'. "
+                "Use exactly the path shown in the Skills Catalog."
+            )
+
+        skill_name = match.group(1)
+        try:
+            content = skill_storage.read_custom_skill(skill_name, user_id=user_id)
+            return content
+        except FileNotFoundError:
+            return f"Error: skill '{skill_name}' not found at '{path}'."
+        except Exception as exc:
+            return f"Error reading skill: {exc}"
+
+    return skill_read
 
 
 # ---------------------------------------------------------------------------
