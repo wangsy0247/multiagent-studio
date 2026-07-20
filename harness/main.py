@@ -902,6 +902,7 @@ class HarnessService(_BaseService):
         project_id: str | None = None,
         agent_name: str = "default",
         mode: str = "single",
+        unattended: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the agent pipeline and stream SSE events in real time.
 
@@ -988,6 +989,13 @@ class HarnessService(_BaseService):
         else:
             # 新会话
             current_state = initial_state(thread_id, user_id, message, files)
+
+        # ── 无人值守标记：定时任务执行时注入 state.metadata，
+        #    cron 工具与 ClarificationMiddleware 据此禁用交互能力（防递归调度/无效追问）。
+        #    每次执行都显式覆盖，避免 fixed 会话 checkpoint 中残留旧值。
+        metadata = dict(current_state.get("metadata") or {})
+        metadata["unattended"] = unattended
+        current_state["metadata"] = metadata
 
         # ── 注册运行期取消标记（保存 user/agent 以便后续方法查找 ctx） ──
         self._active_runs[thread_id] = {

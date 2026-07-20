@@ -181,6 +181,31 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
             goto=END,
         )
 
+    @staticmethod
+    def _is_unattended(request: ToolCallRequest) -> bool:
+        """无人值守执行（定时任务）判定：state.metadata.unattended 由 HarnessService.execute 注入"""
+        state = getattr(request, "state", None) or {}
+        metadata = state.get("metadata") if isinstance(state, dict) else None
+        return bool((metadata or {}).get("unattended"))
+
+    def _handle_unattended(self, request: ToolCallRequest) -> ToolMessage:
+        """无人值守执行中的澄清请求：不暂停，指示模型自行决策（无人可回答问题）"""
+        tool_call = request.tool_call
+        logger.info(
+            "Unattended run: ask_clarification suppressed (%s)",
+            (tool_call.get("args", {}) or {}).get("question", "")[:80],
+        )
+        return ToolMessage(
+            id=self._stable_message_id(tool_call.get("id", ""), "unattended"),
+            content=(
+                "当前为无人值守执行（定时任务），无法向用户提问。"
+                "请根据已有信息自行做出合理决策并继续完成任务，若无法进行判断则进行总结返回，待用户查看时决定。"
+                "不要再次调用 ask_clarification。"
+            ),
+            tool_call_id=tool_call.get("id", ""),
+            name="ask_clarification",
+        )
+
     # ------------------------------------------------------------------
     # hooks — wrap_tool_call interrupts
     # ------------------------------------------------------------------
@@ -193,6 +218,8 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
     ) -> ToolMessage | Command:
         if request.tool_call.get("name") != "ask_clarification":
             return handler(request)
+        if self._is_unattended(request):
+            return self._handle_unattended(request)
         return self._handle_clarification(request)
 
     @override
@@ -203,4 +230,6 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
     ) -> ToolMessage | Command:
         if request.tool_call.get("name") != "ask_clarification":
             return await handler(request)
+        if self._is_unattended(request):
+            return self._handle_unattended(request)
         return self._handle_clarification(request)

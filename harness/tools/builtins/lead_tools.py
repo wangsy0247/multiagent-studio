@@ -9,6 +9,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import InjectedState
 
 from harness.agents.presets import build_subagent_config
+from harness.tools.builtins.cron_tool import cron_tool
 from harness.tools.builtins.memory_tools import create_memory_search_tool
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,7 @@ def build_lead_tools(
     tools: list[BaseTool] = [
         Agent_tool(manager, parent_skills=parent_skills),
         ask_clarification_tool(),
+        cron_tool(),
     ]
 
     # mem0 主动查询工具（如果启用）

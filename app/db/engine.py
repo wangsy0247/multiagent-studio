@@ -33,6 +33,7 @@ async def init_db():
     import app.models.message     # noqa: F401
     import app.models.file_record # noqa: F401
     import app.models.configuration # noqa: F401
+    import app.models.scheduled_task # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.create_all)

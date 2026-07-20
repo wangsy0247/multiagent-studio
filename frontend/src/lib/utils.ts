@@ -19,6 +19,35 @@ export function formatDateTime(isoString: string | null | undefined): string {
   });
 }
 
+/** 完整时间格式 "2026-01-02 09:30:00"（执行历史等精确场景用） */
+export function formatDateTimeFull(isoString: string | null | undefined): string {
+  if (!isoString) return "";
+  const normalized = isoString.endsWith("Z") || isoString.includes("+") ? isoString : isoString + "Z";
+  const date = new Date(normalized);
+  if (isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** 相对时间：过去 → "5 分钟前"，未来 → "3 小时后"（下次执行倒计时用） */
+export function formatRelativeTime(isoString: string | null | undefined): string {
+  if (!isoString) return "";
+  const normalized = isoString.endsWith("Z") || isoString.includes("+") ? isoString : isoString + "Z";
+  const date = new Date(normalized);
+  if (isNaN(date.getTime())) return "";
+  const diffMs = date.getTime() - Date.now();
+  const future = diffMs > 0;
+  const absSec = Math.abs(diffMs) / 1000;
+
+  let text: string;
+  if (absSec < 60) return future ? "即将" : "刚刚";
+  if (absSec < 3600) text = `${Math.floor(absSec / 60)} 分钟`;
+  else if (absSec < 86400) text = `${Math.floor(absSec / 3600)} 小时`;
+  else text = `${Math.floor(absSec / 86400)} 天`;
+  return future ? `${text}后` : `${text}前`;
+}
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;

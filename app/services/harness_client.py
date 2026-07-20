@@ -47,6 +47,7 @@ class HarnessClient:
         project_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         mode: str = "single",
+        unattended: bool = False,
     ) -> AsyncGenerator[str, None]:
         """代理执行请求，流式返回 SSE 事件"""
         payload = {
@@ -61,6 +62,8 @@ class HarnessClient:
             payload["files"] = files
         if project_id:
             payload["project_id"] = project_id
+        if unattended:
+            payload["unattended"] = True
         payload["agent_name"] = agent_name or "default"
 
         client = await self._get_client()

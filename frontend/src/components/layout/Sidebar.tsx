@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban } from "lucide-react";
+import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban, CalendarClock } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { useChatStore } from "@/lib/chat-store";
+import { useUnreadStore } from "@/lib/unread-store";
 import { ThreadSummary } from "@/lib/types";
 import { cn, formatDateTime } from "@/lib/utils";
 
@@ -18,10 +19,19 @@ export default function Sidebar() {
 
   const chatTitle = useChatStore((s) => s.title);
   const chatActiveThreadId = useChatStore((s) => s.activeThreadId);
+  const unreadTotal = useUnreadStore((s) => s.total);
+  const refreshUnread = useUnreadStore((s) => s.refresh);
 
   useEffect(() => {
     loadThreads();
   }, []);
+
+  // 定时任务未读红点：60s 轮询
+  useEffect(() => {
+    refreshUnread();
+    const timer = setInterval(refreshUnread, 60_000);
+    return () => clearInterval(timer);
+  }, [refreshUnread]);
 
   useEffect(() => {
     if (chatTitle && chatTitle !== "新会话" && chatActiveThreadId) {
@@ -139,6 +149,16 @@ export default function Sidebar() {
           className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
             pathname.startsWith("/agents") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
           <Bot className="w-4 h-4 text-slate-400" /> Agent
+        </button>
+        <button onClick={() => router.push("/scheduled-tasks")}
+          className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+            pathname.startsWith("/scheduled-tasks") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+          <CalendarClock className="w-4 h-4 text-slate-400" /> 定时任务
+          {unreadTotal > 0 && (
+            <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-medium flex items-center justify-center">
+              {unreadTotal > 99 ? "99+" : unreadTotal}
+            </span>
+          )}
         </button>
       </div>
 

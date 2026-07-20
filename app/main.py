@@ -21,7 +21,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.db.engine import init_db
-from app.api import auth, threads, execute, files, configs, monitoring, agents, projects
+from app.api import auth, threads, execute, files, configs, monitoring, agents, projects, scheduled_tasks, internal
+from app.services.scheduler import get_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,7 +44,10 @@ async def lifespan(app: FastAPI):
     logger.info("App 服务启动中...")
     await init_db()
     logger.info("数据库初始化完成")
+    scheduler = get_scheduler()
+    await scheduler.start()
     yield
+    await scheduler.shutdown()
     logger.info("App 服务关闭")
 
 
@@ -73,6 +77,8 @@ def create_app() -> FastAPI:
     app.include_router(monitoring.router, prefix="/api/monitoring", tags=["监控"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["Agent管理"])
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["项目管理"])
+    app.include_router(scheduled_tasks.router, prefix="/api/scheduled-tasks", tags=["定时任务"])
+    app.include_router(internal.router, prefix="/api/internal", tags=["内部接口"])
 
     # 健康检查
     @app.get("/health")

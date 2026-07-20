@@ -1,6 +1,10 @@
 """Alembic 迁移环境配置"""
 
+import os
 from logging.config import fileConfig
+from pathlib import Path
+
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 
@@ -8,9 +12,15 @@ from alembic import context
 from sqlmodel import SQLModel
 from app.models import User, Thread, Message, FileRecord, UserConfig  # noqa: F401
 
+# 从项目根 .env 读取 DATABASE_URL_SYNC（alembic.ini 的 ${} 占位在此展开）
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+_db_url = os.getenv("DATABASE_URL_SYNC") or config.get_main_option("sqlalchemy.url")
+config.set_main_option("sqlalchemy.url", _db_url)
 
 target_metadata = SQLModel.metadata
 

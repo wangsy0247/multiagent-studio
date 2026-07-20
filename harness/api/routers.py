@@ -43,6 +43,7 @@ async def execute(
             project_id=request.project_id,
             agent_name=request.agent_name,
             mode=request.mode,
+            unattended=request.unattended,
         ):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 

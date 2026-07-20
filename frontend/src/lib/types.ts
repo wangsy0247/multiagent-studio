@@ -381,3 +381,41 @@ export interface TokenUsageStats {
   by_model: Record<string, TokenUsage>;
   by_date: Array<{ date: string; tokens: number; cost: number }>;
 }
+
+// ===== 定时任务 (对齐后端 app/models/scheduled_task.py) =====
+
+export interface ScheduledTask {
+  id: string;
+  user_id: string;
+  name: string;
+  prompt: string;
+  cron_expr: string | null;
+  recurring: boolean;
+  timezone: string;
+  next_run_at: string | null;
+  expires_at: string | null;
+  enabled: boolean;
+  mode: "single" | "team";
+  project_id: string | null;
+  agent_name: string | null;
+  thread_strategy: "new" | "fixed";
+  thread_id: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  created_by: "user" | "agent";
+  allow_silent: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskRun {
+  id: string;
+  task_id: string;
+  thread_id: string | null;
+  status: "running" | "success" | "error" | "timeout" | "interrupted";
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+  summary: string | null;
+}

@@ -156,3 +156,18 @@ export const monitoringAPI = {
   getTrace: (threadId: string) => apiClient.get(`/monitoring/traces/${threadId}`),
   getTokenUsage: (params?: object) => apiClient.get("/monitoring/token-usage", { params }),
 };
+
+// ===== Scheduled Tasks API (定时任务) =====
+export const scheduledTasksAPI = {
+  list: () => apiClient.get("/scheduled-tasks"),
+  create: (data: object) => apiClient.post("/scheduled-tasks", data),
+  update: (id: string, data: object) => apiClient.patch(`/scheduled-tasks/${id}`, data),
+  delete: (id: string) => apiClient.delete(`/scheduled-tasks/${id}`),
+  trigger: (id: string) => apiClient.post(`/scheduled-tasks/${id}/trigger`),
+  listRuns: (id: string, limit = 50) =>
+    apiClient.get(`/scheduled-tasks/${id}/runs?limit=${limit}`),
+  markRunsSeen: (id: string) => apiClient.post(`/scheduled-tasks/${id}/runs/mark-seen`),
+  unreadCount: () => apiClient.get("/scheduled-tasks/unread-count"),
+  preview: (cronExpr: string, timezone: string, count = 5) =>
+    apiClient.get("/scheduled-tasks/preview", { params: { cron_expr: cronExpr, timezone, count } }),
+};

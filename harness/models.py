@@ -398,6 +398,7 @@ class ExecuteRequest(BaseModel):
     project_id: str | None = None   # 项目 ID，非空时启用 Team 上下文
     agent_name: str = "default"   # 单 Agent 模式指定 Agent
     mode: str = "single"            # "single" | "team"
+    unattended: bool = False        # 定时任务等无人值守执行（禁用 cron/澄清等交互工具）
 
 
 class ClarificationResponse(BaseModel):
