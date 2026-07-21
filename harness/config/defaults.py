@@ -45,7 +45,7 @@ SYSTEM_DEFAULTS: dict = {
     "limits": {"max_turns": 50, "timeout_seconds": 900},
 
     # ── Team ──
-    "team": {"can_be_lead": False, "can_delegate": True, "memory_scope": "agent"},
+    "team": {"can_delegate": True, "memory_scope": "agent"},
 
     # ── 沙箱 (基础设施, L1 覆盖) ──
     "sandbox": {

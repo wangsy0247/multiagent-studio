@@ -341,7 +341,7 @@ export interface AgentDefinition {
   memory: AgentMemoryConfig;
   features: AgentFeaturesConfig;
   limits: { max_turns: number; timeout_seconds: number };
-  team: { can_be_lead: boolean; can_delegate: boolean; memory_scope: string };
+  team: { can_delegate: boolean; memory_scope: string };
   subagents: { timeout_seconds: number; max_concurrent: number };
   created_at?: string;
   updated_at?: string;
@@ -355,7 +355,7 @@ export interface AgentListItem {
   model: string;
   tool_groups: string[];
   skills?: string[] | null;
-  team?: { can_be_lead: boolean; can_delegate: boolean; memory_scope: string };
+  team?: { can_delegate: boolean; memory_scope: string };
   created_at: string;
   updated_at: string;
 }

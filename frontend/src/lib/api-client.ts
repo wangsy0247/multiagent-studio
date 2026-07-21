@@ -115,7 +115,7 @@ export const agentsAPI = {
     memory?: { backend?: string; max_facts?: number; injection_enabled?: boolean; };
     features?: { summarization?: boolean; subagent?: boolean; langfuse?: boolean; };
     limits?: { max_turns?: number; timeout_seconds?: number; };
-    team?: { can_be_lead?: boolean; can_delegate?: boolean; memory_scope?: string; };
+    team?: { can_delegate?: boolean; memory_scope?: string; };
     mcp_servers?: Record<string, boolean>;
   }) => apiClient.post("/v1/agents", { ...data, user_id: data.user_id || getCurrentUserId() }),
   update: (name: string, data: object) => apiClient.put(`/v1/agents/${name}`, { ...data, user_id: getCurrentUserId() }),

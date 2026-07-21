@@ -120,10 +120,12 @@ class TeamContext:
 4. 如执行失败，使用 task_update 将状态改为 failed 并说明原因
 
 **通信规则:**
-1. Member 遇到需求不清时，使用 send_message 向 Lead 提问
-2. Member 遇到阻塞（工具失败、依赖未完成）时，将任务标记为 failed 并说明原因
-3. Lead 可使用 broadcast 向全体 Member 发送通知
-4. 禁止在消息中传递大段代码 — 代码应写入文件并通过任务板引用
+1. Member 遇到需求不清、工具失败或依赖阻塞时，使用 send_message 向 Lead 提问或报告
+2. Lead 可使用 send_message 向特定 Member 发送私聊指令，或使用 broadcast 向全体 Member 发送通知
+3. Member 之间可使用 send_message 进行领域咨询 (如向具备特定工具的 Member 请求技术帮助)
+4. Member 提交高风险操作计划时，使用 request_plan_approval 向 Lead 请求审批
+5. Lead 收到 plan_approval_request 后，使用 approve_plan 回复审批结果
+6. 禁止在消息中传递大段代码 — 代码应写入文件并通过任务板引用
 
 **约束:**
 1. Member Agent 不能委派任务给成员 Agent，但是可以创建子 Agent 来进行并行完成

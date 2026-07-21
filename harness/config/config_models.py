@@ -91,7 +91,6 @@ class AgentLimitsConfig(BaseModel):
 
 
 class AgentTeamConfig(BaseModel):
-    can_be_lead: bool = False
     can_delegate: bool = True
     memory_scope: str = "agent"
 
@@ -183,7 +182,6 @@ class EffectiveConfig:
     max_concurrent_subagents: int = 3
 
     # Team
-    can_be_lead: bool = False
     can_delegate: bool = True
     memory_scope: str = "agent"
     agent_name: str = ""
@@ -267,7 +265,6 @@ class EffectiveConfig:
             timeout_seconds=int(limits.get("timeout_seconds", 900)),
             subagent_timeout_seconds=int(subagents.get("timeout_seconds", 900)),
             max_concurrent_subagents=int(subagents.get("max_concurrent", 3)),
-            can_be_lead=bool(team.get("can_be_lead", False)),
             can_delegate=bool(team.get("can_delegate", True)),
             memory_scope=str(team.get("memory_scope", "agent")),
             agent_name=merged.get("name", ""),

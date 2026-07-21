@@ -33,7 +33,6 @@ export default function AgentEditPage() {
   const [memoryMaxFacts, setMemoryMaxFacts] = useState(10);
   const [memoryInjection, setMemoryInjection] = useState(true);
   // ── Agent Team 扩展字段 ──
-  const [canBeLead, setCanBeLead] = useState(false);
   const [canDelegate, setCanDelegate] = useState(true);
   const [maxTurns, setMaxTurns] = useState(50);
   const [timeoutSeconds, setTimeoutSeconds] = useState(900);
@@ -65,7 +64,6 @@ export default function AgentEditPage() {
       setMemoryInjection(mem.injection_enabled ?? true);
       // team
       const team = agent.team || {};
-      setCanBeLead(team.can_be_lead ?? agent.can_be_lead ?? false);
       setCanDelegate(team.can_delegate ?? agent.can_delegate ?? true);
       // limits
       const limits = agent.limits || {};
@@ -113,7 +111,7 @@ export default function AgentEditPage() {
         memory: { backend: memoryBackend, max_facts: memoryMaxFacts, injection_enabled: memoryInjection },
         features: { summarization: featureSummarization, subagent: featureSubagent, langfuse: true, guardrail: false },
         limits: { max_turns: maxTurns, timeout_seconds: timeoutSeconds },
-        team: { can_be_lead: canBeLead, can_delegate: canDelegate, memory_scope: "agent" },
+        team: { can_delegate: canDelegate, memory_scope: "agent" },
         subagents: { max_concurrent: subagentMaxConcurrent, timeout_seconds: 900 },
       };
       if (isNew) {
@@ -341,14 +339,6 @@ export default function AgentEditPage() {
             </div>
           </div>
           <div className="flex gap-6 mt-3">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={canBeLead} onChange={(e) => setCanBeLead(e.target.checked)}
-                className="w-3.5 h-3.5 rounded border-slate-300" />
-              <span className="text-xs text-slate-600">可被选为 Team Lead (优先选择)</span>
-              <span className="text-[10px] text-slate-400 ml-1">
-                — Lead 使用 Default Agent 的模型配置 + 系统内置 Lead 行为指令
-              </span>
-            </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={canDelegate} onChange={(e) => setCanDelegate(e.target.checked)}
                 className="w-3.5 h-3.5 rounded border-slate-300" />

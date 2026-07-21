@@ -79,7 +79,6 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db)):
             timeout_seconds=body.get("timeout_seconds", lim_data.get("timeout_seconds", 900)),
         ),
         team=AgentTeamFields(
-            can_be_lead=body.get("can_be_lead", team_data.get("can_be_lead", False)),
             can_delegate=body.get("can_delegate", team_data.get("can_delegate", True)),
             memory_scope=body.get("memory_scope", team_data.get("memory_scope", "agent")),
         ),
@@ -168,7 +167,6 @@ async def update_agent(name: str, request: Request, db: AsyncSession = Depends(g
             timeout_seconds=lim_data.get("timeout_seconds", existing.limits.timeout_seconds),
         ),
         team=AgentTeamFields(
-            can_be_lead=team_data.get("can_be_lead", existing.team.can_be_lead),
             can_delegate=team_data.get("can_delegate", existing.team.can_delegate),
             memory_scope=team_data.get("memory_scope", existing.team.memory_scope),
         ),

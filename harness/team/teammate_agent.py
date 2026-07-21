@@ -46,7 +46,10 @@ IDLE_POLL_INTERVAL = 5.0       # IDLE 时 inbox 检查间隔 (秒)
 MAX_WORK_TURNS = 50            # WORKING 阶段最大 LLM 轮次
 
 # ── 任务认领常量 ──
-CLAIM_THRESHOLD = 25.0              # 匹配分 ≥ 此值 → 认领
+# 阈值: 至少需要 2 个工具命中 (25×2=50) 或 1 技能+1 工具 (30+25=55) 才能自主认领
+# 单工具命中 (25) / 少量关键词重叠不再触发认领, 减少误认领
+CLAIM_THRESHOLD = 50.0              # 匹配分 ≥ 此值 → 认领
+
 
 
 class TeammateAgent:
@@ -78,6 +81,7 @@ class TeammateAgent:
         effective_config: Any = None,
         soul_override: str | None = None,
         checkpointer: Any = None,  # LangGraph BaseCheckpointSaver | None
+        llm_semaphore: asyncio.Semaphore | None = None,  # LLM 并发控制
     ) -> None:
         self.name = agent_name
         self.llm = llm
@@ -93,6 +97,7 @@ class TeammateAgent:
         self._project_id = project_id
         self._tracer = tracer
         self._checkpointer = checkpointer
+        self._llm_semaphore = llm_semaphore
 
         # ── EffectiveConfig (优先) + 向后兼容旧 AgentConfig ──
         self._effective_config = effective_config
@@ -267,7 +272,7 @@ class TeammateAgent:
     def _get_lead_instructions(self) -> str:
         """Lead Agent 专属指令."""
         return f"""<teammate_instructions>
-你是 Team 的 Project Lead Agent, 名字是 **{self.name}**。
+你是 整个团队的leader, 名字是 **{self.name}**。
 
 <task_triage>
 收到用户目标后, 首先判断:
@@ -284,7 +289,7 @@ class TeammateAgent:
 - 任务可以并行加速(如同时搜索+编码)
 - 用户明确要求团队协作
 - 需要特定 Member 的专属工具
-- 任务需要拆成的步骤数≥5
+- 任务需要拆成的步骤数≥4
 </task_triage>
 
 **你的核心职责:**
@@ -303,9 +308,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
 ** 协议工具:**
 - 使用 shutdown_teammate 向指定 Member 发起 shutdown_request (关机握手)
-- 收到 plan_approval_request 时, 审阅计划后使用 approve_plan 工具回复:
-  - 批准: approve_plan(request_id="...", requester="...", approve=True, feedback="...")
-  - 拒绝: approve_plan(request_id="...", requester="...", approve=False, feedback="拒绝原因")
+- 收到 plan_approval_request 时, 审阅计划后决定:
+  1. 如果计划存在高风险 (如删除文件、修改关键配置)、涉及安全敏感操作、成本较高, 或你无法独自判断是否合理 → 使用 ask_clarification 询问用户意见, 将 Member 的计划内容展示给用户, 等待用户反馈后再回复
+  2. 如果计划简单且安全 (如读取文件、查询数据), 可直接使用 approve_plan 回复:
+     - 批准: approve_plan(request_id="...", requester="...", approve=True, feedback="...")
+     - 拒绝: approve_plan(request_id="...", requester="...", approve=False, feedback="拒绝原因")
 - 收到 shutdown_response 时, 记录 teammate 的关机确认
 
 **通信:**
@@ -317,13 +324,13 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
     def _get_member_instructions(self) -> str:
         """Member Agent 专属指令 —  关机由 LLM 决策."""
         return f"""<teammate_instructions>
-你是 Team 中的一名成员, 名字是 **{self.name}**。
+你是 团队 中的一名成员, 名字是 **{self.name}**。
 你是一个 **持久化运行的 Agent**
 
 **你的生命周期:**
 - WORKING: 执行分配的任务或自主认领的任务, 使用你的工具和专业知识
 - IDLE: 任务完成后回到 IDLE, 等待新任务或消息
-- IDLE 超时 (60s 无任务) 后自动退出
+- 你的生命周期由 Orchestrator 统一管理, 不要自行退出
 
 **任务执行规则:**
 1. 收到任务后使用 task_update 将状态改为 in_progress
@@ -332,9 +339,9 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 4. 失败时使用 task_update 将状态改为 failed 并说明原因
 
 **通信规则:**
-1. 使用 send_message 向其他 Agent 发送消息
-2. 遇到阻塞或需要澄清时, 主动发消息给 Lead
-3. 使用 read_inbox 检查是否有新消息
+1. 遇到需求不清、工具失败或阻塞时, 使用 send_message 向 Lead 提问或报告
+2. 需要其他 Member 的领域专业知识时, 可使用 send_message 向对方直接咨询
+3. 使用 read_inbox 检查是否有新消息 (来自 Lead 或其他 Member)
 
 ** 结构化协议工具:**
 - 收到 shutdown_request 时, 评估当前工作状态后使用 shutdown_response 工具回复:
@@ -380,6 +387,16 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                     raise asyncio.CancelledError("Teammate shutdown requested")
                 return await handler(request)
 
+        # ── LLMRateLimitMiddleware: 限制同时调用 LLM 的 member 数量 ──
+        _sem = self._llm_semaphore
+
+        class LLMRateLimitMiddleware(AgentMiddleware):
+            async def awrap_model_call(self, request: Any, handler: Callable) -> Any:
+                if _sem is not None:
+                    async with _sem:
+                        return await handler(request)
+                return await handler(request)
+
         # ── 从 EffectiveConfig 读取功能开关 ──
         eff = self._effective_config
         summarization_enabled = eff.summarization_enabled if eff else True
@@ -413,7 +430,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             title_model=eff.title_model if eff else "gpt-4o-mini",
             title_emitted_ref=self._title_emitted,
             on_title=_on_title if is_lead else None,
-            custom_middlewares=[InboxDrainMiddleware()],
+            custom_middlewares=[LLMRateLimitMiddleware(), InboxDrainMiddleware()],
             summary_model=eff.summary_model if eff else "",
             memory_model=eff.memory_model or eff.model if eff else "",
             api_key=eff.api_key if eff else "",
@@ -956,39 +973,23 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         )
         return True
 
-    def _compute_task_match(self, task: TeamTask, card: dict | None) -> float:
-        """计算任务与自身能力的匹配分.
-
-        评分维度:
-        - 工具匹配: 任务描述中提到我的工具 → +25/个
-        - 技能匹配: 任务描述中提到我的技能 → +30/个
-        - 关键词重叠: 描述词与任务词的 Jaccard 重叠 → +2/个
-
-        card 为 None 时返回默认低分 10, 不会完全排除该 agent.
-        """
+    def _compute_task_match(self, task: TeamTask, card: Any | None) -> float:
+        """计算任务与自身能力的匹配分. 委托给 agent_card.compute_card_task_match."""
         if card is None:
-            return CLAIM_THRESHOLD  # 无 card → FIFO 行为 (退化为旧版认领逻辑)
-
-        score = 0.0
-        task_text = f"{task.title} {task.description}".lower()
-
-        # 工具匹配
-        for tool in card.get("tools", []):
-            if tool.lower() in task_text:
-                score += 25
-
-        # 技能匹配
-        for skill in card.get("skills", []):
-            if skill.lower() in task_text:
-                score += 30
-
-        # 关键词重叠 (排除停用词)
-        stop_words = {"的", "了", "在", "是", "和", "与", "或", "the", "a", "an", "is", "of", "to", "in", "and"}
-        card_words = set(card.get("description", "").lower().split()) - stop_words
-        task_words = set(task_text.split()) - stop_words
-        score += len(card_words & task_words) * 2
-
-        return score
+            return 10.0  # 无 card → 仅 Tier 1 (明确分配) 可认领
+        from harness.team.agent_card import compute_card_task_match, AgentCard
+        if isinstance(card, AgentCard):
+            return compute_card_task_match(card, task.title, task.description)
+        # 兼容旧的 dict 格式
+        return compute_card_task_match(
+            AgentCard(
+                name="",
+                tools=card.get("tools", []),
+                skills=card.get("skills", []),
+                description=card.get("description", ""),
+            ),
+            task.title, task.description,
+        )
 
     def _get_my_card(self) -> dict | None:
         """加载自己的 AgentCard (用于领域匹配)."""
@@ -1045,15 +1046,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
     def to_runtime(self) -> TeamMemberRuntime:
         """导出为 TeamMemberRuntime (兼容现有接口)."""
-        # 优先用 _role (直接指定), 回退到 config 检查
-        if self._role:
-            role = self._role
-        elif self._effective_config and self._effective_config.can_be_lead:
-            role = "lead"
-        elif self._agent_config and self._agent_config.can_be_lead:
-            role = "lead"
-        else:
-            role = "member"
+        role = self._role or "member"
         return TeamMemberRuntime(
             agent_name=self.name,
             role=role,

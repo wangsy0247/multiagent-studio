@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Star, Wrench, Brain } from "lucide-react";
+import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Wrench, Brain } from "lucide-react";
 import { projectsAPI, agentsAPI } from "@/lib/api-client";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
@@ -446,8 +446,6 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
     return { name, display_name: agent?.display_name || name, description: agent?.description || "" };
   });
   const availableAgents = agents.filter((a) => !members.includes(a.name));
-  // Lead 是第一个 member (orchestrator 的 _resolve_lead_identity 保证)
-  const leadName = members.length > 0 ? members[0] : null;
 
   const statusLabels: Record<string, string> = { idle: "空闲", busy: "执行中", spawning: "启动中", shutting_down: "关闭中", failed: "失败" };
   const statusColors: Record<string, string> = { idle: "bg-slate-300", busy: "bg-blue-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
@@ -483,24 +481,18 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
             const runtime = memberStatuses.find((m) => m.agent_name === a.name);
             const status = runtime?.status || "idle";
             const card = cards[a.name];
-            const isLead = a.name === leadName;
             return (
-              <div key={a.name} className={`border rounded-xl p-4 bg-white transition-all ${isLead ? "border-amber-200 bg-amber-50/30" : "border-slate-200"}`}>
+              <div key={a.name} className="border border-slate-200 rounded-xl p-4 bg-white transition-all">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColors[status] || "bg-slate-300"}`} />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5 flex-wrap">
-                        {isLead ? <Star className="w-3.5 h-3.5 text-amber-500" /> : <span>🤖</span>}
+                        <span>🤖</span>
                         {a.display_name || a.name}
                         <span className="text-xs text-slate-400 font-normal">({statusLabels[status] || status})</span>
                         {runtime?.started_at && status === "busy" && (
                           <ElapsedTimer startedAt={runtime.started_at} />
-                        )}
-                        {isLead && (
-                          <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">
-                            Team Lead
-                          </span>
                         )}
                       </p>
                       <p className="text-xs text-slate-400 mt-0.5">{a.description?.slice(0, 80)}</p>
@@ -540,13 +532,6 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
                             </div>
                           )}
                         </div>
-                      )}
-
-                      {/* Lead 配置提示 */}
-                      {isLead && (
-                        <p className="text-[10px] text-amber-600 mt-2 bg-amber-50 rounded-lg px-2 py-1 inline-block">
-                          ⚙️ 使用 Default Agent 的模型配置 + 系统内置 Lead 行为指令
-                        </p>
                       )}
 
                       {runtime?.current_task_title && (

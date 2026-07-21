@@ -20,7 +20,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-from harness.config.agents_config import load_agent_config
 from harness.config.paths import get_paths
 from harness.team.context import TeamContext
 from harness.team.message_bus import TeamMessageBus
@@ -42,6 +41,13 @@ logger = logging.getLogger(__name__)
 # ── 常量 ──
 OVERALL_TIMEOUT = 1800         # Team 整体超时 30 分钟
 DEADLOCK_TIMEOUT = 120         # 死锁 2 分钟无进展
+
+# 平台内置 Lead Agent 的保留名称 (双下划线前缀防止与用户 agent 冲突)
+TEAM_LEAD_NAME = "__team_lead__"
+
+# Lead Agent 允许加载的 tool_groups 白名单 — 仅保留搜索/只读文件/MCP,
+# 排除 files(含写入)、sandbox、code 等执行类工具, 确保 Lead 只做意图识别+任务分发
+LEAD_ALLOWED_TOOL_GROUPS = {"search", "files_readonly", "mcp"}
 
 
 def _now_iso() -> str:
@@ -122,6 +128,11 @@ class TeamOrchestrator:
         self._last_progress_at: str = ""
         self._progress_event = asyncio.Event()
 
+        # ── LLM 并发控制: 限制同时调用 LLM 的 member 数量 ──
+        # 注: max_concurrent_subagents 是 SubAgent 并发数 (默认 3), 与 Member LLM 并发无关
+        # 这里使用独立的硬编码默认值, 避免错误的配置耦合
+        self._llm_semaphore = asyncio.Semaphore(5)  # 最多 5 个 member 同时调用 LLM
+
         # ── SSE 事件队列 ──
         self._event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -158,11 +169,10 @@ class TeamOrchestrator:
         """加载项目、生成 agent cards、创建 TeammateAgent 池.
 
         流程:
-        1. 加载项目 JSON → 获取成员列表
-        2. 解析 Lead 身份 (can_be_lead 标记 或 第一个成员)
-        3. 生成所有成员的 agent-card.json — 注入 TeamContext
-        4. 创建 Lead Agent (default 配置 + 系统 Lead SOUL)
-        5. 创建 Member Agent (各自的 L0+L1+L2 配置)
+        1. 加载项目 JSON → 获取成员列表 (纯执行者)
+        2. 为所有成员生成 agent-card.json — 注入 TeamContext
+        3. 创建平台内置 Lead Agent (TEAM_LEAD_NAME, default 配置 + 系统 SOUL)
+        4. 创建 Member Agent (各自的 L0+L1+L2 配置)
         """
         project = await _load_project_json(self._project_id, self._user_id)
         if project is None:
@@ -175,21 +185,18 @@ class TeamOrchestrator:
         if not member_names:
             logger.warning("Project '%s' has no members — team mode will degrade", self._project_id)
 
-        # ── 1. 解析 Lead 身份 ──
-        lead_name = self._resolve_lead_identity(member_names)
+        lead_name = TEAM_LEAD_NAME
 
-        # ── 2. 构建 TeamMemberRuntime 列表 (Lead 排第一) ──
+        # ── 1. 构建 TeamMemberRuntime 列表 (Lead 排第一, 所有 member 都是 worker) ──
         member_runtimes: list[TeamMemberRuntime] = []
         # Lead 先添加
-        if lead_name:
-            member_runtimes.append(TeamMemberRuntime(
-                agent_name=lead_name, role="lead", status=TeammateStatus.SPAWNING,
-            ))
+        member_runtimes.append(TeamMemberRuntime(
+            agent_name=lead_name, role="lead", status=TeammateStatus.SPAWNING,
+        ))
         for name in member_names:
-            if name != lead_name:
-                member_runtimes.append(TeamMemberRuntime(
-                    agent_name=name, role="member", status=TeammateStatus.SPAWNING,
-                ))
+            member_runtimes.append(TeamMemberRuntime(
+                agent_name=name, role="member", status=TeammateStatus.SPAWNING,
+            ))
 
         self.team_context = TeamContext(
             project_id=self._project_id,
@@ -201,14 +208,23 @@ class TeamOrchestrator:
             members=member_runtimes,
         )
 
-        # ── 3. 生成 agent cards (在创建 TeammateAgent 之前) ──
-        from harness.team.agent_card import generate_agent_card, save_project_cards
+        # ── 2. 生成 agent cards (mtime 缓存: 配置未变则复用, 避免重复扫描) ──
+        from harness.team.agent_card import (
+            generate_agent_card, save_project_cards, is_card_stale, get_card,
+        )
         from harness.config.config_loader import ConfigLoader as _CL
 
         cards: dict[str, Any] = {}
+        stale_count = 0
         for name in member_names:
             try:
-                role = "lead" if name == lead_name else "member"
+                if not is_card_stale(self._project_id, name, user_id=self._user_id):
+                    cached = get_card(self._project_id, name, user_id=self._user_id)
+                    if cached is not None:
+                        cards[name] = cached
+                        continue
+
+                stale_count += 1
                 member_eff = _CL.load_effective(user_id=self._user_id, agent_name=name)
                 card = generate_agent_card(
                     name,
@@ -216,13 +232,17 @@ class TeamOrchestrator:
                     tool_registry=self._tool_registry,
                     skill_storage=self._skill_storage,
                     effective_config=member_eff,
-                    role=role,
+                    role="member",
                 )
                 cards[name] = card
             except Exception as exc:
                 logger.warning("Failed to generate agent card for '%s': %s", name, exc)
 
-        # 全量写入单个 agent_card.json
+        if stale_count > 0:
+            logger.info("Agent cards: %d/%d regenerated, %d from cache",
+                        stale_count, len(member_names), len(member_names) - stale_count)
+
+        # 全量写入单个 agent_card.json (有更新时才写, 但写操作本身轻量)
         if cards:
             save_project_cards(self._project_id, cards, user_id=self._user_id)
 
@@ -233,24 +253,20 @@ class TeamOrchestrator:
         else:
             logger.warning("No agent cards generated — team capabilities unavailable")
 
-        # ── 4. 创建 Lead Agent ──
+        # ── 3. 创建平台内置 Lead Agent ──
         failed_members: list[str] = []
-        if lead_name:
-            lead = await self._create_lead(lead_name)
-            if lead is None:
-                failed_members.append(lead_name)
-        else:
-            lead = None
+        lead = await self._create_lead()
+        if lead is None:
+            failed_members.append(lead_name)
 
-        # ── 5. 创建 Member Agent ──
+        # ── 4. 创建 Member Agent (所有项目成员) ──
         for name in member_names:
-            if name == lead_name:
-                continue
             tm = await self._create_teammate(name)
             if tm is None:
                 failed_members.append(name)
 
         # ── 检查 ──
+        all_expected = [lead_name] + member_names
         if not self.teammates:
             raise ValueError(
                 f"Team 初始化失败: 所有成员 ({', '.join(member_names)}) 都无法创建。"
@@ -260,7 +276,7 @@ class TeamOrchestrator:
         if failed_members:
             logger.warning(
                 "TeamOrchestrator: %d/%d members failed to create: %s",
-                len(failed_members), len(member_names), ", ".join(failed_members),
+                len(failed_members), len(all_expected), ", ".join(failed_members),
             )
             await self._event_queue.put({
                 "type": "team_status",
@@ -274,11 +290,11 @@ class TeamOrchestrator:
             })
 
         logger.info(
-            "TeamOrchestrator initialized: project=%s teammates=%d/%d lead=%s",
-            self._project_id, len(self.teammates), len(member_names), lead_name,
+            "TeamOrchestrator initialized: project=%s teammates=%d/%d (1 lead + %d members) lead=%s",
+            self._project_id, len(self.teammates), len(all_expected), len(member_names), lead_name,
         )
 
-        # ── 6. 团队成员快照保鲜 (spawn 完成后状态已从 SPAWNING 变为 IDLE) ──
+        # ── 5. 团队成员快照保鲜 (spawn 完成后状态已从 SPAWNING 变为 IDLE) ──
         self._refresh_team_context()
 
     async def _create_teammate(self, name: str) -> TeammateAgent | None:
@@ -351,6 +367,7 @@ class TeamOrchestrator:
                 tracer=self.tracer,
                 effective_config=member_eff,
                 checkpointer=self._checkpointer,
+                llm_semaphore=self._llm_semaphore,
             )
             await teammate.spawn()
             self.teammates[name] = teammate
@@ -362,29 +379,8 @@ class TeamOrchestrator:
             return None
 
     # ------------------------------------------------------------------
-    # Lead 身份解析 & 创建
+    # Lead 创建
     # ------------------------------------------------------------------
-
-    def _resolve_lead_identity(self, member_names: list[str]) -> str:
-        """解析 Lead 身份.
-
-        优先级:
-        1. 第一个 can_be_lead=True 的 member
-        2. 回退: 第一个 member
-        3. 无 member → 空字符串
-        """
-        for name in member_names:
-            cfg = load_agent_config(name, user_id=self._user_id)
-            if cfg is None and self._user_id != "default":
-                cfg = load_agent_config(name, user_id="default")
-            if cfg and cfg.can_be_lead:
-                logger.info("Lead identity resolved: '%s' (can_be_lead=True)", name)
-                return name
-        # Fallback
-        if member_names:
-            logger.info("Lead identity resolved: '%s' (first member)", member_names[0])
-            return member_names[0]
-        return ""
 
     def _build_lead_soul(self, lead_name: str) -> str:
         """生成 Lead Agent 的 SOUL — 系统预置, 不读 SOUL.md.
@@ -406,26 +402,23 @@ class TeamOrchestrator:
 
 你不只是任务调度员 — 你是解决方案的架构师。团队依赖你来提供方向、判断和清晰度。"""
 
-    async def _create_lead(self, lead_name: str) -> TeammateAgent | None:
-        """创建 Lead Agent — 使用 default 配置 + 系统 Lead SOUL.
+    async def _create_lead(self) -> TeammateAgent | None:
+        """创建平台内置 Lead Agent — 使用 default 配置 + 系统 Lead SOUL.
 
-        Lead 的 LLM 配置 (api_key, base_url, model, temperature, max_tokens)
-        来自用户的全局默认配置 (agent_name="default"), 而非某个特定 member 的配置。
-        SOUL 由系统生成, 不需要用户手写 SOUL.md。
-
-        Args:
-            lead_name: Lead 的标识名称 (来自项目成员列表)
+        Lead 是平台级基础设施, 不属于项目 members 列表。
+        LLM 配置始终来自全局 default agent, SOUL 由系统生成。
+        Lead 的工具仅限 LEAD_ALLOWED_TOOL_GROUPS 白名单, 强制排除执行类工具。
         """
         try:
             from harness.config.config_loader import ConfigLoader
 
-            # ── 使用 default agent 的 EffectiveConfig ──
+            lead_name = TEAM_LEAD_NAME
             lead_eff = ConfigLoader.load_effective(
                 user_id=self._user_id, agent_name="default",
             )
             logger.info(
-                "Creating Lead '%s' with default config: model=%s tool_groups=%s",
-                lead_name, lead_eff.model, lead_eff.tool_groups,
+                "Creating platform Lead: model=%s tool_groups=%s",
+                lead_eff.model, lead_eff.tool_groups,
             )
 
             # ── LLM ──
@@ -435,14 +428,19 @@ class TeamOrchestrator:
                 max_tokens=lead_eff.max_tokens,
             ) if self._llm_factory else None
             if llm is None:
-                logger.error("No LLM available for Lead '%s'", lead_name)
+                logger.error("No LLM available for Lead")
                 return None
 
-            # ── 工具: default agent 的 tool_groups + team tools ──
+            # ── 工具: 白名单过滤, 只保留团队管理类工具 ──
             tools: list = []
             if self._tool_registry:
                 for group in lead_eff.tool_groups:
-                    tools.extend(self._tool_registry.get_tools_by_category(group))
+                    if group in LEAD_ALLOWED_TOOL_GROUPS:
+                        tools.extend(self._tool_registry.get_tools_by_category(group))
+                    else:
+                        logger.info(
+                            "Lead: tool_group '%s' excluded by whitelist", group,
+                        )
 
             # 注入 team 工具 (Lead 角色)
             _self = self
@@ -451,7 +449,7 @@ class TeamOrchestrator:
                 tm = await _self._create_teammate(agent_name)
                 if tm:
                     tm.enable_auto_claim()
-                    _self._refresh_team_context()  # 新成员加入 → 刷新全员 prompt 可见的团队快照
+                    _self._refresh_team_context()
                     return f"Teammate '{agent_name}' spawned successfully (已开启自主认领)。"
                 return f"Failed to spawn '{agent_name}': agent config not found or LLM unavailable."
 
@@ -491,6 +489,7 @@ class TeamOrchestrator:
                 effective_config=lead_eff,
                 soul_override=lead_soul,
                 checkpointer=self._checkpointer,
+                llm_semaphore=self._llm_semaphore,
             )
             await teammate.spawn()
             self.teammates[lead_name] = teammate
@@ -522,7 +521,7 @@ class TeamOrchestrator:
             "type": "team_start",
             "thread_id": self._thread_id,
             "project_id": self._project_id,
-            "members": list(self.teammates.keys()),
+            "members": [n for n in self.teammates if n != TEAM_LEAD_NAME],
             "mode": "team",
         }
 
@@ -756,8 +755,13 @@ class TeamOrchestrator:
     async def _dispatch_ready_tasks(self) -> int:
         """分配就绪任务给 IDLE teammate. 返回 dispatch 数量.
 
+        分配策略:
+        - task.assigned_agent 已指定 → 优先尊重 (Lead 的领域判断)
+        - 未指定 → 领域匹配 (选匹配分最高的空闲成员)
+        - 领域匹配失败 → 负载均衡兜底 (保证任务不卡住)
+
         高可用语义:
-        - 指定成员已退出 (SHUTDOWN/FAILED) → 任务收回公共池, 交给其他 IDLE 成员;
+        - 指定成员已退出 (SHUTDOWN/FAILED) → 任务收回公共池, 按未指定策略重新分配;
         - 指定成员正忙 (WORKING) → 跳过, 留待下轮;
         - 受理失败 (竞态) → _assign_task_to_teammate 内部回滚任务为 PENDING.
         """
@@ -779,11 +783,11 @@ class TeamOrchestrator:
                     )
                     await self.task_store.update_task(task.id, assigned_agent=None)
                     task.assigned_agent = None
-                    tm = self._select_idle_teammate()
+                    tm = self._select_best_match_teammate(task)
                 elif tm.status != TeammateStatus.IDLE:
                     continue  # 成员正忙, 留待下轮
             else:
-                tm = self._select_idle_teammate()
+                tm = self._select_best_match_teammate(task)
 
             if tm is not None and await self._assign_task_to_teammate(tm, task):
                 dispatched += 1
@@ -813,6 +817,51 @@ class TeamOrchestrator:
             tm.name, "busy", task_id=task.id, task_title=task.title))
         return True
 
+    def _select_best_match_teammate(self, task: TeamTask) -> TeammateAgent | None:
+        """为未指定分配对象的任务选择最匹配的空闲成员.
+
+        策略 (两级):
+        1. 领域匹配: 对每个空闲成员加载 AgentCard, 计算与任务的匹配分,
+           选最高分 (需 ≥ CLAIM_THRESHOLD=50, 即 ≥2 个工具命中)
+        2. 负载均衡兜底: 匹配分都不够 → 选已完成任务最少的空闲成员
+        """
+        # 收集空闲成员 (排除 Lead)
+        idle_members = [
+            (name, tm) for name, tm in self.teammates.items()
+            if tm.status == TeammateStatus.IDLE
+            and tm.last_error is None
+            and name != TEAM_LEAD_NAME
+        ]
+        if not idle_members:
+            return None
+
+        # ── 领域匹配 ──
+        from harness.team.agent_card import get_card, compute_card_task_match
+
+        scored: list[tuple[float, int, str, TeammateAgent]] = []
+        for name, tm in idle_members:
+            card = get_card(self._project_id, name, user_id=self._user_id)
+            if card is not None:
+                score = compute_card_task_match(card, task.title, task.description)
+                if score >= 50:  # CLAIM_THRESHOLD
+                    scored.append((score, tm.completed_tasks, name, tm))
+                    logger.debug(
+                        "Domain match: task '%s' → '%s' score=%.0f", task.id, name, score,
+                    )
+
+        if scored:
+            # 按匹配分降序, 同分按已完成任务数升序 (负载均衡)
+            scored.sort(key=lambda x: (-x[0], x[1]))
+            best = scored[0]
+            logger.info(
+                "Best match: task '%s' → '%s' (score=%.0f, completed=%d)",
+                task.id, best[2], best[0], best[1],
+            )
+            return best[3]
+
+        # ── 兜底: 负载均衡 ──
+        return self._select_idle_teammate()
+
     def _select_idle_teammate(self) -> TeammateAgent | None:
         """选择空闲且健康的 teammate (负载均衡: 已完成任务少的优先)."""
         idle = [(tm.completed_tasks, name, tm)
@@ -833,18 +882,11 @@ class TeamOrchestrator:
         self.team_context.members = [tm.to_runtime() for tm in self.teammates.values()]
 
     def _get_lead(self) -> TeammateAgent | None:
-        """获取 Lead Agent — 优先用 team_context.lead_name 查找."""
+        """获取平台内置 Lead Agent — 通过 team_context.lead_name 查找."""
         lead_name = self.team_context.lead_name if self.team_context else ""
         if lead_name and lead_name in self.teammates:
             return self.teammates[lead_name]
-        # fallback: 扫描 can_be_lead 标记
-        for name, tm in self.teammates.items():
-            eff = tm._effective_config
-            if eff and eff.can_be_lead:
-                return tm
-            if tm._agent_config and tm._agent_config.can_be_lead:
-                return tm
-        # 最后 fallback: 第一个 teammate
+        # 安全网: 异常场景下返回第一个 teammate (不应正常触发)
         for tm in self.teammates.values():
             return tm
         return None

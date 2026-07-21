@@ -427,14 +427,18 @@ class TestTeammateAgent:
         asyncio.run(_test())
 
     def test_maybe_claim_task_gated_by_can_claim(self, agent_deps):
-        """_maybe_claim_task 在 _can_claim=False 时不认领任务."""
+        """_maybe_claim_task 在 _can_claim=False 时不认领任务; 开启后通过 Tier 1 认领."""
         from harness.team.teammate_agent import TeammateAgent
         from harness.team.models import TeamTask
 
         async def _test():
-            # 创建未分配任务
-            await agent_deps["store"].create_task(title="未分配任务")
-            await agent_deps["store"].create_task(title="已分配任务", assigned_agent="bob")
+            # 创建任务 — 显式分配给 alice (Tier 1) 和分配给 bob
+            await agent_deps["store"].create_task(
+                title="分配给 alice 的任务", assigned_agent="alice",
+            )
+            await agent_deps["store"].create_task(
+                title="分配给 bob 的任务", assigned_agent="bob",
+            )
 
             agent = TeammateAgent(
                 agent_name="alice",
@@ -453,7 +457,7 @@ class TestTeammateAgent:
             claimed = await agent._maybe_claim_task()
             assert claimed is False
 
-            # 开启 auto-claim → 应认领
+            # 开启 auto-claim → Tier 1 认领显式分配的任务
             agent.enable_auto_claim()
             assert agent._can_claim is True
             claimed = await agent._maybe_claim_task()
@@ -839,16 +843,20 @@ class TestFullFlow:
             alice.status = TeammateStatus.IDLE
             bob.status = TeammateStatus.IDLE
 
-            # ── Step 3: 开启 auto-claim (模拟规划完成后) ──
+            # ── Step 3: 开启 auto-claim + 明确分配任务 (Tier 1) ──
+            # 注: 新阈值 CLAIM_THRESHOLD=50 要求至少 2 个工具命中才能自主认领,
+            # 无 card 的 agent (匹配分=10) 只能通过显式分配获取任务
             alice.enable_auto_claim()
             bob.enable_auto_claim()
+            await store.update_task(task_1.id, assigned_agent="alice")
+            await store.update_task(task_2.id, assigned_agent="bob")
 
-            # alice 认领第一个任务
+            # alice 认领 Tier 1 任务 (明确分配给我)
             claimed = await alice._maybe_claim_task()
             assert claimed is True
             assert alice.current_task_id is not None
 
-            # bob 认领下一个
+            # bob 认领 Tier 1 任务
             claimed = await bob._maybe_claim_task()
             assert claimed is True
             assert bob.current_task_id is not None
@@ -860,14 +868,16 @@ class TestFullFlow:
             assert len(in_progress) == 2  # alice + bob 各认领一个
             assert len(pending) == 1      # 还有一个未认领
 
-            # ── Step 5: 第三个任务被认领 ──
-            # bob 先完成当前任务, 回到 IDLE, 然后认领
+            # ── Step 5: 第三个任务显式分配给 bob ──
+            # bob 先完成当前任务, 回到 IDLE
             bob_task_id = bob.current_task_id
             await store.update_task(bob_task_id, status=TeamTaskStatus.COMPLETED, output="done")
             bob.current_task_id = None
             bob.completed_tasks += 1
             bob.status = TeammateStatus.IDLE
 
+            # 显式分配第三个任务给 bob (Tier 1)
+            await store.update_task(task_3.id, assigned_agent="bob")
             claimed = await bob._maybe_claim_task()
             assert claimed is True
 

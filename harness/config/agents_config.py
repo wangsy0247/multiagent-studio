@@ -75,8 +75,6 @@ class AgentLimitsFields(BaseModel):
 
 class AgentTeamFields(BaseModel):
     """Per-Agent Team 配置 (L2)."""
-    can_be_lead: bool = False
-    # 预留字段 — 运行时暂未消费 (仅 can_be_lead 被 orchestrator 读取), 保留以维持 API 契约
     can_delegate: bool = True
     memory_scope: str = "agent"
 
@@ -130,14 +128,6 @@ class AgentConfig(BaseModel):
     # ════════════════════════════════════════════════════════════════════
     # 向后兼容属性 (旧字段 → 新子模型映射)
     # ════════════════════════════════════════════════════════════════════
-
-    @property
-    def can_be_lead(self) -> bool:
-        return self.team.can_be_lead
-
-    @can_be_lead.setter
-    def can_be_lead(self, value: bool) -> None:
-        self.team.can_be_lead = value
 
     @property
     def can_delegate(self) -> bool:
@@ -211,7 +201,7 @@ def _migrate_flat_to_nested(data: dict[str, Any]) -> dict[str, Any]:
 
     旧格式 (flat):
         model: gpt-4o
-        can_be_lead: true
+        can_be_lead: true   # 已废弃, 迁移时静默丢弃
         memory_scope: agent
         max_turns: 50
         timeout_seconds: 900
@@ -219,7 +209,7 @@ def _migrate_flat_to_nested(data: dict[str, Any]) -> dict[str, Any]:
     新格式 (nested):
         model: gpt-4o
         memory: { backend: file, ... }
-        team: { can_be_lead: true, memory_scope: agent, ... }
+        team: { can_delegate: true, memory_scope: agent, ... }
         limits: { max_turns: 50, ... }
     """
     # 如果已经是新格式 (包含嵌套 key), 直接返回
@@ -238,14 +228,13 @@ def _migrate_flat_to_nested(data: dict[str, Any]) -> dict[str, Any]:
         }
     if "team" not in data:
         data["team"] = {
-            "can_be_lead": data.pop("can_be_lead", False),
             "can_delegate": data.pop("can_delegate", True),
             "memory_scope": data.pop("memory_scope", "agent"),
         }
     if "subagents" not in data:
         data["subagents"] = {}
 
-    # 清理可能残留的旧平铺字段
+    # 清理可能残留的旧平铺字段 (can_be_lead 已废弃, 仅保留用于旧数据迁移)
     for old_key in ("can_be_lead", "can_delegate", "memory_scope", "max_turns",
                     "timeout_seconds", "isolation", "vision"):
         data.pop(old_key, None)

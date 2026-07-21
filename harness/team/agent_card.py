@@ -188,6 +188,55 @@ def delete_project_cards(project_id: str, *, user_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 缓存辅助 — 通过 mtime 判断卡片是否需要重新生成
+# ---------------------------------------------------------------------------
+
+
+def _get_config_mtime(agent_name: str, user_id: str) -> float:
+    """返回影响 agent card 的所有配置文件中最新的 mtime.
+
+    检测文件:
+    - {base}/users/{uid}/config.yaml          (L1 全局配置, 影响 model/api_key)
+    - {base}/users/{uid}/agents/{name}/config.yaml (L2 单 agent 配置)
+    - {base}/users/{uid}/agents/{name}/SOUL.md     (影响 description)
+    """
+    paths = get_paths()
+    config_files = [
+        paths.base_dir / "users" / user_id / "config.yaml",
+        paths.base_dir / "users" / user_id / "agents" / agent_name / "config.yaml",
+        paths.base_dir / "users" / user_id / "agents" / agent_name / "SOUL.md",
+    ]
+    max_mtime = 0.0
+    for f in config_files:
+        if f.exists():
+            mtime = f.stat().st_mtime
+            if mtime > max_mtime:
+                max_mtime = mtime
+    return max_mtime
+
+
+def is_card_stale(project_id: str, agent_name: str, *, user_id: str) -> bool:
+    """判断 agent 的能力卡片是否需要重新生成.
+
+    比较缓存卡片的 updated_at 与配置文件的最新 mtime:
+    - 无缓存 → True (需要生成)
+    - 配置文件比卡片新 → True (需要生成)
+    - 卡片比配置文件新 → False (使用缓存)
+    """
+    card = get_card(project_id, agent_name, user_id=user_id)
+    if card is None:
+        return True
+
+    config_mtime = _get_config_mtime(agent_name, user_id)
+    try:
+        card_time = datetime.fromisoformat(card.updated_at).timestamp()
+    except (ValueError, OSError):
+        return True
+
+    return config_mtime > card_time
+
+
+# ---------------------------------------------------------------------------
 # 生成
 # ---------------------------------------------------------------------------
 
@@ -264,6 +313,41 @@ def generate_agent_card(
         model=model,
         role=role,
     )
+
+
+# ---------------------------------------------------------------------------
+# 领域匹配 — 计算 AgentCard 与任务的匹配分
+# ---------------------------------------------------------------------------
+
+
+def compute_card_task_match(card: AgentCard, task_title: str, task_description: str) -> float:
+    """计算 AgentCard 与任务的领域匹配分.
+
+    评分维度:
+    - 工具匹配: 任务描述中提到卡片的工具 → +25/个
+    - 技能匹配: 任务描述中提到卡片的技能 → +30/个
+    - 关键词重叠: 卡片描述词与任务词的 Jaccard 重叠 → +2/个
+
+    返回值 ≥ 50 表示强匹配 (≥2 个工具命中 或 1 技能+1 工具).
+    """
+    score = 0.0
+    task_text = f"{task_title} {task_description}".lower()
+
+    for tool in card.tools:
+        if tool.lower() in task_text:
+            score += 25
+
+    for skill in card.skills:
+        if skill.lower() in task_text:
+            score += 30
+
+    stop_words = {"的", "了", "在", "是", "和", "与", "或",
+                  "the", "a", "an", "is", "of", "to", "in", "and"}
+    card_words = set(card.description.lower().split()) - stop_words
+    task_words = set(task_text.split()) - stop_words
+    score += len(card_words & task_words) * 2
+
+    return score
 
 
 # ---------------------------------------------------------------------------
