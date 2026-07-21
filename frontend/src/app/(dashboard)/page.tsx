@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { MessageSquare, GitBranch, BarChart3, ArrowRight } from "lucide-react";
+import { MessageSquare, BarChart3, ArrowRight } from "lucide-react";
 
 const cards = [
   {
@@ -9,13 +9,6 @@ const cards = [
     title: "对话式编排",
     desc: "通过自然语言描述需求，AI 自动生成多 Agent 协作流程",
     color: "bg-blue-50 text-blue-600",
-    href: null,
-  },
-  {
-    icon: GitBranch,
-    title: "画布编排",
-    desc: "拖拽 Agent 节点，手动构建自定义协作拓扑",
-    color: "bg-green-50 text-green-600",
     href: null,
   },
   {
@@ -50,7 +43,7 @@ export default function DashboardPage() {
         </p>
 
         {/* Feature cards */}
-        <div className="grid grid-cols-3 gap-3 mb-8">
+        <div className="grid grid-cols-2 gap-3 mb-8">
           {cards.map((card) => (
             <div
               key={card.title}

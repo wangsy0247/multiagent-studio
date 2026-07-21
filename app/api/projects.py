@@ -252,6 +252,7 @@ async def create_task(project_id: str, request: Request, db: AsyncSession = Depe
         "status": raw_status,
         "assigned_agent": body.get("assigned_agent"),
         "priority": body.get("priority", "medium"),
+        "origin": "user",  # 用户手工创建 — 团队运行时不会被当作遗留任务清理
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
     }

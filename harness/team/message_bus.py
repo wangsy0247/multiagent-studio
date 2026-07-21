@@ -33,6 +33,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 请求-响应协议消息 — 语义上应定向发送 (to_agent=...), 广播属于用法错误
+_PROTOCOL_MESSAGE_TYPES = frozenset({
+    TeamMessageType.SHUTDOWN_REQUEST,
+    TeamMessageType.SHUTDOWN_RESPONSE,
+    TeamMessageType.PLAN_APPROVAL_REQUEST,
+    TeamMessageType.PLAN_APPROVAL_RESPONSE,
+})
+
+
 class TeamMessageBus:
     """Agent 间消息总线 — per-agent inbox + drain-on-read.
 
@@ -82,6 +91,12 @@ class TeamMessageBus:
             self._notify(message.to_agent)
         else:
             # ── 广播 ──
+            if message.msg_type in _PROTOCOL_MESSAGE_TYPES:
+                logger.warning(
+                    "Protocol message %s from '%s' sent as broadcast — "
+                    "协议消息应定向发送 (to_agent=...), 广播会唤醒无关 agent",
+                    message.msg_type, message.from_agent,
+                )
             for agent in list(self._known_agents):
                 if agent != message.from_agent:
                     self._append(agent, line)

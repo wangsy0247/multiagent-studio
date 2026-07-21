@@ -118,6 +118,30 @@ async def execute(
                     await db.commit()
                     if event_type == "tool_call":
                         _last_ai_message_id = str(msg.id)
+                elif event_type in ("team_start", "team_task_update", "member_status", "team_message", "team_end"):
+                    # ── 团队协作过程落库 — 刷新页面后可回放 ──
+                    if event_type == "team_message":
+                        _m = event.get("message", {}) or {}
+                        content = f"[{_m.get('from_agent', '')} → {_m.get('to_agent') or '全员'}] {_m.get('content', '')[:500]}"
+                    elif event_type == "team_task_update":
+                        _t = event.get("task", {}) or {}
+                        content = f"任务 [{_t.get('id', '')}] {_t.get('title', '')} → {_t.get('status', '')}"
+                    elif event_type == "member_status":
+                        content = f"成员 {event.get('agent_name', '')} → {event.get('status', '')} {event.get('task_title', '')}"
+                    elif event_type == "team_start":
+                        content = f"团队启动, 成员: {', '.join(event.get('members', []))}"
+                    else:
+                        content = f"团队结束 (status={event.get('status', '')}, rounds={event.get('total_rounds', '')})"
+                    msg = Message(
+                        thread_id=req.thread_id,
+                        role="system",
+                        content=content,
+                        msg_type=event_type,
+                        extra_metadata=event,
+                        token_count=0,
+                    )
+                    db.add(msg)
+                    await db.commit()
                 elif event_type == "message" and event.get("msg_type"):
                     # Complete (non-streaming) message — persist once
                     msg = Message(

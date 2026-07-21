@@ -1,10 +1,10 @@
 """Team 工具集 — 仅在 mode=team 时注册, 按角色分层.
 
-15 个工具, 分三层:
+14 个工具, 分三层:
   Lead 专属 (6):  delegate_to_member, list_teammates, broadcast, shutdown_teammate,
                    approve_plan, spawn_teammate
   共享 (5):        task_create, task_list, task_update, send_message, read_inbox
-  Member 专属 (4): request_plan_approval, claim_task, idle, shutdown_response
+  Member 专属 (3): request_plan_approval, claim_task, shutdown_response
 
 工具中 agent 身份通过 ContextVar 自动注入.
 """
@@ -48,7 +48,7 @@ def get_current_agent_instance() -> Any:
 # ── 角色工具集定义 ──
 LEAD_TOOLS = {"delegate_to_member", "list_teammates", "broadcast", "shutdown_teammate", "approve_plan", "spawn_teammate"}
 SHARED_TOOLS = {"task_create", "task_list", "task_update", "send_message", "read_inbox"}
-MEMBER_TOOLS = {"request_plan_approval", "claim_task", "idle", "shutdown_response"}
+MEMBER_TOOLS = {"request_plan_approval", "claim_task", "shutdown_response"}
 
 
 def create_team_tools(
@@ -59,15 +59,17 @@ def create_team_tools(
     role: str = "member",
     spawn_callback: Any = None,  # async callable(agent_name: str) -> str
     event_emitter: Any = None,   # async callable(event: dict) — SSE 事件发射器
+    lead_name: str | None = None,  # Lead 名称 — Member 的协议消息 (审批等) 定向发送给 Lead
 ) -> list[BaseTool]:
     """构建 Team 模式专用工具集, 按角色过滤.
 
     Args:
         role: "lead" | "member" — 决定返回哪些工具.
               lead: LEAD_TOOLS + SHARED_TOOLS (11 个)
-              member: SHARED_TOOLS + MEMBER_TOOLS (9 个)
+              member: SHARED_TOOLS + MEMBER_TOOLS (8 个)
         spawn_callback: Lead 专属, 用于动态 spawn 新 teammate 的回调.
         event_emitter: SSE 事件发射器, task_create/task_update 会通过它推送前端更新.
+        lead_name: Lead Agent 名称. 缺省时协议消息回退到当前 agent 实例的 _lead_name.
     """
 
     # ═════════════════════════════════════════════════════════════════
@@ -315,12 +317,27 @@ def create_team_tools(
         """读取自己的收件箱 (drain-on-read)."""
         if message_bus is None:
             return "Error: Message bus not available"
+        from harness.team.models import TeamMessageType
         messages = await message_bus.read_inbox(get_current_agent())
         if not messages:
             return "收件箱为空."
+        # 协议消息必须与 InboxDrainMiddleware 走同一条结构化路由 — 否则 request_id 丢失,
+        # 协议状态机不登记, LLM 无法正确调用 shutdown_response/approve_plan
+        _PROTOCOL_TYPES = {
+            TeamMessageType.SHUTDOWN_REQUEST, TeamMessageType.SHUTDOWN_RESPONSE,
+            TeamMessageType.PLAN_APPROVAL_REQUEST, TeamMessageType.PLAN_APPROVAL_RESPONSE,
+        }
+        instance = get_current_agent_instance()
         lines = [f"共 {len(messages)} 条新消息:\n"]
         for msg in messages:
-            lines.append(f"- [{msg.msg_type.value}] 来自 **{msg.from_agent}**: {msg.content[:200]}")
+            if msg.msg_type in _PROTOCOL_TYPES and instance is not None:
+                await instance._handle_inbox_message(msg)
+                lines.append(
+                    f"- [协议:{msg.msg_type.value}] 来自 **{msg.from_agent}** "
+                    f"— 已按协议处理, 相应指令已注入上下文。"
+                )
+            else:
+                lines.append(f"- [{msg.msg_type.value}] 来自 **{msg.from_agent}**: {msg.content[:200]}")
         return "\n".join(lines)
 
     @tool
@@ -347,29 +364,32 @@ def create_team_tools(
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import TeamMessage, TeamMessageType
+        # 定向发给 Lead — to_agent=None 是广播语义, 会唤醒所有 member 空转 (他们没有 approve_plan 工具)
+        target = lead_name or getattr(get_current_agent_instance(), "_lead_name", None)
+        if not target:
+            return "Error: 无法确定 Lead Agent, 审批请求未发送。"
         req_id = str(_uuid.uuid4())[:8]
         msg = TeamMessage(
-            from_agent=get_current_agent(), to_agent=None,
+            from_agent=get_current_agent(), to_agent=target,
             msg_type=TeamMessageType.PLAN_APPROVAL_REQUEST,
             content=plan_description, request_id=req_id,
         )
         await message_bus.send(msg)
-        return f"审批请求已发送 (req_id={req_id})。等待 Lead 审批中..."
+        return f"审批请求已发送给 Lead '{target}' (req_id={req_id})。等待 Lead 审批中..."
 
     @tool
     async def claim_task(task_id: str) -> str:
         """ 自主认领任务板上未分配的任务 (Member 专属)."""
         if task_store is None:
             return "Error: Task store not available"
-        task = await task_store.get_task(task_id)
-        if task is None:
-            return f"Error: Task '{task_id}' not found"
-        if task.assigned_agent is not None:
-            return f"Error: Task '{task_id}' already assigned to '{task.assigned_agent}'"
-        if task.status.value != "pending":
-            return f"Error: Task '{task_id}' is not pending (current: {task.status.value})"
-        await task_store.update_task(task_id, assigned_agent=get_current_agent(), status="in_progress")
-        return f"已认领任务 [{task_id}]: {task.title}"
+        # 守卫: 已有在手任务时不许再认领 — 否则完成计数和结果上报会记到旧任务头上
+        instance = get_current_agent_instance()
+        if instance is not None and getattr(instance, "current_task_id", None):
+            return "Error: 你当前有正在执行的任务, 请先完成并用 task_update 上报后再认领新任务。"
+        claimed = await task_store.claim(task_id, get_current_agent())
+        if claimed is None:
+            return f"Error: 任务 '{task_id}' 不可认领 (不存在/已被认领/依赖未就绪/状态非 pending)。"
+        return f"已认领任务 [{task_id}]: {claimed.title}"
 
     @tool
     async def shutdown_response(request_id: str, requester: str, approve: bool, reason: str = "") -> str:
@@ -414,11 +434,6 @@ def create_team_tools(
             }
         return f"已拒绝关机请求 (req_id={request_id})。继续执行当前任务。"
 
-    @tool
-    async def idle() -> str:
-        """ 声明当前 Agent 进入 IDLE 状态 (Member 专属)."""
-        return f"Agent '{get_current_agent()}' 已进入 IDLE 状态, 等待新任务或消息。"
-
     # ═════════════════════════════════════════════════════════════════
     # 按角色组装
     # ═════════════════════════════════════════════════════════════════
@@ -441,7 +456,6 @@ def create_team_tools(
         "request_plan_approval": request_plan_approval,
         "claim_task": claim_task,
         "shutdown_response": shutdown_response,
-        "idle": idle,
     }
 
     if role == "lead":

@@ -812,8 +812,24 @@ class HarnessService(_BaseService):
 
         from harness.team.orchestrator import TeamOrchestrator
 
+        # ── 并发守卫: 同一项目同时只允许一个 team run ──
+        # 任务板/信箱是项目级共享文件, 并发 run 会互相取消任务、抢占认领
+        for other_tid, info in self._active_runs.items():
+            if (other_tid != thread_id and info.get("mode") == "team"
+                    and info.get("project_id") == project_id):
+                yield {
+                    "type": "team_error",
+                    "thread_id": thread_id,
+                    "project_id": project_id,
+                    "content": (f"项目 {project_id} 已有正在运行的团队任务 "
+                                f"(thread={other_tid}), 请等待其完成后再试。"),
+                }
+                return
+
         # 注册运行期取消标记
-        self._active_runs[thread_id] = {"cancelled": False, "mode": "team"}
+        self._active_runs[thread_id] = {
+            "cancelled": False, "mode": "team", "project_id": project_id,
+        }
 
         orchestrator: TeamOrchestrator | None = None
         try:
@@ -849,6 +865,9 @@ class HarnessService(_BaseService):
                     }
                     return
                 yield event
+
+            # 正常结束 → 补发 finished: App 层依赖它收尾 thread 状态并落库最终文本
+            yield {"type": "finished", "thread_id": thread_id}
 
         except ValueError as exc:
             # 项目未找到等配置错误 → 降级为单 Agent
@@ -1652,6 +1671,14 @@ class HarnessService(_BaseService):
         """Return thread execution status, reading from LangGraph checkpoint."""
         # 从 _active_runs 获取 user/agent, 默认使用 default
         run_info = self._active_runs.get(thread_id, {})
+        # 有活跃 run → 直接按运行态返回.
+        # 对 team 线程尤其重要: 其 checkpoint 写在 team-{pid}-{tid}-{agent} 下,
+        # 主 graph 查不到, 会继续往下误报 inactive
+        if run_info:
+            return {
+                "thread_id": thread_id,
+                "status": "cancelling" if run_info.get("cancelled") else "running",
+            }
         user_id = run_info.get("user_id", "default")
         agent_name = run_info.get("agent_name", "default")
         ctx = await self._get_or_create_graph_context(user_id, agent_name)

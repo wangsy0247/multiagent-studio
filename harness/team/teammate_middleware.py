@@ -72,7 +72,6 @@ def build_teammate_middlewares(
     tool_search_enabled: bool = False,
     tool_max_retries: int = 3,
     # Lead 专属
-    keep_dynamic_context: bool = False,
     keep_clarification: bool = False,
     keep_title: bool = False,  # 仅 Lead 生成对话标题
     # loop_detection 配置

@@ -129,8 +129,9 @@ class TeamTaskStore:
         assigned_agent: str | None = None,
         dependencies: list[str] | None = None,
         priority: str = "medium",
+        origin: str = "team",
     ) -> TeamTask:
-        """创建新任务."""
+        """创建新任务. origin: "team"=团队运行产生 | "user"=用户手工创建."""
         task = TeamTask(
             id=str(uuid.uuid4())[:8],
             project_id=self._project_id,
@@ -140,6 +141,7 @@ class TeamTaskStore:
             assigned_agent=assigned_agent,
             dependencies=dependencies or [],
             priority=priority,
+            origin=origin,
         )
         task.created_at = _now_iso()
         task.updated_at = _now_iso()
@@ -209,6 +211,78 @@ class TeamTaskStore:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
         return result
+
+    async def claim(self, task_id: str, agent_name: str) -> TeamTask | None:
+        """原子认领任务 — 消除多成员并发认领/派单的竞态 (CAS).
+
+        认领条件 (全部在 flock 锁内校验, 单一收口兜底所有并发写):
+        - status == PENDING
+        - 未分配, 或已分配给认领者本人
+        - 依赖全部 COMPLETED (依赖不变式在认领点强制)
+
+        返回认领成功后的任务; 条件不满足返回 None (= 已被他人拿走/不可认领).
+
+        注: completed_ids 快照取在锁外, 但 COMPLETED 集合单调增长,
+        快照偏旧只会让认领偶发偏保守 (返回 None, 下轮重试), 不会放行不满足依赖的任务.
+        """
+        tasks_snapshot = await self.load_tasks()
+        completed_ids = {t.id for t in tasks_snapshot if t.status == TeamTaskStatus.COMPLETED}
+
+        def _do(t: TeamTask) -> TeamTask | None:
+            if t.status != TeamTaskStatus.PENDING:
+                return None
+            if t.assigned_agent is not None and t.assigned_agent != agent_name:
+                return None
+            if not all(dep in completed_ids for dep in t.dependencies):
+                return None
+            t.assigned_agent = agent_name
+            t.status = TeamTaskStatus.IN_PROGRESS
+            return t
+
+        return await self.atomic_update(task_id, _do)
+
+    async def propagate_failures(self) -> list[TeamTask]:
+        """级联取消: 依赖中含 FAILED/CANCELLED(终态)的 PENDING 任务 → CANCELLED.
+
+        在 flock 内迭代至不动点 (取消本身会成为下游的新原因, 沿依赖链传播).
+        返回本次被取消的任务列表 (调用方负责发 SSE/通知).
+
+        安全性: 崩溃回收是先把任务回滚为 PENDING 重试、重试耗尽才置 FAILED,
+        所以传播只发生在"终局失败"之后, 不会误杀正在重试的任务的下游.
+        """
+        cancelled: list[TeamTask] = []
+
+        with open(self._file, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                tasks = self._load_locked()
+                failed_ids = {
+                    t.id for t in tasks
+                    if t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED)
+                }
+                while True:
+                    changed = False
+                    for t in tasks:
+                        if t.status != TeamTaskStatus.PENDING:
+                            continue
+                        bad_deps = [d for d in t.dependencies if d in failed_ids]
+                        if bad_deps:
+                            t.status = TeamTaskStatus.CANCELLED
+                            t.error = f"依赖任务失败/取消: {', '.join(bad_deps)}"
+                            t.updated_at = _now_iso()
+                            cancelled.append(t)
+                            failed_ids.add(t.id)  # 级联: 取消也是下游的失败原因
+                            changed = True
+                    if not changed:
+                        break
+                if cancelled:
+                    self._save_locked(tasks)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+        for t in cancelled:
+            logger.warning("Task '%s' cancelled (依赖失败传播): %s", t.id, t.error)
+        return cancelled
 
     async def list_tasks(
         self,
@@ -297,6 +371,35 @@ class TeamTaskStore:
                 dfs(tid, [])
 
         return cycles
+
+    async def cancel_stale_tasks(self) -> list[TeamTask]:
+        """取消上一轮运行遗留的非终态团队任务 (替代 clear_all 的全板清空).
+
+        只处理 origin == "team" 且非终态的任务 — 它们是已中断的上一轮运行的产物;
+        用户手工创建 (origin == "user") 的任务保留, 会被本轮团队正常调度执行.
+        """
+        cancelled: list[TeamTask] = []
+
+        with open(self._file, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                tasks = self._load_locked()
+                changed = False
+                for t in tasks:
+                    if t.origin == "team" and not t.status.is_terminal:
+                        t.status = TeamTaskStatus.CANCELLED
+                        t.error = "上次团队运行中断遗留"
+                        t.updated_at = _now_iso()
+                        cancelled.append(t)
+                        changed = True
+                if changed:
+                    self._save_locked(tasks)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+        for t in cancelled:
+            logger.info("Stale team task cancelled: id=%s title=%s", t.id, t.title[:40])
+        return cancelled
 
     async def clear_all(self) -> int:
         """清空所有任务（每次新 Team 运行时调用，避免旧结果混入新对话）。返回清除的任务数。"""

@@ -126,9 +126,4 @@
     background-size: 200% 200%;
     animation: gradient-shift 8s ease infinite;
   }
-
-  /* ReactFlow controls roundness fix */
-  .react-flow__controls-button {
-    @apply rounded-lg !important;
-  }
 }

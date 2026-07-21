@@ -86,7 +86,7 @@ class TestModels:
 
 
 class TestTools:
-    """工具: 角色过滤, 15 个工具, ContextVar."""
+    """工具: 角色过滤, 14 个工具, ContextVar."""
 
     def test_lead_tools_count(self):
         from harness.team.tools import LEAD_TOOLS, SHARED_TOOLS
@@ -96,7 +96,7 @@ class TestTools:
     def test_member_tools_count(self):
         from harness.team.tools import SHARED_TOOLS, MEMBER_TOOLS
         all_member = SHARED_TOOLS | MEMBER_TOOLS
-        assert len(all_member) == 9, f"Member should have 9 tools, got {len(all_member)}"
+        assert len(all_member) == 8, f"Member should have 8 tools, got {len(all_member)}"
 
     def test_lead_exclusive_tools(self):
         from harness.team.tools import LEAD_TOOLS, MEMBER_TOOLS
@@ -108,7 +108,7 @@ class TestTools:
 
     def test_member_exclusive_tools(self):
         from harness.team.tools import MEMBER_TOOLS
-        for tool_name in ["request_plan_approval", "claim_task", "idle", "shutdown_response"]:
+        for tool_name in ["request_plan_approval", "claim_task", "shutdown_response"]:
             assert tool_name in MEMBER_TOOLS, f"{tool_name} should be in MEMBER_TOOLS"
 
     def test_create_team_tools_lead(self):
@@ -126,7 +126,7 @@ class TestTools:
         from harness.team.tools import create_team_tools
         tools = create_team_tools(role="member")
         names = {t.name for t in tools}
-        assert len(names) == 9
+        assert len(names) == 8
         assert "claim_task" in names
         assert "shutdown_response" in names
         assert "delegate_to_member" not in names  # Lead only
@@ -824,6 +824,8 @@ class TestFullFlow:
                 assert t.assigned_agent is None
 
             # ── Step 2: 创建 teammates ──
+            # 不 spawn agent loop: 本测试验证认领/调度逻辑, 后台 loop 会用 fake LLM
+            # 跑 work_loop 并触发协议违规检测 (跑完未 task_update → FAILED), 干扰断言
             alice = TeammateAgent(
                 agent_name="alice", llm=flow_deps["llm"], tools=[],
                 team_context=flow_deps["ctx"], message_bus=bus,
@@ -834,10 +836,6 @@ class TestFullFlow:
                 team_context=flow_deps["ctx"], message_bus=bus,
                 task_store=store, role="member",
             )
-            await alice.spawn()
-            await bob.spawn()
-            await asyncio.sleep(0.1)
-
             alice.status = TeammateStatus.IDLE
             bob.status = TeammateStatus.IDLE
 
@@ -914,7 +912,6 @@ class TestRegression:
             "harness.team.teammate_middleware",
             "harness.team.teammate_agent",
             "harness.team.orchestrator",
-            "harness.team.project_lead_agent",
             "harness.observability.team_tracer",
             "harness.observability.langfuse_manager",
         ]
@@ -923,11 +920,11 @@ class TestRegression:
 
     def test_tool_count_consistency(self):
         """工具计数: docstring 声明 vs 实际."""
-        # tools.py docstring: Lead 6, Shared 5, Member 4 = 15 total
+        # tools.py docstring: Lead 6, Shared 5, Member 3 = 14 total
         from harness.team.tools import LEAD_TOOLS, SHARED_TOOLS, MEMBER_TOOLS
         assert len(LEAD_TOOLS) == 6, f"LEAD_TOOLS: {sorted(LEAD_TOOLS)}"
         assert len(SHARED_TOOLS) == 5, f"SHARED_TOOLS: {sorted(SHARED_TOOLS)}"
-        assert len(MEMBER_TOOLS) == 4, f"MEMBER_TOOLS: {sorted(MEMBER_TOOLS)}"
+        assert len(MEMBER_TOOLS) == 3, f"MEMBER_TOOLS: {sorted(MEMBER_TOOLS)}"
 
     def test_no_duplicate_tools(self):
         """LEAD_TOOLS, SHARED_TOOLS, MEMBER_TOOLS 不应有交集."""

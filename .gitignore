@@ -31,5 +31,11 @@ Thumbs.db
 workspace/
 ~/.multiagent-studio/
 
+# Runtime database (local dev artifacts)
+data/
+
+# Third-party tool memory
+.workbuddy/
+
 # Docker
 docker-compose.override.yml

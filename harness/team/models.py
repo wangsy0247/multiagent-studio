@@ -56,6 +56,7 @@ class TeamTask(BaseModel):
     error: str | None = None                # 失败原因
     retry_count: int = 0                    # 已重试次数
     max_retries: int = 3                    # 最大重试次数
+    origin: str = "team"                    # "team"=团队运行产生 | "user"=用户手工创建
     created_at: str = ""
     updated_at: str = ""
     started_at: str | None = None
@@ -137,10 +138,3 @@ class RequestStatus(str, Enum):
     APPROVED = "approved"    # 已批准
     REJECTED = "rejected"    # 已拒绝
 
-
-class TeamExecutionMode(str, Enum):
-    """Team 执行模式."""
-
-    LEAD_DRIVEN = "lead_driven"    # Lead Agent 拆任务 + 自动分配
-    USER_DRIVEN = "user_driven"    # 用户手动创建/分配任务
-    HYBRID = "hybrid"              # 用户可在 Lead 调度中介入

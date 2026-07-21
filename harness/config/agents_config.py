@@ -76,6 +76,7 @@ class AgentLimitsFields(BaseModel):
 class AgentTeamFields(BaseModel):
     """Per-Agent Team 配置 (L2)."""
     can_be_lead: bool = False
+    # 预留字段 — 运行时暂未消费 (仅 can_be_lead 被 orchestrator 读取), 保留以维持 API 契约
     can_delegate: bool = True
     memory_scope: str = "agent"
 

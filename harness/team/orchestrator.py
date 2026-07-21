@@ -40,10 +40,8 @@ from harness.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 # ── 常量 ──
-MAX_RETRIES = 3
 OVERALL_TIMEOUT = 1800         # Team 整体超时 30 分钟
 DEADLOCK_TIMEOUT = 120         # 死锁 2 分钟无进展
-MAX_TEAM_ROUNDS = 100          # 最大调度轮次
 
 
 def _now_iso() -> str:
@@ -280,6 +278,9 @@ class TeamOrchestrator:
             self._project_id, len(self.teammates), len(member_names), lead_name,
         )
 
+        # ── 6. 团队成员快照保鲜 (spawn 完成后状态已从 SPAWNING 变为 IDLE) ──
+        self._refresh_team_context()
+
     async def _create_teammate(self, name: str) -> TeammateAgent | None:
         """创建并 spawn 一个 TeammateAgent — 使用 ConfigLoader 加载 per-agent 配置."""
         try:
@@ -318,6 +319,7 @@ class TeamOrchestrator:
                 role=role,
                 spawn_callback=None,
                 event_emitter=self._event_queue.put,
+                lead_name=lead_name,
             )
             tools.extend(team_tools)
 
@@ -449,6 +451,7 @@ class TeamOrchestrator:
                 tm = await _self._create_teammate(agent_name)
                 if tm:
                     tm.enable_auto_claim()
+                    _self._refresh_team_context()  # 新成员加入 → 刷新全员 prompt 可见的团队快照
                     return f"Teammate '{agent_name}' spawned successfully (已开启自主认领)。"
                 return f"Failed to spawn '{agent_name}': agent config not found or LLM unavailable."
 
@@ -461,6 +464,7 @@ class TeamOrchestrator:
                 role="lead",
                 spawn_callback=_on_spawn,
                 event_emitter=self._event_queue.put,
+                lead_name=lead_name,
             )
             tools.extend(team_tools)
 
@@ -527,7 +531,11 @@ class TeamOrchestrator:
             self.tracer.trace_phase("triage")
             yield await self._emit_team_status("triage", "Lead Agent 正在分析目标...")
 
-            await self.task_store.clear_all()
+            # 清理上一轮遗留的团队任务 (origin=team 且非终态);
+            # 用户手工创建的任务保留, 本轮会被正常调度
+            stale = await self.task_store.cancel_stale_tasks()
+            if stale:
+                logger.info("Cancelled %d stale team tasks from previous run", len(stale))
 
             lead = self._get_lead()
             plan_summary = ""
@@ -541,7 +549,9 @@ class TeamOrchestrator:
                         description=message,
                         priority="high",
                     )
-                    await lead.assign_task(triage_task)
+                    triage_accepted = await lead.assign_task(triage_task)
+                    if not triage_accepted:
+                        logger.warning("Lead rejected triage task (status=%s)", lead.status)
                     # 等待 Lead 完成分析 (最多 120s), 期间持续发布进度
                     for i in range(240):  # 240 * 0.5s = 120s
                         if lead.status == TeammateStatus.IDLE:
@@ -624,6 +634,25 @@ class TeamOrchestrator:
                 try:
                     while not await self._is_complete() and not self._cancelled:
                         self._round += 1
+
+                        # ── 团队成员状态保鲜 (prompt 中的 <team_members> 每轮可见最新状态) ──
+                        self._refresh_team_context()
+
+                        # ── 依赖失败传播: 级联取消下游任务 ──
+                        propagated = await self.task_store.propagate_failures()
+                        for ct in propagated:
+                            await self._event_queue.put(await self._emit_task_update(ct))
+                            lead_notify = self._get_lead()
+                            if lead_notify:
+                                await self.message_bus.send(TeamMessage(
+                                    from_agent="orchestrator", to_agent=lead_notify.name,
+                                    msg_type=TeamMessageType.LIFECYCLE,
+                                    content=(f"任务 [{ct.id}] {ct.title} "
+                                             f"因依赖失败被取消: {ct.error}"),
+                                    task_id=ct.id,
+                                ))
+                        if propagated:
+                            self._last_progress_at = _now_iso()
 
                         # ── 事件驱动: 等待进展, 不再 sleep() ──
                         dispatched = await self._dispatch_ready_tasks()
@@ -725,7 +754,13 @@ class TeamOrchestrator:
     # ------------------------------------------------------------------
 
     async def _dispatch_ready_tasks(self) -> int:
-        """分配就绪任务给 IDLE teammate. 返回 dispatch 数量."""
+        """分配就绪任务给 IDLE teammate. 返回 dispatch 数量.
+
+        高可用语义:
+        - 指定成员已退出 (SHUTDOWN/FAILED) → 任务收回公共池, 交给其他 IDLE 成员;
+        - 指定成员正忙 (WORKING) → 跳过, 留待下轮;
+        - 受理失败 (竞态) → _assign_task_to_teammate 内部回滚任务为 PENDING.
+        """
         ready_tasks = await self.task_store.get_ready_tasks()
         dispatched = 0
 
@@ -733,33 +768,50 @@ class TeamOrchestrator:
             if task.status != TeamTaskStatus.PENDING:
                 continue
 
+            tm: TeammateAgent | None = None
             if task.assigned_agent:
                 tm = self.teammates.get(task.assigned_agent)
-                if tm and tm.status == TeammateStatus.IDLE:
-                    await self._assign_task_to_teammate(tm, task)
-                    dispatched += 1
+                if tm is None or tm.status in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
+                    # 指定成员不可用 → 收回任务到公共池重新分配
+                    logger.warning(
+                        "Task '%s' assigned to unavailable teammate '%s' — returning to pool",
+                        task.id, task.assigned_agent,
+                    )
+                    await self.task_store.update_task(task.id, assigned_agent=None)
+                    task.assigned_agent = None
+                    tm = self._select_idle_teammate()
+                elif tm.status != TeammateStatus.IDLE:
+                    continue  # 成员正忙, 留待下轮
             else:
                 tm = self._select_idle_teammate()
-                if tm:
-                    await self.task_store.update_task(
-                        task.id,
-                        assigned_agent=tm.name,
-                        status=TeamTaskStatus.IN_PROGRESS,
-                    )
-                    await self._assign_task_to_teammate(tm, task)
-                    dispatched += 1
+
+            if tm is not None and await self._assign_task_to_teammate(tm, task):
+                dispatched += 1
 
         return dispatched
 
-    async def _assign_task_to_teammate(self, tm: TeammateAgent, task: TeamTask) -> None:
-        """分配任务给 teammate 并触发状态更新."""
-        await self.task_store.update_task(task.id, status=TeamTaskStatus.IN_PROGRESS)
-        await tm.assign_task(task)
+    async def _assign_task_to_teammate(self, tm: TeammateAgent, task: TeamTask) -> bool:
+        """分配任务给 teammate 并触发状态更新. 返回是否成功.
+
+        顺序: ① 任务板原子认领(CAS) → ② 成员受理 → 失败回滚.
+        认领与成员自认领共用同一个原子收口, 谁先胜出谁拿任务, 无双执行窗口;
+        认领成功但成员拒绝时任务锁在我们手里, 回滚安全.
+        """
+        claimed = await self.task_store.claim(task.id, tm.name)
+        if claimed is None:
+            return False  # 已被认领/状态已变, 留待下轮
+        accepted = await tm.assign_task(task)
+        if not accepted:
+            await self.task_store.update_task(
+                task.id, assigned_agent=None, status=TeamTaskStatus.PENDING,
+            )
+            return False
         self._progress_event.set()
-        # ── SSE: 任务更新 + 成员状态变更 ──
+        # ── SSE: 任务更新 + 成员状态变更 (仅成功后) ──
         await self._event_queue.put(await self._emit_task_update(task))
         await self._event_queue.put(await self._emit_member_status(
             tm.name, "busy", task_id=task.id, task_title=task.title))
+        return True
 
     def _select_idle_teammate(self) -> TeammateAgent | None:
         """选择空闲且健康的 teammate (负载均衡: 已完成任务少的优先)."""
@@ -770,6 +822,15 @@ class TeamOrchestrator:
             return None
         idle.sort(key=lambda x: x[0])
         return idle[0][2]
+
+    def _refresh_team_context(self) -> None:
+        """刷新 TeamContext.members 为实时快照 (含动态 spawn 的新成员).
+
+        TeammateAgent 每个工作周期重建 system prompt, 成员状态/名单以这里为准.
+        """
+        if self.team_context is None:
+            return
+        self.team_context.members = [tm.to_runtime() for tm in self.teammates.values()]
 
     def _get_lead(self) -> TeammateAgent | None:
         """获取 Lead Agent — 优先用 team_context.lead_name 查找."""
@@ -810,7 +871,8 @@ class TeamOrchestrator:
         all_tasks = await self.task_store.load_tasks()
         completed = [t for t in all_tasks if t.status == TeamTaskStatus.COMPLETED
                      and not t.title.startswith("规划:") and not t.title.startswith("用户目标:")]
-        failed = [t for t in all_tasks if t.status == TeamTaskStatus.FAILED]
+        # 失败汇总含级联取消的任务 (error 中带依赖失败原因)
+        failed = [t for t in all_tasks if t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED)]
 
         if not completed and not failed:
             yield {"type": "message", "thread_id": self._thread_id,
@@ -861,7 +923,13 @@ class TeamOrchestrator:
             ),
             priority="high",
         )
-        await lead.assign_task(synthesis_task)
+        accepted = await lead.assign_task(synthesis_task)
+        if not accepted:
+            # Lead 不可受理 (竞态/异常状态) → 静态汇总兜底, 保证用户一定拿得到结果
+            logger.warning("Lead rejected synthesis task (status=%s) — 静态汇总兜底", lead.status)
+            async for event in self._synthesize_results():
+                yield event
+            return
 
         # 等待 Lead 完成汇总 (最多 30s)
         for i in range(60):  # 60 * 0.5s = 30s
@@ -881,7 +949,7 @@ class TeamOrchestrator:
         """静态汇总 (保留作为 fallback, _llm_synthesize 内部已包含)."""
         all_tasks = await self.task_store.load_tasks()
         completed = [t for t in all_tasks if t.status == TeamTaskStatus.COMPLETED]
-        failed = [t for t in all_tasks if t.status == TeamTaskStatus.FAILED]
+        failed = [t for t in all_tasks if t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED)]
 
         if completed:
             parts = [f"## {t.title}\n**执行者**: {t.assigned_agent or '未知'}\n\n{t.output or '(无输出)'}"
@@ -912,8 +980,48 @@ class TeamOrchestrator:
             if tm.status == TeammateStatus.WORKING:
                 await tm.shutdown()
 
+    async def _reap_crashed_teammates(self) -> None:
+        """回收崩溃成员: 状态 WORKING 但 agent loop 已终止.
+
+        将其标记为 FAILED 并从总线注销; 其手上的 IN_PROGRESS 任务回收为未分配
+        PENDING (retry_count+1), 交给其他成员有界重试; 超过 max_retries 则置 FAILED.
+        """
+        for tm in self.teammates.values():
+            if (tm.status == TeammateStatus.WORKING and tm._task is not None
+                    and tm._task.done()):
+                logger.error(
+                    "Watchdog: teammate '%s' agent loop terminated unexpectedly", tm.name)
+                tm.status = TeammateStatus.FAILED
+                tm.last_error = tm.last_error or "agent loop terminated unexpectedly"
+                self.message_bus.unregister_agent(tm.name)
+                crashed_task_id = tm.current_task_id
+                tm.current_task_id = None
+                if crashed_task_id:
+                    crashed = await self.task_store.get_task(crashed_task_id)
+                    if crashed is not None and crashed.status == TeamTaskStatus.IN_PROGRESS:
+                        if crashed.retry_count < crashed.max_retries:
+                            # 回收任务到公共池, 让其他成员接手 (有界重试).
+                            # 附上前次失败原因 (Prior attempts), 下一个接手的成员不再盲试
+                            note = (f"\n\n[前次执行失败 (第 {crashed.retry_count + 1} 次尝试): "
+                                    f"成员 '{tm.name}' 异常退出 — {tm.last_error or '未知原因'}]")
+                            await self.task_store.update_task(
+                                crashed_task_id, assigned_agent=None,
+                                status=TeamTaskStatus.PENDING,
+                                retry_count=crashed.retry_count + 1,
+                                description=(crashed.description or "") + note)
+                            self._progress_event.set()
+                            logger.warning(
+                                "Watchdog: task '%s' requeued (retry %d/%d)",
+                                crashed_task_id, crashed.retry_count + 1, crashed.max_retries)
+                        else:
+                            await self.task_store.update_task(
+                                crashed_task_id, status=TeamTaskStatus.FAILED,
+                                error=f"执行成员 '{tm.name}' 崩溃且已达最大重试次数")
+                await self._event_queue.put(
+                    await self._emit_member_status(tm.name, "failed"))
+
     async def _watchdog(self) -> None:
-        """后台看门狗: 整体超时、死锁检测."""
+        """后台看门狗: 整体超时、死锁检测、崩溃成员回收."""
         while True:
             await asyncio.sleep(5)
             if self._cancelled:
@@ -930,6 +1038,9 @@ class TeamOrchestrator:
                     self._cancelled = True
                     return
 
+            # ── 崩溃成员回收: 状态 WORKING 但 agent loop 已终止 → 任务有界重试 ──
+            await self._reap_crashed_teammates()
+
             # 死锁检测
             if self._last_progress_at:
                 since = (datetime.now(timezone.utc)
@@ -938,8 +1049,12 @@ class TeamOrchestrator:
                     ready = await self.task_store.get_ready_tasks()
                     busy = sum(1 for tm in self.teammates.values()
                                if tm.status == TeammateStatus.WORKING)
-                    if not ready and busy == 0:
-                        logger.warning("Watchdog: deadlock detected")
+                    idle = sum(1 for tm in self.teammates.values()
+                               if tm.status == TeammateStatus.IDLE)
+                    # 无进展且无推进可能: 无人在干活, 且 (无就绪任务 或 有就绪任务但无人能接)
+                    if busy == 0 and (not ready or idle == 0):
+                        logger.warning("Watchdog: deadlock detected (ready=%d, idle=%d)",
+                                       len(ready), idle)
                         await self._event_queue.put(
                             await self._emit_team_error(f"死锁检测 ({DEADLOCK_TIMEOUT}s 无进展)"))
                         self._cancelled = True

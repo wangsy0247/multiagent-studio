@@ -45,10 +45,8 @@ logger = logging.getLogger(__name__)
 IDLE_POLL_INTERVAL = 5.0       # IDLE 时 inbox 检查间隔 (秒)
 MAX_WORK_TURNS = 50            # WORKING 阶段最大 LLM 轮次
 
-# ── 方案 5: 任务认领常量 ──
-STARVATION_THRESHOLD_MINUTES = 2.0  # 任务创建 N 分钟后无人认领 → 饥饿预防
+# ── 任务认领常量 ──
 CLAIM_THRESHOLD = 25.0              # 匹配分 ≥ 此值 → 认领
-STARVATION_SCORE = 100              # 饥饿加成 (超出阈值后任意 agent 可认领)
 
 
 class TeammateAgent:
@@ -134,16 +132,14 @@ class TeammateAgent:
         self._messages: list[Any] = []
 
         # ── 事件驱动唤醒 ──
-        self._wake_event = asyncio.Event()
+        # 与消息总线的 per-agent 通知事件是同一个对象: send() → _notify() 即唤醒,
+        # 不再等 5s 轮询; assign_task/enable_auto_claim/shutdown 的 set 语义不变
+        self._wake_event = message_bus.get_event(agent_name)
 
         # ── 关闭 + plan approval 请求追踪 ──
         self._should_exit = False
         self._pending_requests: dict[str, dict[str, Any]] = {}  # req_id → {type, status, ...}
         self._tracker_lock = asyncio.Lock()  # s16: 并发安全锁
-
-        # ── IDLE 超时 ──
-        self._idle_rounds: int = 0
-        self._max_idle_rounds: int = 12  # 12 * IDLE_POLL_INTERVAL(5s) = 60s
 
         # ── 控制: 延迟 auto-claim (等 Lead 规划完成后再开启) ──
         self._can_claim: bool = False
@@ -154,7 +150,7 @@ class TeammateAgent:
         # ── Title 去重标志 (仅 Lead, 防止多次 graph run 重复生成标题) ──
         self._title_emitted = [False] if role == "lead" else None
 
-        # ── 构建 system prompt (只构建一次) ──
+        # ── 构建 system prompt (初始; 每个工作周期在 _work_loop 开头重建以反映最新团队状态) ──
         self._system_prompt = self._build_system_prompt()
 
         # ── 预构建中间件链 (按角色区分, 只构建一次) ──
@@ -349,7 +345,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
 ** 自主行为:**
 - IDLE 时自动扫描任务板, 使用 claim_task 认领未分配的任务
-- 使用 idle 声明自己空闲, 等待新任务
+- 空闲状态由系统自动管理: 完成当前任务并 task_update 后即自动回到 IDLE 等待新任务
 
 **子任务委派:**
 - 使用 task 工具将复杂任务的子步骤委派给 SubAgent 并行执行
@@ -361,7 +357,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
     # ------------------------------------------------------------------
 
     def _build_middlewares(self) -> list[AgentMiddleware]:
-        """构建中间件链 — Lead 保留 DynamicContext/Todo/Subagent, Member 排除."""
+        """构建中间件链 — DynamicContext 对 Lead/Member 均启用; Todo/Clarification/Title 仅 Lead."""
         from typing import Callable
         from langchain.agents.middleware import AgentMiddleware
         from harness.team.teammate_middleware import build_teammate_middlewares
@@ -412,7 +408,6 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             guardrail_enabled=guardrail_enabled,
             vision_enabled=False,
             tool_max_retries=3,
-            keep_dynamic_context=is_lead,
             keep_clarification=is_lead,
             keep_title=is_lead,
             title_model=eff.title_model if eff else "gpt-4o-mini",
@@ -446,7 +441,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         logger.info("Teammate '%s' spawned (idle, waiting for tasks)", self.name)
 
     async def shutdown(self) -> None:
-        """请求关闭 — 发送 shutdown_request 到自己的 inbox, 触发优雅退出."""
+        """强制关闭 — 置退出标记并 cancel agent loop task, 从总线注销.
+
+        注: 这是强杀路径 (orchestrator 收尾/看门狗用);
+        优雅关机握手 (Lead 请求 → member LLM 决策) 走 shutdown_teammate/shutdown_response 工具链.
+        """
         self._should_exit = True
         self._wake_event.set()
         if self._task:
@@ -493,25 +492,16 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
     async def _idle_loop(self) -> None:
         """IDLE 阶段 — 事件驱动等待消息或新任务.
 
-        参考  每 IDLE_POLL_INTERVAL 秒检查一次 inbox.
-        参考 : IDLE 时自主扫描任务板认领, 超时自动 SHUTDOWN.
+        每 IDLE_POLL_INTERVAL 秒检查一次 inbox; IDLE 时自主扫描任务板认领.
+        成员不在此自行退出: 团队是 per-request 组装, 生命周期由 Orchestrator 统一管理
+        (run() 结束时 finally 统一 shutdown). 空闲自毁会让后续任务派给已死成员,
+        造成任务永久 PENDING 的"幽灵任务".
         """
-        self._idle_rounds = 0
         while self.status == TeammateStatus.IDLE and not self._should_exit:
-            self._idle_rounds += 1
-
-            # ── : IDLE 超时 → 自动 SHUTDOWN ──
-            if self._idle_rounds > self._max_idle_rounds:
-                logger.info("Teammate '%s' idle timeout (%ds), auto-shutting down",
-                            self.name, self._idle_rounds * int(IDLE_POLL_INTERVAL))
-                self._should_exit = True
-                break
-
             try:
                 # 事件驱动等待 (有消息时立即唤醒, 或超时后检查)
                 await asyncio.wait_for(self._wake_event.wait(), timeout=IDLE_POLL_INTERVAL)
                 self._wake_event.clear()
-                self._idle_rounds = 0  # 被唤醒, 重置超时计数
             except asyncio.TimeoutError:
                 pass  # 超时, 正常轮询
 
@@ -520,11 +510,9 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             for msg in inbox:
                 await self._handle_inbox_message(msg)
 
-            # 2. : 自主扫描任务板认领
+            # 2. 自主扫描任务板认领
             if self.status == TeammateStatus.IDLE:
-                claimed = await self._maybe_claim_task()
-                if claimed:
-                    self._idle_rounds = 0  # 认领成功, 重置超时
+                await self._maybe_claim_task()
 
     # ------------------------------------------------------------------
     # WORKING 阶段 — 完整 ReAct agent loop
@@ -544,6 +532,10 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         # ── s17: 身份重注入 (防止长上下文后遗忘) ──
         self._inject_identity()
 
+        # ── 按需重建 system prompt: 让每个工作周期看到最新的成员状态/能力矩阵 ──
+        # (TeamContext.members 由 orchestrator 每轮刷新; 纯字符串拼装, 成本可忽略)
+        self._system_prompt = self._build_system_prompt()
+
         # ── Tracing: 标记工作开始 ──
         if self._tracer is not None:
             self._tracer.trace_teammate_work_start(
@@ -551,6 +543,8 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             )
 
         # ── create_agent + astream_events ──
+        work_failed = False
+        cancelled = False
         try:
             # HarnessState + checkpointer → LangGraph 状态持久化 (短期/会话记忆)
             agent = create_agent(
@@ -635,8 +629,10 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                         self.name, len(self._messages), len(late_inbox))
 
         except asyncio.CancelledError:
+            cancelled = True
             logger.info("Teammate '%s' work cancelled (shutdown)", self.name)
         except Exception as exc:
+            work_failed = True
             logger.error("Teammate '%s' work_loop failed: %s", self.name, exc)
             self.last_error = str(exc)
             if self.current_task_id:
@@ -652,13 +648,44 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                         metadata={"agent_name": self.name, "error": str(exc)},
                     )
 
-        # ── 任务完成 → 回到 IDLE (或被 shutdown 打断 → SHUTTING_DOWN) ──
+        # ── 任务结算 → 回到 IDLE (或被 shutdown 打断 → SHUTTING_DOWN) ──
         completed_task_id = self.current_task_id
-        if self.current_task_id:
-            self.completed_tasks += 1
+        if completed_task_id:
             self.current_task_id = None
-            # ── Tracing: 任务完成事件 ──
-            if self._tracer is not None:
+            if cancelled:
+                # shutdown 打断: 不计数不改板, 由 orchestrator 统一收尾
+                pass
+            elif work_failed:
+                self.failed_tasks += 1
+            else:
+                # 以任务板为准结算: LLM 跑完不代表任务成功
+                board_task = await self._task_store.get_task(completed_task_id)
+                if board_task is None:
+                    # 临时任务 (triage/synthesis), 不在任务板 → 计成功
+                    self.completed_tasks += 1
+                elif board_task.status == TeamTaskStatus.COMPLETED:
+                    self.completed_tasks += 1
+                elif board_task.status == TeamTaskStatus.IN_PROGRESS:
+                    # 协议违规: 跑完了但没调 task_update 上报 → 任务会永远卡 IN_PROGRESS.
+                    # 记失败并置 FAILED, 让下游级联取消能拿到真实原因.
+                    work_failed = True
+                    self.failed_tasks += 1
+                    self.last_error = "成员未上报执行结果 (协议违规)"
+                    await self._task_store.update_task(
+                        completed_task_id,
+                        status=TeamTaskStatus.FAILED,
+                        error=self.last_error,
+                    )
+                    logger.warning(
+                        "Teammate '%s' finished task '%s' without task_update — marked FAILED",
+                        self.name, completed_task_id,
+                    )
+                else:
+                    # member 自行 task_update(failed) 等 → 计失败
+                    work_failed = True
+                    self.failed_tasks += 1
+            # ── Tracing: 任务完成事件 (仅真正成功时) ──
+            if self._tracer is not None and not work_failed and not cancelled:
                 self._tracer.trace_task_event(
                     completed_task_id, "completed",
                     metadata={"agent_name": self.name, "role": self._role},
@@ -668,11 +695,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         if self._tracer is not None:
             self._tracer.trace_teammate_work_end(
                 self.name, completed_task_id, role=self._role,
-                status="failed" if self.last_error else "completed",
+                status="failed" if work_failed else "completed",
             )
 
-        # ── Member 完成后发 summary 给 Lead ──
-        if completed_task_id and self._role != "lead" and self._lead_name:
+        # ── Member 完成后发 summary 给 Lead (shutdown 打断时不发) ──
+        if completed_task_id and not cancelled and self._role != "lead" and self._lead_name:
             try:
                 task = await self._task_store.get_task(completed_task_id)
                 if task:
@@ -693,20 +720,30 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             self.status = TeammateStatus.SHUTTING_DOWN
             logger.info("Teammate '%s' work_loop: shutdown flag set, entering SHUTTING_DOWN", self.name)
         else:
+            # 成功完成一轮工作 → 清除瞬时错误标记.
+            # 成员在整个 team run 期间常驻, 一次瞬时错误不应使其永久失去被分配资格
+            # (_select_idle_teammate 只选 last_error is None 的成员).
+            if not work_failed:
+                self.last_error = None
             self.status = TeammateStatus.IDLE
 
     # ------------------------------------------------------------------
     # 外部唤醒
     # ------------------------------------------------------------------
 
-    async def assign_task(self, task: TeamTask) -> None:
-        """外部唤醒: 分配任务给此 teammate."""
+    async def assign_task(self, task: TeamTask) -> bool:
+        """外部唤醒: 分配任务给此 teammate. 返回是否受理.
+
+        非 IDLE 时拒绝并返回 False — 调用方 (Orchestrator) 必须据此回滚任务状态,
+        防止任务卡在 IN_PROGRESS 无人执行.
+        检查 IDLE 与置 WORKING 之间无 await, 单事件循环下是原子操作, 无 TOCTOU 窗口.
+        """
         if self.status != TeammateStatus.IDLE:
             logger.warning(
                 "Teammate '%s' is not idle (status=%s), cannot assign task",
                 self.name, self.status,
             )
-            return
+            return False
 
         self.current_task_id = task.id
         self._messages.append(HumanMessage(
@@ -724,6 +761,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         self.status = TeammateStatus.WORKING
         self._wake_event.set()
         logger.info("Teammate '%s' assigned task '%s'", self.name, task.id)
+        return True
 
     # ------------------------------------------------------------------
     # 消息处理 
@@ -847,10 +885,12 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
     async def _maybe_claim_task(self) -> bool:
         """IDLE 时自主扫描任务板并认领任务.
 
-        认领优先级:
-        1. 强制分配 (task.assigned_agent == me) → 立即认领
-        2. 饥饿预防 (task 创建超过 N 分钟无人认领) → 任意 agent 可认领
-        3. 领域匹配 (score ≥ CLAIM_THRESHOLD) → 与自身能力相关的任务优先认领
+        认领优先级 (候选集 = 依赖就绪的 PENDING 任务):
+        1. 明确分配给我 (assigned_agent == me) → 立即认领
+        2. 未分配 + 领域匹配 (score ≥ CLAIM_THRESHOLD) → 认领与自身能力相关的任务
+
+        认领经 task_store.claim 原子完成 (CAS), 竞争失败自动跳到下一个候选.
+        指定成员已死的任务由 orchestrator 统一回池, 成员侧不做饥饿接管.
 
         Returns:
             True 如果成功认领了一个任务.
@@ -863,49 +903,43 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         if self._role == "lead":
             return False
 
-        try:
-            unclaimed = await self._task_store.get_unclaimed_tasks()
-        except AttributeError:
-            return False
-
-        if not unclaimed:
+        ready = await self._task_store.get_ready_tasks()
+        if not ready:
             return False
 
         my_card = self._get_my_card()
 
-        for task in unclaimed:
+        for task in ready:
             # 跳过 triage 任务 (标题以 "用户目标:" 或 "规划:" 开头)
             if task.title.startswith("用户目标:") or task.title.startswith("规划:"):
                 continue
 
-            # ── Tier 1: 强制分配给我 → 立即认领 ──
+            # ── Tier 1: 明确分配给我 → 立即认领 ──
             if task.assigned_agent == self.name:
-                return await self._claim(task)
+                if await self._claim(task):
+                    return True
+                continue
 
-            # ── Tier 2: 分配给他人 → 等待饥饿 ──
-            if task.assigned_agent and task.assigned_agent != self.name:
-                age = self._task_age_minutes(task)
-                if age < STARVATION_THRESHOLD_MINUTES:
-                    continue  # 尊重分配, 等待
-                # 饥饿: 计入评分 (带加成)
-
-            # ── Tier 3: 未分配或饥饿 → 领域匹配 ──
-            score = self._compute_task_match(task, my_card)
-            if task.assigned_agent and task.assigned_agent != self.name:
-                score += STARVATION_SCORE  # 饥饿加成
-
-            if score >= CLAIM_THRESHOLD:
-                return await self._claim(task)
+            # ── Tier 2: 未分配 + 领域匹配 ──
+            if task.assigned_agent is None:
+                score = self._compute_task_match(task, my_card)
+                if score >= CLAIM_THRESHOLD and await self._claim(task):
+                    return True
 
         return False
 
     async def _claim(self, task: TeamTask) -> bool:
-        """认领任务 — 原子更新 task_store + 设置自身状态."""
-        await self._task_store.update_task(
-            task.id,
-            assigned_agent=self.name,
-            status=TeamTaskStatus.IN_PROGRESS,
-        )
+        """认领任务 — 原子认领(CAS) + 设置自身状态.
+
+        认领失败 (返回 None) = 任务已被他人拿走或依赖未就绪, 属正常竞争, 不算错误.
+        """
+        claimed = await self._task_store.claim(task.id, self.name)
+        if claimed is None:
+            logger.debug(
+                "Teammate '%s' claim failed for task '%s' (已被认领/状态已变)",
+                self.name, task.id,
+            )
+            return False
         self.current_task_id = task.id
         self._messages.append(HumanMessage(
             content=(
@@ -914,6 +948,8 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             )
         ))
         self.status = TeammateStatus.WORKING
+        # ── SSE: 认领成功, 同步前端任务板 ──
+        self._push_event({"type": "team_task_update", "task": claimed.model_dump()})
         logger.info(
             "Teammate '%s' claimed task '%s': %s",
             self.name, task.id, task.title[:60],
@@ -972,17 +1008,6 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         except Exception:
             pass
         return None
-
-    @staticmethod
-    def _task_age_minutes(task: TeamTask) -> float:
-        """计算任务已等待的分钟数."""
-        if not task.created_at:
-            return 0.0
-        try:
-            created = datetime.fromisoformat(task.created_at)
-            return (datetime.now(timezone.utc) - created).total_seconds() / 60.0
-        except Exception:
-            return 0.0
 
     def _inject_identity(self) -> None:
         """: 注入身份块 — 防止长上下文后遗忘自己是谁.
