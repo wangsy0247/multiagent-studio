@@ -5,9 +5,12 @@ Matches DeerFlow's design:
   - ``abefore_agent``: clear stale pending warnings from the same thread's
     other runs.
   - ``aafter_model``: detect repetitive tool-call patterns (hash-based +
-    frequency-based), queue warnings or force hard-stop.
+    frequency-based), queue warnings or mark pending hard-stop.
   - ``awrap_model_call``: inject queued warnings into the next model request.
-  - ``aafter_agent``: clean up pending warnings for the current thread/run.
+    For hard-stop runs, also overrides ``tools=[]`` so the LLM is forced to
+    produce a final text summary instead of being silently truncated.
+  - ``aafter_agent``: clean up pending warnings and hard-stop flags for the
+    current thread/run.
 
 Why warnings are injected at ``wrap_model_call`` instead of ``after_model``:
   In ``after_model`` the tools node hasn't run yet, so no matching
@@ -15,6 +18,13 @@ Why warnings are injected at ``wrap_model_call`` instead of ``after_model``:
   tool_calls and their responses, breaking OpenAI/Moonshot tool-call pairing.
   By deferring to ``wrap_model_call``, every prior ToolMessage is already
   present and the warning is appended at the end — pairing intact.
+
+Hard-stop vs warning:
+  Both are deferred to ``wrap_model_call``. The difference is that hard-stop
+  also passes ``tools=[]`` to the model, removing every tool from the request.
+  The LLM cannot call any tools and must produce a final text answer — the
+  agent gets one last chance to summarize its work rather than being cut off
+  mid-stream.
 """
 
 from __future__ import annotations
@@ -24,10 +34,9 @@ import json
 import logging
 import threading
 from collections import OrderedDict, defaultdict
-from copy import deepcopy
 from typing import Any, override
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langgraph.runtime import Runtime
 
 from harness.middleware.base import HarnessAgentMiddleware
@@ -35,8 +44,8 @@ from harness.models import HarnessState
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_WARN_THRESHOLD = 7
-_DEFAULT_HARD_LIMIT = 10
+_DEFAULT_WARN_THRESHOLD = 3
+_DEFAULT_HARD_LIMIT = 5
 _DEFAULT_WINDOW_SIZE = 20
 _DEFAULT_MAX_TRACKED_THREADS = 100
 _DEFAULT_TOOL_FREQ_WARN = 30
@@ -183,17 +192,19 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         self.window_size = window_size
         self.max_tracked_threads = max_tracked_threads
         self._lock = threading.Lock()
-        # thread_id → list of call hashes (sliding window)
-        self._history: OrderedDict[str, list[str]] = OrderedDict()
-        # thread_id → set of warned hashes
-        self._warned: dict[str, set[str]] = defaultdict(set)
-        # thread_id → {tool_name: call_count}
-        self._tool_freq: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        # thread_id → set of tool names already warned (frequency)
-        self._tool_freq_warned: dict[str, set[str]] = defaultdict(set)
+        # (thread_id, run_id) → list of call hashes (sliding window, 按 run 隔离)
+        self._history: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
+        # (thread_id, run_id) → set of warned hashes
+        self._warned: dict[tuple[str, str], set[str]] = defaultdict(set)
+        # (thread_id, run_id) → {tool_name: call_count}
+        self._tool_freq: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        # (thread_id, run_id) → set of tool names already warned (frequency)
+        self._tool_freq_warned: dict[tuple[str, str], set[str]] = defaultdict(set)
         # (thread_id, run_id) → list of pending warning messages
         self._pending_warnings: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._pending_warning_order: OrderedDict[tuple[str, str], None] = OrderedDict()
+        # (thread_id, run_id) — 标记哪些 run 触发了 hard stop, 下次 LLM 调用时去工具化
+        self._pending_hard_stops: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------
     # thread / run identity
@@ -220,14 +231,13 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
 
     def _evict_if_needed_locked(self) -> None:
         while len(self._history) > self.max_tracked_threads:
-            evicted_id, _ = self._history.popitem(last=False)
-            self._warned.pop(evicted_id, None)
-            self._tool_freq.pop(evicted_id, None)
-            self._tool_freq_warned.pop(evicted_id, None)
-            for key in list(self._pending_warnings):
-                if key[0] == evicted_id:
-                    self._pending_warnings.pop(key, None)
-                    self._pending_warning_order.pop(key, None)
+            evicted_key, _ = self._history.popitem(last=False)
+            self._warned.pop(evicted_key, None)
+            self._tool_freq.pop(evicted_key, None)
+            self._tool_freq_warned.pop(evicted_key, None)
+            self._pending_warnings.pop(evicted_key, None)
+            self._pending_warning_order.pop(evicted_key, None)
+            self._pending_hard_stops.discard(evicted_key)
 
     # ------------------------------------------------------------------
     # detection
@@ -247,27 +257,27 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         if not tool_calls:
             return None, False
 
-        thread_id = self._get_thread_id(runtime)
+        key = self._pending_key(runtime)  # (thread_id, run_id)
         call_hash = _hash_tool_calls(tool_calls)
 
         with self._lock:
-            if thread_id in self._history:
-                self._history.move_to_end(thread_id)
+            if key in self._history:
+                self._history.move_to_end(key)
             else:
-                self._history[thread_id] = []
+                self._history[key] = []
                 self._evict_if_needed_locked()
 
-            history = self._history[thread_id]
+            history = self._history[key]
             history.append(call_hash)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size:]
 
             # refresh warned set — drop hashes no longer in window
-            warned_hashes = self._warned.get(thread_id)
+            warned_hashes = self._warned.get(key)
             if warned_hashes is not None:
                 warned_hashes.intersection_update(history)
                 if not warned_hashes:
-                    self._warned.pop(thread_id, None)
+                    self._warned.pop(key, None)
 
             count = history.count(call_hash)
             tool_names = [tc.get("name", "?") for tc in tool_calls]
@@ -275,23 +285,23 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
             # --- Layer 1: hash-based (identical call sets) ---
             if count >= self.hard_limit:
                 logger.error(
-                    "Loop hard limit reached — forcing stop thread=%s count=%d tools=%s",
-                    thread_id, count, tool_names,
+                    "Loop hard limit reached — forcing stop key=%s count=%d tools=%s",
+                    key, count, tool_names,
                 )
                 return _HARD_STOP_MSG, True
 
             if count >= self.warn_threshold:
-                warned = self._warned[thread_id]
+                warned = self._warned[key]
                 if call_hash not in warned:
                     warned.add(call_hash)
                     logger.warning(
-                        "Repetitive tool calls detected thread=%s count=%d tools=%s",
-                        thread_id, count, tool_names,
+                        "Repetitive tool calls detected key=%s count=%d tools=%s",
+                        key, count, tool_names,
                     )
                     return _WARNING_MSG, False
 
             # --- Layer 2: per-tool-type frequency ---
-            freq = self._tool_freq[thread_id]
+            freq = self._tool_freq[key]
             for tc in tool_calls:
                 name = tc.get("name", "")
                 if not name:
@@ -301,18 +311,18 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
 
                 if tc_count >= self.tool_freq_hard_limit:
                     logger.error(
-                        "Tool frequency hard limit thread=%s tool=%s count=%d",
-                        thread_id, name, tc_count,
+                        "Tool frequency hard limit key=%s tool=%s count=%d",
+                        key, name, tc_count,
                     )
                     return _TOOL_FREQ_HARD_STOP_MSG.format(tool_name=name, count=tc_count), True
 
                 if tc_count >= self.tool_freq_warn:
-                    warned_freq = self._tool_freq_warned[thread_id]
+                    warned_freq = self._tool_freq_warned[key]
                     if name not in warned_freq:
                         warned_freq.add(name)
                         logger.warning(
-                            "Tool frequency warning thread=%s tool=%s count=%d",
-                            thread_id, name, tc_count,
+                            "Tool frequency warning key=%s tool=%s count=%d",
+                            key, name, tc_count,
                         )
                         return _TOOL_FREQ_WARNING_MSG.format(tool_name=name, count=tc_count), False
 
@@ -341,36 +351,35 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         return warnings
 
     def _clear_other_run_pending_warnings(self, runtime: Runtime) -> None:
+        """清理同一 thread 下其他 run 的残留状态 (异常中断残留)."""
         thread_id, current_run_id = self._pending_key(runtime)
         with self._lock:
             for key in list(self._pending_warnings):
                 if key[0] == thread_id and key[1] != current_run_id:
                     self._pending_warnings.pop(key, None)
                     self._pending_warning_order.pop(key, None)
+            for key in list(self._pending_hard_stops):
+                if key[0] == thread_id and key[1] != current_run_id:
+                    self._pending_hard_stops.discard(key)
+            for key in list(self._history):
+                if key[0] == thread_id and key[1] != current_run_id:
+                    self._history.pop(key, None)
+                    self._warned.pop(key, None)
+                    self._tool_freq.pop(key, None)
+                    self._tool_freq_warned.pop(key, None)
 
     def _clear_current_run_pending_warnings(self, runtime: Runtime) -> None:
-        pending_key = self._pending_key(runtime)
+        """清理当前 run 的所有状态 (pending warnings + 检测数据)."""
+        key = self._pending_key(runtime)
         with self._lock:
-            self._pending_warnings.pop(pending_key, None)
-            self._pending_warning_order.pop(pending_key, None)
-
-    # ------------------------------------------------------------------
-    # hard stop
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_hard_stop_update(last_msg: AIMessage, warning: str) -> dict:
-        new_content = (last_msg.content or "") + f"\n\n{warning}"
-        update: dict = {"tool_calls": [], "content": new_content}
-        additional_kwargs = dict(getattr(last_msg, "additional_kwargs", {}) or {})
-        for key in ("tool_calls", "function_call"):
-            additional_kwargs.pop(key, None)
-        update["additional_kwargs"] = additional_kwargs
-        response_metadata = deepcopy(getattr(last_msg, "response_metadata", {}) or {})
-        if response_metadata.get("finish_reason") == "tool_calls":
-            response_metadata["finish_reason"] = "stop"
-        update["response_metadata"] = response_metadata
-        return update
+            self._pending_warnings.pop(key, None)
+            self._pending_warning_order.pop(key, None)
+            self._pending_hard_stops.discard(key)
+            # 检测状态按 run 隔离, run 结束时清理
+            self._history.pop(key, None)
+            self._warned.pop(key, None)
+            self._tool_freq.pop(key, None)
+            self._tool_freq_warned.pop(key, None)
 
     # ------------------------------------------------------------------
     # hooks
@@ -386,12 +395,13 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         warning, hard_stop = self._detect(state, runtime)
 
         if hard_stop:
-            messages = state.get("messages", [])
-            last_msg = messages[-1]
-            stripped = last_msg.model_copy(
-                update=self._build_hard_stop_update(last_msg, warning or _HARD_STOP_MSG)
-            )
-            return {"messages": [stripped]}
+            # 不再直接替换消息 — 改为延迟到下次 LLM 调用时:
+            #   1. 注入警告消息 (和 warning 一样)
+            #   2. override(tools=[]) 去工具化, 迫使 LLM 输出纯文本总结
+            self._queue_pending_warning(runtime, warning or _HARD_STOP_MSG)
+            with self._lock:
+                self._pending_hard_stops.add(self._pending_key(runtime))
+            return None
 
         if warning:
             self._queue_pending_warning(runtime, warning)
@@ -400,8 +410,17 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
 
     @override
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
-        """Inject queued loop warnings into the next model request's messages."""
+        """Inject queued loop warnings / hard-stop messages into the next model request."""
         warnings = self._drain_pending_warnings(request.runtime)
+
+        # 检查是否有 pending hard stop — 需要去工具化迫使 LLM 输出总结
+        pending_key = self._pending_key(request.runtime)
+        is_hard_stop = False
+        with self._lock:
+            if pending_key in self._pending_hard_stops:
+                self._pending_hard_stops.discard(pending_key)
+                is_hard_stop = True
+
         if warnings:
             deduped = list(dict.fromkeys(warnings))
             request = request.override(
@@ -413,6 +432,11 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
                     ),
                 ]
             )
+
+        # hard stop → 清空 tools 列表, LLM 无法调用任何工具, 被迫输出纯文本总结
+        if is_hard_stop:
+            request = request.override(tools=[])
+
         return await handler(request)
 
     @override
@@ -424,14 +448,19 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         """Clear tracking state. If *thread_id* given, clear only that thread."""
         with self._lock:
             if thread_id:
-                self._history.pop(thread_id, None)
-                self._warned.pop(thread_id, None)
-                self._tool_freq.pop(thread_id, None)
-                self._tool_freq_warned.pop(thread_id, None)
+                for key in list(self._history):
+                    if key[0] == thread_id:
+                        self._history.pop(key, None)
+                        self._warned.pop(key, None)
+                        self._tool_freq.pop(key, None)
+                        self._tool_freq_warned.pop(key, None)
                 for key in list(self._pending_warnings):
                     if key[0] == thread_id:
                         self._pending_warnings.pop(key, None)
                         self._pending_warning_order.pop(key, None)
+                for key in list(self._pending_hard_stops):
+                    if key[0] == thread_id:
+                        self._pending_hard_stops.discard(key)
             else:
                 self._history.clear()
                 self._warned.clear()
@@ -439,3 +468,4 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
                 self._tool_freq_warned.clear()
                 self._pending_warnings.clear()
                 self._pending_warning_order.clear()
+                self._pending_hard_stops.clear()

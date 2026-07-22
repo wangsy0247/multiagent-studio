@@ -331,7 +331,6 @@ class TestV2LoopDetectionMiddleware:
         mw = mw_cls(warn_threshold=2, hard_limit=5, window_size=10)
 
         # Build state where the last message is an AIMessage with tool_calls
-        # (as it would be right after the model emits a response)
         msgs: list = []
         for _ in range(4):
             msgs.extend([
@@ -342,8 +341,6 @@ class TestV2LoopDetectionMiddleware:
                 ToolMessage(content="done", tool_call_id="tc1", name="bash"),
             ])
 
-        # The last message in the state should be an AIMessage with tool_calls
-        # to trigger the aafter_model detection
         msgs.append(AIMessage(content="running again", tool_calls=[
             {"name": "bash", "args": {"cmd": "ls"}, "id": "tc99"}
         ]))
@@ -354,25 +351,36 @@ class TestV2LoopDetectionMiddleware:
             user_id="u1",
         )
         runtime = MagicMock(spec=Runtime)
-        # runtime.context must provide thread_id for per-thread tracking
-        runtime.context = {"thread_id": "t1"}
+        runtime.context = {"thread_id": "t1", "run_id": "r1"}
 
         # First call builds up history, second triggers warning (warn_threshold=2)
         await mw.aafter_model(state, runtime)  # count=1
         result = await mw.aafter_model(state, runtime)  # count=2 → triggers warning
 
-        # Warnings are queued and returned as None from aafter_model
-        # (they get injected in awrap_model_call). Hard stops return non-None.
-        # We verify the middleware is functioning by checking that the
-        # warning was logged (see captured log above) and history was tracked.
-        assert result is None  # warning queued, not hard stop yet
+        # Warnings are queued — aafter_model returns None (deferred to awrap_model_call)
+        assert result is None
 
-        # Verify hard stop triggers when count exceeds hard_limit (5)
+        # Verify warning was queued
+        assert mw._pending_warnings  # non-empty
+        pending_key = ("t1", "r1")
+        assert pending_key in mw._pending_warnings
+        assert any("LOOP DETECTED" in w for w in mw._pending_warnings[pending_key])
+
+        # Drain warnings and simulate what awrap_model_call does
+        warnings = mw._drain_pending_warnings(runtime)
+        assert len(warnings) > 0
+
+        # Verify hard stop is queued (not returned directly) when count exceeds hard_limit (5)
         for _ in range(5):
             await mw.aafter_model(state, runtime)
         hard_result = await mw.aafter_model(state, runtime)
-        assert hard_result is not None
-        assert "messages" in hard_result
+        # New behavior: hard stop is deferred to awrap_model_call, aafter_model returns None
+        assert hard_result is None
+
+        # But the pending hard stop flag is set
+        assert pending_key in mw._pending_hard_stops
+
+        # awrap_model_call would drain warnings + check pending_hard_stops → override(tools=[])
 
 
 # ---------------------------------------------------------------------------

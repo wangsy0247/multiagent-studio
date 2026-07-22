@@ -3,7 +3,7 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { Send, Square, AlertTriangle } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
-import { SSEClient } from "@/lib/sse-client";
+import { globalSSEManager } from "@/lib/global-sse";
 import { threadsAPI, filesAPI, getCurrentUserId } from "@/lib/api-client";
 import { ChatMessage, AttachedFile } from "@/lib/types";
 import { useProjectStore } from "@/lib/project-store";
@@ -48,7 +48,7 @@ export default function ChatPanel({
     setStreaming, addMessage, setError, _stopClarificationFn,
     setActiveThread, setThreadMessages,
   } = useChatStore();
-  const sseRef = useRef<SSEClient | null>(null);
+  const prevThreadIdRef = useRef<string>("");
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
 
   // ── Agent 选择状态 ──
@@ -147,86 +147,74 @@ export default function ChatPanel({
     setError(null);
     setAttachedFiles([]);
 
-    let connected = false;
-    const sse = new SSEClient({
-      onEvent: (event) => {
-        connected = true;
-        handleSSEEvent(event);
-        if (event.type === "finished" || event.type === "error") {
-          setStreaming(false);
-        }
-      },
-      onStatus: (status) => {
-        if (status === "connected") connected = true;
-        if (status === "error" && !connected) {
-          // 连接直接失败（后端不可达） → 提示用户
-          setStreaming(false);
-          setError("无法连接后端服务 (localhost:8000)，请确认已启动 Harness + App 服务");
-        }
-      },
-      maxReconnectAttempts: 1, // 提问场景不需要重连
-    });
-    sseRef.current = sse;
-
-    // 如果没有 threadId 但有 projectId，等待由外部传入（ChatTab 中通过 onThreadCreated 回调设置）
+    // 如果没有 threadId 但有 projectId，等待由外部传入
     const currentThreadId = threadId;
     if (!currentThreadId) {
+      setStreaming(false);
       setError("尚未创建会话线程");
       return;
     }
 
-    try {
-      const resolvedMode = propMode || (projectId ? "team" : "single");
-      await sse.connect("/api/execute", {
-        thread_id: currentThreadId,
-        // 文件系统 user_id 统一为 username（后端 execute 以 JWT 用户为准，此字段仅作兼容）
-        user_id: getCurrentUserId(),
-        message: text,
-        files: filesPayload.length > 0 ? filesPayload : undefined,
-        project_id: projectId || undefined,
-        agent_name: selectedAgent,
-        mode: resolvedMode,
-      });
-    } catch (err: any) {
-      console.error("SSE 连接异常:", err);
-      if (!connected) {
-        setError("无法连接后端服务，请确认端口 8000 已启动");
-      }
-    } finally {
-      setStreaming(false);
-      sseRef.current = null;
-    }
+    const resolvedMode = propMode || (projectId ? "team" : "single");
+
+    // 通过全局 SSE 管理器启动连接 (连接生命周期独立于组件)
+    globalSSEManager.connect(currentThreadId, "/api/execute", {
+      thread_id: currentThreadId,
+      user_id: getCurrentUserId(),
+      message: text,
+      files: filesPayload.length > 0 ? filesPayload : undefined,
+      project_id: projectId || undefined,
+      agent_name: selectedAgent,
+      mode: resolvedMode,
+    });
   }
 
   function stopExecution() {
-    sseRef.current?.stop();
+    if (threadId) globalSSEManager.stop(threadId);
     _stopClarificationFn?.();
     setStreaming(false);
   }
 
-  // ── 线程切换：设置活跃线程 + 加载历史消息 ──
+  // ── 线程切换：订阅全局 SSE 事件 + 加载历史消息 ──
   useEffect(() => {
-    if (!threadId) return;  // threadId 可选：仅在已有线程时设置
+    if (!threadId) return;
 
-    // 停止上一次的 SSE 连接，防止旧线程事件污染新线程
-    if (sseRef.current) {
-      sseRef.current.stop();
-      sseRef.current = null;
-    }
-    setStreaming(false);
-    setActiveThread(threadId);
+    // 订阅全局 SSE 管理器 (不关闭连接 — 切走时 agent 继续后台执行)
+    const { unsubscribe } = globalSSEManager.subscribe(threadId, (event) => {
+      handleSSEEvent(event);
+      if (event.type === "finished" || event.type === "error") {
+        setStreaming(false);
+      }
+    });
+
+    // 检测是否切回了一个可能后台运行过的 thread
+    const isSwitchingThread = prevThreadIdRef.current !== threadId;
+    prevThreadIdRef.current = threadId;
+    setActiveThread(threadId);  // 先切换活跃线程 (会重置 isStreaming=false)
     setAttachedFiles([]);
+
+    // 如果该 thread 有活跃连接 → 跳过 DB 加载, 直接用 SSE 流式输出
+    // ⚠️ 必须在 setActiveThread 之后调用 — setActiveThread 会重置 isStreaming=false,
+    //    必须在此之后覆盖为 true, 否则后续 message token 会碎片化
+    const isReconnecting = globalSSEManager.isRunning(threadId);
+    if (isReconnecting) {
+      useChatStore.setState({ _streamingMessageId: null, _streamingThinkingId: null });
+      setStreaming(true);
+    }
 
     const loadHistory = async () => {
       if (!threadId) return;
-      // 已有内存消息时跳过（避免覆盖流式数据）
-      const current = useChatStore.getState().threadMessages[threadId];
-      if (current && current.length > 0) return;
-
+      // 活跃连接 → DB 是旧快照, SSE 才是实时流, 跳过 DB 加载
+      if (isReconnecting) return;
+      // 同一 thread 正在前台流式 → DB 是旧快照, 跳过
+      if (!isSwitchingThread) {
+        const current = useChatStore.getState().threadMessages[threadId];
+        if (current && current.length > 0) return;
+      }
       try {
         const { data } = await threadsAPI.getMessages(threadId);
         if (data?.messages && data.messages.length > 0) {
-          const msgs: ChatMessage[] = data.messages.map((m: any) => ({
+          const dbMsgs: ChatMessage[] = data.messages.map((m: any) => ({
             id: m.id,
             role: m.role,
             content: m.content,
@@ -235,7 +223,8 @@ export default function ChatPanel({
             createdAt: m.created_at,
             tokenCount: m.token_count || 0,
           }));
-          setThreadMessages(threadId, msgs);
+          // 切回时 DB 有 agent 后台执行产生的完整记录, 替换内存残留
+          setThreadMessages(threadId, dbMsgs);
         }
       } catch (err) {
         console.error("加载历史消息失败", err);
@@ -244,12 +233,8 @@ export default function ChatPanel({
     loadHistory();
 
     return () => {
-      // 组件卸载时清理 SSE
-      if (sseRef.current) {
-        sseRef.current.stop();
-        sseRef.current = null;
-      }
-      setStreaming(false);
+      // 组件卸载时只取消订阅，不关闭连接 (agent 继续后台执行)
+      unsubscribe();
     };
   }, [threadId]);
 

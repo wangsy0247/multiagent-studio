@@ -840,11 +840,11 @@ def _build_middlewares(
     if subagent_enabled: middlewares.append(SubagentLimitMiddleware({"max_concurrent": max_concurrent_subagents}))
     middlewares.append(LoopDetectionMiddleware(
         loop_cfg,
-        warn_threshold=loop_cfg.get("warn_threshold", 7),
-        hard_limit=loop_cfg.get("hard_limit", 10),
-        tool_freq_warn=loop_cfg.get("tool_freq_warn", 30),
-        tool_freq_hard_limit=loop_cfg.get("tool_freq_hard_limit", 50),
-        window_size=loop_cfg.get("window_size", 20),
+        warn_threshold=loop_cfg.get("warn_threshold", 3),
+        hard_limit=loop_cfg.get("hard_limit", 5),
+        tool_freq_warn=loop_cfg.get("tool_freq_warn", 20),
+        tool_freq_hard_limit=loop_cfg.get("tool_freq_hard_limit", 30),
+        window_size=loop_cfg.get("window_size", 35),
     ))
     middlewares.append(SafetyFinishReasonMiddleware())
     if custom_middlewares: middlewares.extend(custom_middlewares)

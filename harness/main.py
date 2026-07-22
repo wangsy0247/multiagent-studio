@@ -811,6 +811,27 @@ class HarnessService(_BaseService):
         set_skill_user_id(user_id)
 
         from harness.team.orchestrator import TeamOrchestrator
+        from harness.team.models import TeamMessage, TeamMessageType
+
+        # ── 运行时消息注入: 同一 thread 已有活跃 team run → 注入 Lead inbox ──
+        existing = self._active_runs.get(thread_id)
+        if existing and existing.get("mode") == "team":
+            orch = existing.get("orchestrator")
+            if orch is not None:
+                lead = orch._get_lead()
+                if lead is not None:
+                    await orch.message_bus.send(TeamMessage(
+                        from_agent="user", to_agent=lead.name,
+                        msg_type=TeamMessageType.TEXT,
+                        content=f"[用户追加需求] {message}",
+                    ))
+                    yield {
+                        "type": "message_injected",
+                        "thread_id": thread_id,
+                        "project_id": project_id,
+                        "content": f"已注入给 Lead ({lead.name})",
+                    }
+                    return
 
         # ── 并发守卫: 同一项目同时只允许一个 team run ──
         # 任务板/信箱是项目级共享文件, 并发 run 会互相取消任务、抢占认领
@@ -1016,6 +1037,24 @@ class HarnessService(_BaseService):
         metadata["unattended"] = unattended
         current_state["metadata"] = metadata
 
+        # ── 重连检测: 该 thread 是否有后台 agent task 仍在执行 ──
+        existing = self._active_runs.get(thread_id)
+        if existing and existing.get("agent_task") and not existing["agent_task"].done():
+            _q = existing.get("sse_queue")
+            if _q is not None:
+                try:
+                    while True:
+                        event = await _q.get()
+                        if event.pop("__sentinel__", False):
+                            break
+                        try:
+                            yield event
+                        except (GeneratorExit, asyncio.CancelledError):
+                            return  # 客户端又断开了, agent_task 继续跑
+                except asyncio.CancelledError:
+                    return
+                return  # agent_task 已完成, 重连读取完毕
+
         # ── 注册运行期取消标记（保存 user/agent 以便后续方法查找 ctx） ──
         self._active_runs[thread_id] = {
             "cancelled": False, "user_id": user_id, "agent_name": agent_name,
@@ -1158,338 +1197,330 @@ class HarnessService(_BaseService):
                         "iterations": iteration,
                     })
 
-        # 启动 drainer 任务
-        drainer_task = asyncio.create_task(_drain_subagent_streams())
+        # ── 后台 agent task: 解耦执行与 SSE 传输 ──
+        # agent 在后台 asyncio.Task 中执行, 通过 sse_queue 与 SSE 生成器通信。
+        # 客户端断开时 SSE 生成器退出, 但 agent task 继续执行直到完成。
+        sse_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        _client_disconnected = False
 
-        try:
-            async for event in runner.astream_events(current_state, build_config, version="v2"):
-                # ── 检查取消标志（支持 stop() 中断执行） ──
-                if self._active_runs.get(thread_id, {}).get("cancelled"):
-                    raise asyncio.CancelledError("Execution cancelled by user")
+        async def _run_agent():
+            """后台执行 agent, 将 SSE 事件放入队列。客户端断开不影响此 task。"""
+            nonlocal _skill_iters, _title_emitted, _collected_token_usage
+            nonlocal active_subagents, final_state, interrupted
 
-                # ── 在每次迭代中排空 subagent 事件队列 ──
+            _inner_drainer = asyncio.create_task(_drain_subagent_streams())
+            try:
+                async for event in runner.astream_events(current_state, build_config, version="v2"):
+                    # ── 检查取消标志 ──
+                    if self._active_runs.get(thread_id, {}).get("cancelled"):
+                        raise asyncio.CancelledError("Execution cancelled by user")
+
+                    # ── 排空 subagent 事件队列 ──
+                    while not _subagent_event_queue.empty():
+                        try:
+                            sub_event = _subagent_event_queue.get_nowait()
+                            if sub_event:
+                                await sse_queue.put(sub_event)
+                        except asyncio.QueueEmpty:
+                            break
+
+                    kind = event["event"]
+                    evt_name = event.get("name", "")
+                    evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
+
+                    # ── 过滤子代理内部事件 ──
+                    _event_tags: list[str] = event.get("tags", []) or []
+                    if any(t.startswith("subagent:") for t in _event_tags):
+                        continue
+
+                    # ── Token-level streaming ──
+                    if kind == "on_chat_model_stream":
+                        chunk: Any = evt_data.get("chunk")
+                        if chunk is None:
+                            continue
+                        reasoning = (
+                            getattr(chunk, "reasoning_content", None)
+                            or getattr(chunk, "additional_kwargs", {}).get("reasoning_content", "")
+                        )
+                        if reasoning and isinstance(reasoning, str):
+                            await sse_queue.put({
+                                "type": "thinking", "content": reasoning, "thread_id": thread_id,
+                            })
+                        content = getattr(chunk, "content", "")
+                        if not content:
+                            continue
+                        if isinstance(content, list):
+                            content = "".join(
+                                c.get("text", "") if isinstance(c, dict) else str(c)
+                                for c in content
+                            )
+                        if content:
+                            await sse_queue.put({
+                                "type": "message", "content": str(content), "thread_id": thread_id,
+                            })
+
+                    # ── Token usage ──
+                    elif kind == "on_chat_model_end":
+                        output: Any = evt_data.get("output")
+                        if output is None:
+                            continue
+                        usage_meta = (
+                            getattr(output, "usage_metadata", None)
+                            or getattr(output, "response_metadata", {}).get("token_usage", {})
+                        )
+                        if usage_meta:
+                            usage = TokenUsage(
+                                prompt_tokens=usage_meta.get("input_tokens", 0),
+                                completion_tokens=usage_meta.get("output_tokens", 0),
+                                total_tokens=usage_meta.get("total_tokens", 0),
+                                cost_usd=0,
+                            )
+                            _collected_token_usage = usage
+                            await sse_queue.put({
+                                "type": "token_usage", "thread_id": thread_id,
+                                "tokens": usage.model_dump(),
+                            })
+
+                    # ── Tool start ──
+                    elif kind == "on_tool_start":
+                        tool_name = evt_name
+                        _skill_iters += 1
+                        if tool_name == "skill_manage":
+                            _skill_iters = 0
+                        tool_input: Any = evt_data.get("input", {})
+                        run_id_s: str = event.get("run_id", "")
+                        if tool_name in ("task", "Agent") and isinstance(tool_input, dict):
+                            sub_name = tool_input.get("name") or tool_input.get("agent_name", "unknown")
+                            active_subagents[run_id_s] = str(sub_name)
+                            _max_turns = 50
+                            if self.subagent_manager is not None:
+                                _cfg = self.subagent_manager.get(str(sub_name))
+                                if _cfg is not None:
+                                    _max_turns = getattr(_cfg, "max_turns", 50)
+                            await sse_queue.put({
+                                "type": "subagent_start", "thread_id": thread_id,
+                                "subagent_name": str(sub_name),
+                                "instruction": str(tool_input.get("instruction", "")),
+                                "context": str(tool_input.get("context", "")),
+                                "max_turns": _max_turns,
+                            })
+                        elif tool_name not in ("task", "Agent"):
+                            await sse_queue.put({
+                                "type": "tool_call", "thread_id": thread_id,
+                                "tool_name": tool_name,
+                                "tool_args": tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)},
+                            })
+
+                    # ── Tool end ──
+                    elif kind == "on_tool_end":
+                        tool_name = evt_name
+                        run_id_s = event.get("run_id", "")
+                        tool_output: Any = evt_data.get("output", "")
+                        if tool_name in ("task", "Agent"):
+                            sub_name = active_subagents.pop(run_id_s, "unknown")
+                            subagent_result: dict[str, Any] | None = None
+                            output_str = ""
+                            if hasattr(tool_output, "content"):
+                                output_str = str(tool_output.content)
+                            elif isinstance(tool_output, str):
+                                output_str = tool_output
+                            if self.subagent_manager is not None:
+                                full_result = self.subagent_manager.pop_last_result(sub_name)
+                                if full_result is not None:
+                                    subagent_result = full_result.model_dump()
+                            summary = output_str[:2000] if output_str else ""
+                            if subagent_result:
+                                if not summary:
+                                    summary = subagent_result.get("output", "") or ""
+                                if subagent_result.get("error"):
+                                    summary = f"[{subagent_result['status']}] {subagent_result['error']}"
+                            await sse_queue.put({
+                                "type": "subagent_end", "thread_id": thread_id,
+                                "subagent_name": sub_name, "content": summary[:2000],
+                                "status": subagent_result.get("status", "success") if subagent_result else "done",
+                                "subagent_result": subagent_result,
+                                "duration_ms": (
+                                    int((datetime.now(timezone.utc) - datetime.fromisoformat(subagent_result["started_at"])).total_seconds() * 1000)
+                                    if subagent_result and subagent_result.get("started_at") else None
+                                ),
+                            })
+                        elif tool_name not in ("task", "Agent"):
+                            output_str = ""
+                            if hasattr(tool_output, "content"):
+                                output_str = str(tool_output.content)
+                            elif isinstance(tool_output, str):
+                                output_str = tool_output
+                            else:
+                                output_str = str(tool_output)
+                            await sse_queue.put({
+                                "type": "tool_result", "thread_id": thread_id,
+                                "tool_name": tool_name, "tool_result": output_str[:2000],
+                            })
+
+                    # ── Root graph completion ──
+                    elif kind == "on_chain_end" and evt_name == "LangGraph":
+                        result: Any = evt_data.get("output")
+                        if isinstance(result, dict):
+                            final_state = result
+
+                # ── Post-stream ──
+                if _collected_token_usage and self.observability:
+                    self.observability.log_token_usage(trace_id, "", _collected_token_usage)
+
+                suggested_title = final_state.get("suggested_title")
+                if suggested_title and not _title_emitted:
+                    _title_emitted = True
+                    await sse_queue.put({
+                        "type": "title_update", "thread_id": thread_id, "title": suggested_title,
+                    })
+
+                pending_clarification = get_pending_clarification(
+                    final_state.get("messages", [])
+                )
+                if pending_clarification:
+                    if self._run_store:
+                        completion = journal.get_completion_data() if journal else {}
+                        await self._run_store.update_run_completion(run_id, "pending", **completion)
+                    await sse_queue.put({
+                        "type": "clarification", "request": pending_clarification, "thread_id": thread_id,
+                    })
+                    if self.observability:
+                        self.observability.finalize_trace(trace_id, "suspended")
+                    await sse_queue.put({"__sentinel__": True, "__clarification__": True})
+                    return
+
+                # ── Run success ──
+                if self._run_store:
+                    completion = journal.get_completion_data() if journal else {}
+                    await self._run_store.update_run_completion(run_id, "success", **completion)
+                await sse_queue.put({"type": "finished", "thread_id": thread_id, "run_id": run_id})
+                if self.observability:
+                    self.observability.finalize_trace(trace_id, "success")
+                await sse_queue.put({"__sentinel__": True})
+
+            except asyncio.CancelledError:
+                interrupted = True
+                if self._run_store:
+                    await self._run_store.update_status(run_id, "interrupted")
+                await sse_queue.put({"type": "error", "content": "执行已取消", "thread_id": thread_id})
+                if self.observability:
+                    self.observability.finalize_trace(trace_id, "cancelled")
+                await sse_queue.put({"__sentinel__": True})
+            except Exception as exc:
+                interrupted = True
+                logger.exception("Execution failed for thread=%s", thread_id)
+                if self._run_store:
+                    await self._run_store.update_status(run_id, "error", error=str(exc))
+                await sse_queue.put({"type": "error", "content": str(exc), "thread_id": thread_id})
+                if self.observability:
+                    self.observability.finalize_trace(trace_id, "error")
+                await sse_queue.put({"__sentinel__": True})
+            finally:
+                _inner_drainer.cancel()
+                try:
+                    await _inner_drainer
+                except asyncio.CancelledError:
+                    pass
+                # 排空残留 subagent 事件
                 while not _subagent_event_queue.empty():
                     try:
                         sub_event = _subagent_event_queue.get_nowait()
                         if sub_event:
-                            yield sub_event
+                            await sse_queue.put(sub_event)
                     except asyncio.QueueEmpty:
                         break
+                if journal:
+                    await journal.flush()
 
-                kind = event["event"]
-                evt_name = event.get("name", "")
-                evt_data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
+        agent_task = asyncio.create_task(_run_agent())
+        self._active_runs[thread_id]["agent_task"] = agent_task
+        self._active_runs[thread_id]["sse_queue"] = sse_queue
 
-                # ── 过滤子代理内部事件 ──
-                # LangChain 回调继承导致子代理的工具调用/思考被外层
-                # astream_events 捕获。通过 tags 中的 "subagent:" 前缀
-                # 识别并跳过，避免在主会话中重复显示。
-                _event_tags: list[str] = event.get("tags", []) or []
-                if any(t.startswith("subagent:") for t in _event_tags):
-                    continue
+        try:
+            while True:
+                event = await sse_queue.get()
+                if event.pop("__sentinel__", False):
+                    _has_clarification = event.pop("__clarification__", False)
+                    break
+                try:
+                    yield event
+                except (GeneratorExit, asyncio.CancelledError):
+                    _client_disconnected = True
+                    # agent_task 继续后台执行, 不再 yield 但仍从队列消费
+                    while True:
+                        evt = await sse_queue.get()
+                        if evt.pop("__sentinel__", False):
+                            break
 
-                # ── Token-level streaming ──────────────────────────
-                if kind == "on_chat_model_stream":
-                    chunk: Any = evt_data.get("chunk")
-                    if chunk is None:
-                        continue
-
-                    # ── 思考过程（Qwen3 / DeepSeek reasoning_content）──
-                    reasoning = (
-                        getattr(chunk, "reasoning_content", None)
-                        or getattr(chunk, "additional_kwargs", {}).get("reasoning_content", "")
-                    )
-                    if reasoning and isinstance(reasoning, str):
-                        yield {
-                            "type": "thinking",
-                            "content": reasoning,
-                            "thread_id": thread_id,
-                        }
-
-                    content = getattr(chunk, "content", "")
-                    if not content:
-                        continue
-                    # content may be str or list[dict]
-                    if isinstance(content, list):
-                        content = "".join(
-                            c.get("text", "") if isinstance(c, dict) else str(c)
-                            for c in content
-                        )
-                    if content:
-                        yield {
-                            "type": "message",
-                            "content": str(content),
-                            "thread_id": thread_id,
-                        }
-
-                # ── Token usage (per LLM call) ─────────────────────
-                elif kind == "on_chat_model_end":
-                    output: Any = evt_data.get("output")
-                    if output is None:
-                        continue
-                    usage_meta = (
-                        getattr(output, "usage_metadata", None)
-                        or getattr(output, "response_metadata", {}).get("token_usage", {})
-                    )
-                    if usage_meta:
-                        usage = TokenUsage(
-                            prompt_tokens=usage_meta.get("input_tokens", 0),
-                            completion_tokens=usage_meta.get("output_tokens", 0),
-                            total_tokens=usage_meta.get("total_tokens", 0),
-                            cost_usd=0,
-                        )
-                        _collected_token_usage = usage
-                        yield {
-                            "type": "token_usage",
-                            "thread_id": thread_id,
-                            "tokens": usage.model_dump(),
-                        }
-
-                # ── Tool start ─────────────────────────────────────
-                elif kind == "on_tool_start":
-                    tool_name = evt_name  # tool name == event name
-
-                    # ── Skill evolution counter (per-thread, local var) ──
-                    _skill_iters += 1
-                    if tool_name == "skill_manage":
-                        _skill_iters = 0
-
-                    tool_input: Any = evt_data.get("input", {})
-                    run_id: str = event.get("run_id", "")
-
-                    # Detect SubAgent dispatch (via ``task`` or ``Agent`` tool)
-                    if tool_name in ("task", "Agent") and isinstance(tool_input, dict):
-                        sub_name = tool_input.get("name") or tool_input.get("agent_name", "unknown")
-                        active_subagents[run_id] = str(sub_name)
-                        # ── 查找 SubAgent 配置获取 max_turns ──
-                        _max_turns = 50
-                        if self.subagent_manager is not None:
-                            _cfg = self.subagent_manager.get(str(sub_name))
-                            if _cfg is not None:
-                                _max_turns = getattr(_cfg, "max_turns", 50)
-                        yield {
-                            "type": "subagent_start",
-                            "thread_id": thread_id,
-                            "subagent_name": str(sub_name),
-                            "instruction": str(tool_input.get("instruction", "")),
-                            "context": str(tool_input.get("context", "")),
-                            "max_turns": _max_turns,
-                        }
-                    elif tool_name not in ("task", "Agent"):
-                        yield {
-                            "type": "tool_call",
-                            "thread_id": thread_id,
-                            "tool_name": tool_name,
-                            "tool_args": tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)},
-                        }
-
-                # ── Tool end ───────────────────────────────────────
-                elif kind == "on_tool_end":
-                    tool_name = evt_name
-                    run_id: str = event.get("run_id", "")
-                    tool_output: Any = evt_data.get("output", "")
-
-                    if tool_name in ("task", "Agent"):
-                        # SubAgent completion
-                        sub_name = active_subagents.pop(run_id, "unknown")
-                        # ── 从 SubagentManager 获取完整结果 (含 ai_messages) ──
-                        # task 工具返回值现在只含 output 文本，内部细节通过
-                        # Manager.pop_last_result() 获取，避免数据泄露到 Lead Agent。
-                        subagent_result: dict[str, Any] | None = None
-                        output_str = ""
-                        if hasattr(tool_output, "content"):
-                            output_str = str(tool_output.content)
-                        elif isinstance(tool_output, str):
-                            output_str = tool_output
-                        if self.subagent_manager is not None:
-                            full_result = self.subagent_manager.pop_last_result(sub_name)
-                            if full_result is not None:
-                                subagent_result = full_result.model_dump()
-                        # Build a clean summary for the card content
-                        summary = output_str[:2000] if output_str else ""
-                        if subagent_result:
-                            if not summary:
-                                summary = subagent_result.get("output", "") or ""
-                            if subagent_result.get("error"):
-                                summary = f"[{subagent_result['status']}] {subagent_result['error']}"
-                        yield {
-                            "type": "subagent_end",
-                            "thread_id": thread_id,
-                            "subagent_name": sub_name,
-                            "content": summary[:2000],
-                            "status": subagent_result.get("status", "success") if subagent_result else "done",
-                            "subagent_result": subagent_result,
-                            "duration_ms": (
-                                int((datetime.now(timezone.utc) - datetime.fromisoformat(subagent_result["started_at"])).total_seconds() * 1000)
-                                if subagent_result and subagent_result.get("started_at")
-                                else None
-                            ),
-                        }
-                    elif tool_name not in ("task", "Agent"):
-                        output_str = ""
-                        if hasattr(tool_output, "content"):
-                            output_str = str(tool_output.content)
-                        elif isinstance(tool_output, str):
-                            output_str = tool_output
-                        else:
-                            output_str = str(tool_output)
-                        yield {
-                            "type": "tool_result",
-                            "thread_id": thread_id,
-                            "tool_name": tool_name,
-                            "tool_result": output_str[:2000],  # cap for UI
-                        }
-
-                # ── Root graph completion ──────────────────────────
-                elif kind == "on_chain_end" and evt_name == "LangGraph":
-                    result: Any = evt_data.get("output")
-                    if isinstance(result, dict):
-                        final_state = result
-
-            # ── Post-stream: middleware-injected state fields ──────
-            # After astream_events completes, final_state contains
-            # the full HarnessState with middleware-modified fields.
-            # State is automatically checkpointed by LangGraph — no manual
-            # save to _active_runs needed.
-
-            # Log aggregated token usage
-            if _collected_token_usage and self.observability:
-                self.observability.log_token_usage(trace_id, "", _collected_token_usage)
-
-            # 标题已作为 HarnessState 字段被 checkpoint 持久化
-            suggested_title = final_state.get("suggested_title")
-            if suggested_title and not _title_emitted:
-                _title_emitted = True
-                yield {
-                    "type": "title_update",
-                    "thread_id": thread_id,
-                    "title": suggested_title,
-                }
-
-            # Emit pending clarification if the last non-human message is an
-            # ask_clarification ToolMessage. This follows DeerFlow's message-based
-            # state management and avoids a custom pending_clarification state key.
-            pending_clarification = get_pending_clarification(
-                final_state.get("messages", [])
-            )
-            if pending_clarification:
-                # Write run as suspended (awaiting clarification)
-                if self._run_store:
-                    completion = journal.get_completion_data() if journal else {}
-                    await self._run_store.update_run_completion(
-                        run_id, "pending", **completion,
-                    )
-                yield {
-                    "type": "clarification",
-                    "request": pending_clarification,
-                    "thread_id": thread_id,
-                }
-                if self.observability:
-                    self.observability.finalize_trace(trace_id, "suspended")
-                return
-
-            # ── Run success ──
-            if self._run_store:
-                completion = journal.get_completion_data() if journal else {}
-                await self._run_store.update_run_completion(
-                    run_id, "success", **completion,
-                )
-
-            # Emit finished
-            yield {"type": "finished", "thread_id": thread_id, "run_id": run_id}
-            if self.observability:
-                self.observability.finalize_trace(trace_id, "success")
-
+        except GeneratorExit:
+            _client_disconnected = True
         except asyncio.CancelledError:
-            interrupted = True
-            if self._run_store:
-                await self._run_store.update_status(run_id, "interrupted")
-            yield {"type": "error", "content": "执行已取消", "thread_id": thread_id}
-            if self.observability:
-                self.observability.finalize_trace(trace_id, "cancelled")
+            _client_disconnected = True
         except Exception as exc:
             interrupted = True
-            logger.exception("Execution failed for thread=%s", thread_id)
-            logger.exception("Execution failed for thread=%s", thread_id)
+            logger.exception("SSE streaming failed for thread=%s", thread_id)
             if self._run_store:
                 await self._run_store.update_status(run_id, "error", error=str(exc))
             yield {"type": "error", "content": str(exc), "thread_id": thread_id}
             if self.observability:
                 self.observability.finalize_trace(trace_id, "error")
         finally:
-            # ── 停止 subagent 流 drainer ──
-            drainer_task.cancel()
-            try:
-                await drainer_task
-            except asyncio.CancelledError:
-                pass
-            # 排空 subagent event queue 中的残留事件
-            while not _subagent_event_queue.empty():
-                try:
-                    sub_event = _subagent_event_queue.get_nowait()
-                    if sub_event:
-                        yield sub_event
-                except asyncio.QueueEmpty:
-                    break
-
-            if journal:
-                await journal.flush()
-            # ── 清理中间件线程状态（修复 #9 字典泄漏） ──
-            has_pending_clarification = get_pending_clarification(
-                final_state.get("messages", [])
-            ) is not None if final_state else False
-            if not has_pending_clarification:
-                self._cleanup_middleware_state(thread_id)
-
-            # ── 后台技能 review (不阻塞用户) ──
-            # 触发条件: 累计 N 次工具调用, 回合正常结束, 有对话内容
-            if (
-                self._skill_nudge_interval > 0
-                and _skill_iters >= self._skill_nudge_interval
-                and final_state
-                and not interrupted
-            ):
-                final_messages = final_state.get("messages", [])
-                if final_messages:
-                    try:
-                        from harness.skills.evolution.review_fork import (
-                            spawn_background_review,
-                        )
-
-                        # ── 收集父 Agent 上下文 ──
-                        _enabled_skills = self.skill_storage.load_skills(
-                            enabled_only=True, user_id=user_id,
-                        ) if self.skill_storage else []
-                        _memory_context = _get_memory_context(user_id)
-
-                        _task = asyncio.create_task(
-                            spawn_background_review(
-                                messages_snapshot=list(final_messages),
-                                skill_storage=self.skill_storage,
-                                llm_factory=self._init_llm,
-                                model=_review_model,
-                                user_id=user_id,
-                                enabled_skills=_enabled_skills,
-                                memory_context=_memory_context,
-                            )
-                        )
-                        logger.info(
-                            "Background skill review scheduled (thread=%s, iters=%d, messages=%d)",
-                            thread_id, _skill_iters, len(final_messages),
-                        )
-                    except Exception:
-                        pass  # best-effort
-                # 触发 review 后归零 — 下一轮重新开始累积
-                self._thread_skill_iters[thread_id] = 0
+            if _client_disconnected:
+                # agent_task 仍在后台运行 → 注册完成回调自动清理
+                def _on_agent_done(t: asyncio.Task) -> None:
+                    self._active_runs.pop(thread_id, None)
+                    self._thread_skill_iters.pop(thread_id, None)
+                    self._cleanup_middleware_state(thread_id)
+                agent_task.add_done_callback(_on_agent_done)
             else:
-                # 未触发 — 保留当前计数, 跨轮累积
-                self._thread_skill_iters[thread_id] = _skill_iters
+                # 正常完成 → 等待 agent_task 结束, 然后清理
+                if not agent_task.done():
+                    await agent_task
+                drainer_task_ref = None  # drainer 已在 _run_agent 内管理
+                has_pending_clarification = get_pending_clarification(
+                    final_state.get("messages", [])
+                ) is not None if final_state else False
+                if not has_pending_clarification:
+                    self._cleanup_middleware_state(thread_id)
+                # ── 后台技能 review ──
+                if (
+                    self._skill_nudge_interval > 0
+                    and _skill_iters >= self._skill_nudge_interval
+                    and final_state
+                    and not interrupted
+                ):
+                    final_messages = final_state.get("messages", [])
+                    if final_messages:
+                        try:
+                            from harness.skills.evolution.review_fork import spawn_background_review
+                            _enabled_skills = self.skill_storage.load_skills(
+                                enabled_only=True, user_id=user_id,
+                            ) if self.skill_storage else []
+                            _memory_context = _get_memory_context(user_id)
+                            asyncio.create_task(
+                                spawn_background_review(
+                                    messages_snapshot=list(final_messages),
+                                    skill_storage=self.skill_storage,
+                                    llm_factory=self._init_llm,
+                                    model=_review_model,
+                                    user_id=user_id,
+                                    enabled_skills=_enabled_skills,
+                                    memory_context=_memory_context,
+                                )
+                            )
+                            logger.info(
+                                "Background skill review scheduled (thread=%s, iters=%d)",
+                                thread_id, _skill_iters,
+                            )
+                        except Exception:
+                            pass
+                    self._thread_skill_iters[thread_id] = 0
+                else:
+                    self._thread_skill_iters[thread_id] = _skill_iters
+                if not has_pending_clarification:
+                    self._active_runs.pop(thread_id, None)
+                    self._thread_skill_iters.pop(thread_id, None)  # 清理计数器
 
-            # 正常完成（无待处理 clarification）时清理运行期标记
-            # 有待处理 clarification 时保留标记，以便 stop() 可取消
-            if not has_pending_clarification:
-                self._active_runs.pop(thread_id, None)
-                self._thread_skill_iters.pop(thread_id, None)  # 清理计数器
 
     async def respond_to_clarification(
         self,

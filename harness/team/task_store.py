@@ -373,11 +373,16 @@ class TeamTaskStore:
         return cycles
 
     async def cancel_stale_tasks(self) -> list[TeamTask]:
-        """取消上一轮运行遗留的非终态团队任务 (替代 clear_all 的全板清空).
+        """处理上一轮运行遗留的非终态团队任务.
 
-        只处理 origin == "team" 且非终态的任务 — 它们是已中断的上一轮运行的产物;
-        用户手工创建 (origin == "user") 的任务保留, 会被本轮团队正常调度执行.
+        策略 (逐任务):
+        - IN_PROGRESS + retry_count < max_retries → INTERRUPTED (保留 assigned_agent, 等待原成员恢复)
+        - IN_PROGRESS + retry_count >= max_retries → CANCELLED (已达重试上限)
+        - PENDING → 保留 (Lead 的规划成果不丢弃, 本轮可正常调度)
+
+        用户手工创建 (origin == "user") 的任务不受影响.
         """
+        interrupted: list[TeamTask] = []
         cancelled: list[TeamTask] = []
 
         with open(self._file, "a+") as f:
@@ -386,20 +391,34 @@ class TeamTaskStore:
                 tasks = self._load_locked()
                 changed = False
                 for t in tasks:
-                    if t.origin == "team" and not t.status.is_terminal:
-                        t.status = TeamTaskStatus.CANCELLED
-                        t.error = "上次团队运行中断遗留"
-                        t.updated_at = _now_iso()
-                        cancelled.append(t)
+                    if t.origin != "team" or t.status.is_terminal:
+                        continue
+                    if t.status == TeamTaskStatus.IN_PROGRESS:
+                        t.retry_count += 1
+                        if t.retry_count < t.max_retries:
+                            t.status = TeamTaskStatus.INTERRUPTED
+                            t.error = "上次团队运行中断, 等待原成员恢复"
+                            t.updated_at = _now_iso()
+                            interrupted.append(t)
+                        else:
+                            t.status = TeamTaskStatus.CANCELLED
+                            t.error = f"中断恢复失败: 已达最大重试次数 ({t.max_retries})"
+                            t.updated_at = _now_iso()
+                            cancelled.append(t)
                         changed = True
+                    # PENDING 任务保留不动 — Lead 的规划成果
                 if changed:
                     self._save_locked(tasks)
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
+        for t in interrupted:
+            logger.info("Stale task interrupted (retry %d/%d): id=%s title=%s",
+                        t.retry_count, t.max_retries, t.id, t.title[:40])
         for t in cancelled:
-            logger.info("Stale team task cancelled: id=%s title=%s", t.id, t.title[:40])
-        return cancelled
+            logger.warning("Stale task cancelled (retries exhausted): id=%s title=%s",
+                           t.id, t.title[:40])
+        return interrupted + cancelled
 
     async def clear_all(self) -> int:
         """清空所有任务（每次新 Team 运行时调用，避免旧结果混入新对话）。返回清除的任务数。"""

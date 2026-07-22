@@ -402,6 +402,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       // ── Agent Team 事件 ──────────────────────────────────────────
+      case "message_injected": {
+        get().addMessage({
+          role: "system",
+          content: `📨 ${event.content || "消息已注入给 Lead"}`,
+          msgType: "text",
+          metadata: { event_type: "message_injected", thread_id: event.thread_id },
+          tokenCount: 0,
+        });
+        break;
+      }
+
       case "team_start": {
         useTeamStore.getState().setRunning(true);
         if (event.members && event.members.length > 0) {

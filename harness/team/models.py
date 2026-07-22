@@ -14,9 +14,11 @@ from pydantic import BaseModel, Field
 
 
 class TeamTaskStatus(str, Enum):
-    """Team 任务状态 — 极简状态机，映射 A2A 标准 Task 生命周期.
+    """Team 任务状态.
 
     pending → in_progress → completed / failed / cancelled.
+    crash 恢复: in_progress → interrupted → 原成员恢复 or 回池 PENDING.
+
     A2A 映射: submitted=pending, working=in_progress, completed=completed,
               failed=failed, canceled=cancelled.
     """
@@ -26,6 +28,7 @@ class TeamTaskStatus(str, Enum):
     COMPLETED = "completed"        # 已完成 (A2A: completed)
     FAILED = "failed"              # 执行失败 (A2A: failed)
     CANCELLED = "cancelled"        # 已取消 (A2A: canceled)
+    INTERRUPTED = "interrupted"    # 成员中断 (crash 恢复), 保留 assigned_agent + checkpoint
 
     @property
     def is_terminal(self) -> bool:

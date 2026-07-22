@@ -653,6 +653,11 @@ class TeamOrchestrator:
                         if propagated:
                             self._last_progress_at = _now_iso()
 
+                        # ── 恢复中断任务: crash 后原成员恢复 → IN_PROGRESS ──
+                        resumed = await self._resume_interrupted_tasks()
+                        if resumed > 0:
+                            self._last_progress_at = _now_iso()
+
                         # ── 事件驱动: 等待进展, 不再 sleep() ──
                         dispatched = await self._dispatch_ready_tasks()
 
@@ -747,6 +752,82 @@ class TeamOrchestrator:
                 "status": status,
                 "total_rounds": self._round,
             }
+
+    # ------------------------------------------------------------------
+    # Interrupted task recovery
+    # ------------------------------------------------------------------
+
+    async def _resume_interrupted_tasks(self) -> int:
+        """恢复 crash 后遗留的 INTERRUPTED 任务给原成员.
+
+        每轮 dispatch 前调用, 策略:
+        - 原成员 IDLE → assign_task() → IN_PROGRESS (checkpoint 自动恢复)
+        - 原成员不可用 (不在 team / FAILED) → 回池 PENDING (清除 assigned_agent)
+        - 原成员正忙 (WORKING) → 跳过, 留待下轮
+
+        返回成功恢复的任务数.
+        """
+        interrupted_tasks = await self.task_store.list_tasks(
+            status=TeamTaskStatus.INTERRUPTED,
+        )
+        if not interrupted_tasks:
+            return 0
+
+        resumed = 0
+        for task in interrupted_tasks:
+            agent_name = task.assigned_agent
+            tm = self.teammates.get(agent_name) if agent_name else None
+
+            # 原成员不可用 → 回池
+            if tm is None or tm.status == TeammateStatus.FAILED:
+                await self.task_store.update_task(
+                    task.id,
+                    assigned_agent=None,
+                    status=TeamTaskStatus.PENDING,
+                    error=f"原成员 '{agent_name}' 不可用, 任务回池重新分配",
+                )
+                logger.warning(
+                    "Interrupted task '%s' returned to pool (member '%s' unavailable)",
+                    task.id, agent_name,
+                )
+                self._progress_event.set()
+                await self._event_queue.put(await self._emit_task_update(task))
+                continue
+
+            # 原成员正忙 → 跳过
+            if tm.status == TeammateStatus.WORKING:
+                continue
+
+            # 原成员 IDLE → 恢复
+            if tm.status == TeammateStatus.IDLE:
+                await self.task_store.update_task(
+                    task.id, status=TeamTaskStatus.IN_PROGRESS,
+                )
+                accepted = await tm.assign_task(task)
+                if accepted:
+                    resumed += 1
+                    logger.info(
+                        "Interrupted task '%s' resumed by '%s' (retry %d/%d)",
+                        task.id, agent_name, task.retry_count, task.max_retries,
+                    )
+                    self._progress_event.set()
+                    await self._event_queue.put(await self._emit_task_update(task))
+                    await self._event_queue.put(await self._emit_member_status(
+                        agent_name, "busy", task_id=task.id, task_title=task.title))
+                else:
+                    # 罕见: 成员拒绝 → 回池
+                    await self.task_store.update_task(
+                        task.id, assigned_agent=None,
+                        status=TeamTaskStatus.PENDING,
+                        error=f"成员 '{agent_name}' 拒绝恢复中断任务",
+                    )
+                    logger.warning(
+                        "Interrupted task '%s': '%s' rejected resume, returned to pool",
+                        task.id, agent_name,
+                    )
+                    self._progress_event.set()
+
+        return resumed
 
     # ------------------------------------------------------------------
     # Dispatch

@@ -77,7 +77,8 @@ export type SSEEventType =
   // ── Agent Team 事件 ──
   | "team_start" | "team_end" | "team_status"
   | "team_task_update" | "team_message" | "member_status"
-  | "team_error" | "team_degrade";
+  | "team_error" | "team_degrade"
+  | "message_injected";
 
 export interface SSEEvent {
   type: SSEEventType;

@@ -41,6 +41,7 @@ class TestModels:
         assert TeamTaskStatus.CANCELLED.is_terminal is True
         assert TeamTaskStatus.PENDING.is_terminal is False
         assert TeamTaskStatus.IN_PROGRESS.is_terminal is False
+        assert TeamTaskStatus.INTERRUPTED.is_terminal is False  # crash 恢复中, 非终态
 
     def test_request_status_fsm(self):
         from harness.team.models import RequestStatus
