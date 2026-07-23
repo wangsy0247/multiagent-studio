@@ -261,13 +261,16 @@ class OpenSandboxProvider(SandboxProvider):
             ),
         ]
 
-        # ── Skills: 单一卷 /mnt/skills → data_root/skills/ ──
-        # builtin/ 是实际文件副本 (symlink 在 Docker/WSL2 跨盘场景不可靠),
-        # my/ 是 symlink → 用户私有技能 (目标在 WSL home 下, Docker 可访问).
+        # ── Skills ──
+        # builtin/ → 实际文件副本 (sync_builtin_skills).
+        # my/      → 用户私有技能, 独立挂载 (不能用 symlink, 因为:
+        #            symlink 的绝对路径目标在容器内不存在, Docker 内核在
+        #            容器命名空间中解析 symlink → broken symlink → 404).
         skills_root = get_skills_root()
         if skills_root.exists():
             from harness.config.paths import ensure_user_skills_symlink, sync_builtin_skills
             sync_builtin_skills(skills_root)
+            # symlink 仍然维护, 供 LocalSandbox (已修复) 和宿主机工具使用
             ensure_user_skills_symlink(
                 skills_root, user_id or "default", _paths=paths,
             )
@@ -276,6 +279,19 @@ class OpenSandboxProvider(SandboxProvider):
                     f"{base_name}-skills",
                     paths.host_skills_dir,
                     VIRTUAL_SKILLS_PATH,
+                    read_only=True,
+                )
+            )
+
+        # 用户私有技能: 独立挂载到 /mnt/skills/my, 绕过 symlink.
+        # Docker 容器内无法跟随指向容器外绝对路径的 symlink, 必须直接挂载.
+        user_skills_dir = paths.user_skills_dir(user_id or "default")
+        if user_skills_dir.exists():
+            volumes.append(
+                _vol(
+                    f"{base_name}-skills-user",
+                    str(user_skills_dir),
+                    f"{VIRTUAL_SKILLS_PATH}/my",
                     read_only=True,
                 )
             )

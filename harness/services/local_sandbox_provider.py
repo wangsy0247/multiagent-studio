@@ -122,6 +122,21 @@ class LocalSandbox(Sandbox):
                 )
             )
 
+        # User-private skills — mounted directly (no symlink indirection).
+        # The general /mnt/skills mapping uses a symlink ``my → users/<uid>/skills/``
+        # to expose user skills, but Path.resolve() follows symlinks, causing the
+        # containment check in resolve_path() to fail with "escapes mounted directory".
+        # A dedicated mapping that points straight at the real directory avoids this.
+        user_skills_dir = paths.user_skills_dir(self.user_id or "default")
+        if user_skills_dir.exists():
+            mappings.append(
+                PathMapping(
+                    container_path=f"{VIRTUAL_SKILLS_PATH}/my",
+                    local_path=user_skills_dir,
+                    read_only=True,
+                )
+            )
+
         return mappings
 
     def _find_mapping(self, virtual_path: str) -> PathMapping | None:

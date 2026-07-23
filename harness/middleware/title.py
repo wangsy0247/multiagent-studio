@@ -1,14 +1,24 @@
 """TitleMiddleware — auto-generate a session title after the first reply.
 
-The generated title is written directly into ``HarnessState.suggested_title``
-and guarded by ``title_generated`` so it is only generated once per thread.
-Because the title is part of the checkpointed state, behaviour is deterministic
-across restarts.
+The generated title is written into ``HarnessState.suggested_title`` and
+guarded by ``title_generated``.  Both fields are checkpoint-persisted.
+
+Ported from DeerFlow with the same single-hook design: ``aafter_model``
+generates the title synchronously and returns it as a state update.  The
+ChatOpenAI instance is cached (lazy-init) so connection pooling keeps
+subsequent calls fast.
+
+Improvements over DeerFlow:
+  - precise trigger — only after the first complete exchange (1 user + ≥1 assistant)
+  - ``_title_emitted_ref`` — cross-run dedup (not needed in DeerFlow because
+    ``state.title`` is checked against a different field name)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import re
 from typing import override
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -23,17 +33,51 @@ logger = logging.getLogger(__name__)
 
 _TITLE_PROMPT = "基于以下对话，生成一个简短的会话标题（5-15字）：\n\n{context}"
 _SUMMARY_MESSAGE_NAME = "summary"
+_FALLBACK_MAX_CHARS = 20
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove ``<think>...</think>`` blocks emitted by reasoning models (DeepSeek-R1, minimax, etc.)."""
+    return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+
+
+def _normalize_content(content: object) -> str:
+    """Recursively extract text from string / list / dict content."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [_normalize_content(item) for item in content]
+        return "\n".join(part for part in parts if part)
+    if isinstance(content, dict):
+        text_value = content.get("text")
+        if isinstance(text_value, str):
+            return text_value
+        nested = content.get("content")
+        if nested is not None:
+            return _normalize_content(nested)
+    return ""
 
 
 class TitleMiddleware(HarnessAgentMiddleware):
     """Generate a short title after the first assistant message.
 
-    The title is stored in ``HarnessState.suggested_title`` and the guard flag
-    ``title_generated`` prevents duplicate generation. Both fields are persisted
-    by the LangGraph checkpointer.
+    Mirrors DeerFlow's ``TitleMiddleware``: a single ``aafter_model`` hook
+    that generates the title synchronously and returns it as a state update.
+    The ``ChatOpenAI`` instance is cached so connection pooling keeps
+    subsequent calls fast.
     """
 
     name = "title"
+
+    def __init__(self, config: dict | None = None) -> None:
+        super().__init__(config)
+        # Cached ChatOpenAI instance — reuse across calls for connection pooling
+        self._llm: ChatOpenAI | None = None
+        self._llm_config_hash: int = 0
+
+    # ------------------------------------------------------------------
+    # hook (single hook — DeerFlow pattern)
+    # ------------------------------------------------------------------
 
     @override
     async def aafter_model(
@@ -41,42 +85,48 @@ class TitleMiddleware(HarnessAgentMiddleware):
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
+        # ── 已生成过 → 跳过 ──
         if state.get("title_generated"):
             return None
 
-        # ── 共享去重标志 (mutable list, 跨多次 graph run 共享) ──
+        # ── 共享去重标志 (跨多次 graph run) ──
         title_emitted_ref: list | None = self.config.get("_title_emitted_ref")
         if title_emitted_ref and title_emitted_ref[0]:
             return None
 
         messages = state.get("messages", [])
-        has_ai = any(isinstance(m, AIMessage) for m in messages)
-        if not has_ai:
+
+        # ── 精确触发: 恰好 1 条用户消息 + ≥1 条助手消息 (第一次完整交换后) ──
+        user_msgs = [
+            m for m in messages
+            if isinstance(m, HumanMessage) and not is_dynamic_context_reminder(m)
+        ]
+        assistant_msgs = [m for m in messages if isinstance(m, AIMessage)]
+        if len(user_msgs) != 1 or len(assistant_msgs) < 1:
             return None
 
-        # 从 state 提取 user_id，用于动态解析 API key
+        user_msg = _normalize_content(user_msgs[0].content)
         user_id = state.get("user_id", "default")
 
+        # ── 生成标题 (LLM → 失败则 fallback) ──
+        title = None
         try:
             title = await self._generate_title(messages, user_id=user_id)
         except Exception as exc:
             logger.warning("Title generation failed: %s", exc)
-            return None
-
         if not title:
-            return None
+            title = self._fallback_title(user_msg)
 
         logger.info("Title generated: %s", title)
 
-        # ── 标记已生成, 防止后续重复 ──
+        # ── 标记已生成 ──
         if title_emitted_ref is not None:
             title_emitted_ref[0] = True
 
-        # ── 回调: 将标题推送到 SSE 事件队列 ──
+        # ── 回调: 推送标题到 SSE ──
         on_title = self.config.get("on_title")
         if on_title is not None:
             try:
-                import asyncio
                 if asyncio.iscoroutinefunction(on_title):
                     await on_title(title)
                 else:
@@ -89,30 +139,115 @@ class TitleMiddleware(HarnessAgentMiddleware):
             "title_generated": True,
         }
 
-    async def _generate_title(self, messages: list, user_id: str = "default") -> str:
-        # 过滤掉动态 context reminder、summary 消息，只保留真实对话
-        context_lines: list[str] = []
-        for m in messages:
-            if is_dynamic_context_reminder(m):
-                continue
-            if not isinstance(m, (HumanMessage, AIMessage)):
-                continue
-            if getattr(m, "name", None) == _SUMMARY_MESSAGE_NAME:
-                continue
-            role = "用户" if isinstance(m, HumanMessage) else "AI"
-            content = str(m.content)[:120]
-            if content.strip():
-                context_lines.append(f"{role}: {content}")
-            if len(context_lines) >= 6:
-                break
+    # ------------------------------------------------------------------
+    # title generation (DeerFlow pattern)
+    # ------------------------------------------------------------------
 
-        if not context_lines:
+    @staticmethod
+    def _is_user_message_for_title(message: object) -> bool:
+        """DeerFlow-compatible user message filter."""
+        return (
+            isinstance(message, HumanMessage)
+            and not is_dynamic_context_reminder(message)
+        )
+
+    @staticmethod
+    def _fallback_title(user_msg: str) -> str:
+        """Truncate the first user message as a fallback title (DeerFlow pattern)."""
+        cleaned = user_msg.strip()
+        if not cleaned:
+            return "新会话"
+        if len(cleaned) > _FALLBACK_MAX_CHARS:
+            return cleaned[:_FALLBACK_MAX_CHARS].rstrip() + "..."
+        return cleaned
+
+    def _build_title_prompt(self, messages: list) -> tuple[str, str]:
+        """Build prompt from first user + last assistant message (DeerFlow pattern).
+
+        Returns (prompt, user_msg) so the caller can use user_msg as fallback.
+        """
+        user_msgs: list[str] = []
+        assistant_msgs: list[str] = []
+        for m in messages:
+            if self._is_user_message_for_title(m):
+                content = _normalize_content(m.content)
+                if content.strip():
+                    user_msgs.append(content)
+            elif isinstance(m, AIMessage):
+                if getattr(m, "name", None) == _SUMMARY_MESSAGE_NAME:
+                    continue
+                content = _normalize_content(m.content)
+                content = _strip_think_tags(content)
+                if content.strip():
+                    assistant_msgs.append(content)
+
+        user_msg = user_msgs[0][:500] if user_msgs else ""
+        assistant_msg = assistant_msgs[-1][:500] if assistant_msgs else ""
+
+        prompt = _TITLE_PROMPT.format(
+            context=f"用户: {user_msg}\nAI: {assistant_msg}"
+        )
+        return prompt, user_msg
+
+    async def _generate_title(self, messages: list, user_id: str = "default") -> str:
+        """Generate title via LLM (DeerFlow pattern — single LLM call)."""
+        prompt, _ = self._build_title_prompt(messages)
+        if not prompt:
             return ""
 
         model_name = self.config.get("title_model", "") or "gpt-4o-mini"
+        api_key, base_url = self._resolve_credentials(user_id)
 
-        # ── 动态解析 api_key / base_url ──
-        # 优先级: 初始化时注入的 config > 用户 L1 配置 > 环境变量
+        import time as _time
+        t0 = _time.monotonic()
+        llm = self._get_llm(api_key, base_url, model_name)
+        t1 = _time.monotonic()
+        logger.info(
+            "Title LLM: model=%s _get_llm=%.2fs (cached=%s)",
+            model_name, t1 - t0, self._llm_config_hash != 0,
+        )
+
+        logger.debug("Title prompt: %s", prompt[:200])
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        t2 = _time.monotonic()
+        logger.info("Title ainvoke took %.2fs (total %.2fs)", t2 - t1, t2 - t0)
+
+        result = _strip_think_tags(str(response.content)).strip().strip('"').strip("'")
+        logger.debug("Title response: %s", result[:100])
+        return result
+
+    # ------------------------------------------------------------------
+    # LLM instance cache
+    # ------------------------------------------------------------------
+
+    def _get_llm(self, api_key: str, base_url: str, model_name: str) -> ChatOpenAI:
+        """Return a cached ``ChatOpenAI``, recreated only when credentials change.
+
+        Reusing the same instance keeps the httpx connection pool warm —
+        subsequent title calls skip the TCP + TLS handshake.
+
+        Configuration matches the main agent's ``_init_llm`` as closely as
+        possible to avoid divergent API behaviour between the two code paths.
+        """
+        config_hash = hash((api_key, base_url, model_name))
+        if self._llm is None or self._llm_config_hash != config_hash:
+            self._llm = ChatOpenAI(
+                model=model_name,
+                temperature=0.2,
+                api_key=api_key,
+                base_url=base_url,
+                request_timeout=30,
+                max_retries=1,
+                extra_body={
+                    "enable_thinking": False,          # DashScope / 通义千问
+                    "thinking": {"type": "disabled"},   # DeepSeek / Anthropic / Claude
+                },
+            )
+            self._llm_config_hash = config_hash
+        return self._llm
+
+    def _resolve_credentials(self, user_id: str) -> tuple[str, str]:
+        """Resolve api_key / base_url (config → L1 user config → env)."""
         api_key = self.config.get("api_key", "")
         base_url = self.config.get("base_url", "")
         if not api_key or not base_url:
@@ -124,29 +259,11 @@ class TitleMiddleware(HarnessAgentMiddleware):
                 base_url = l1.get("base_url", "")
         api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-        logger.info(
-            "Title LLM: model=%s",
-            model_name,
-        )
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=0.2,
-            api_key=api_key,
-            base_url=base_url,
-            request_timeout=60,
-            max_retries=1,
-        )
-        prompt = _TITLE_PROMPT.format(context="\n".join(context_lines))
-        logger.debug("Title prompt: %s", prompt[:200])
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        result = str(response.content).strip()
-        logger.debug("Title response: %s", result[:100])
-        return result
+        return api_key, base_url
 
 
 def _load_l1_config(user_id: str) -> dict:
-    """加载用户 L1 全局配置 (用于运行时动态解析 api_key/base_url)."""
+    """加载用户 L1 全局配置."""
     try:
         from harness.config.config_loader import ConfigLoader
         cfg = ConfigLoader.load_user_global(user_id)
