@@ -74,6 +74,7 @@ export type SSEEventType =
   | "evaluation"
   | "error"
   | "finished"
+  | "context_cleared"
   // ── Agent Team 事件 ──
   | "team_start" | "team_end" | "team_status"
   | "team_task_update" | "team_message" | "member_status"

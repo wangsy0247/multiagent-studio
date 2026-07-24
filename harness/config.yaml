@@ -127,7 +127,7 @@ memory:
   max_facts: 30
   fact_confidence_threshold: 0.9
   injection_enabled: true
-  max_injection_tokens: 500
+  max_injection_tokens: 1000
   # ── mem0 工具配置（与 backend 独立）──
   mem0_tool_enabled: true       # ← 启用 memory_search 工具
   mem0_search_top_k: 5          # 工具查询的 top_k（精准查询不需要太多）
@@ -161,11 +161,15 @@ memory:
 summarization:
   enabled: True
   trigger:
-    - type: tokens
-      value: 20000
+    # - type: tokens
+    #   value: 20000
+    - type: fraction
+      value: 0.7
+    - type: messages
+      valude: 100
   keep:
-    type: messages
-    value: 10
+    type: tokens
+    value: 10000
 
 # --- Title ---
 title:

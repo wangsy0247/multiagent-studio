@@ -17,6 +17,7 @@ runs the full flow itself instead of delegating to ``super()``.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Protocol, override, runtime_checkable
@@ -30,6 +31,7 @@ from langchain_core.messages import (
     RemoveMessage,
     ToolMessage,
 )
+from langchain_core.messages.utils import get_buffer_string
 from langgraph.config import get_config
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
@@ -203,6 +205,10 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
                 larger skill loads are not rescued.
             **kwargs: Passed through to LangChain's SummarizationMiddleware.
         """
+        # summary_prompt=None 会覆盖父类默认值, 导致 _create_summary 里
+        # None.format() 报错 — 显式移除, 让父类回退到 DEFAULT_SUMMARY_PROMPT.
+        if "summary_prompt" in kwargs and kwargs["summary_prompt"] is None:
+            del kwargs["summary_prompt"]
         super().__init__(*args, **kwargs)
         self._before_summarization_hooks = before_summarization or []
         self._preserve_dynamic_context_reminders_enabled = preserve_dynamic_context_reminders
@@ -234,6 +240,62 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
             )
         ]
 
+    @staticmethod
+    def _summary_call_config() -> dict:
+        """摘要 LLM 调用的 config — 继承当前运行的 callbacks.
+
+        父类用 ``config={"metadata": ...}`` 直接调裸模型, 不带 LangChain
+        回调, 导致 Langfuse (CallbackHandler 走 RunnableConfig.callbacks)
+        追踪不到摘要调用。这里从 langgraph 的运行时 config 中取回 callbacks.
+        """
+        config: dict = {"metadata": {"lc_source": "summarization"}}
+        try:
+            rc = get_config()
+            callbacks = rc.get("callbacks") if rc else None
+            if callbacks:
+                config["callbacks"] = callbacks
+        except Exception:
+            pass
+        return config
+
+    @override
+    def _create_summary(self, messages_to_summarize: list) -> str:
+        """同父类逻辑, 但 config 继承运行 callbacks (Langfuse 可见) 且异常写日志."""
+        if not messages_to_summarize:
+            return "No previous conversation history."
+        trimmed = self._trim_messages_for_summary(messages_to_summarize)
+        if not trimmed:
+            return "Previous conversation was too long to summarize."
+        formatted = get_buffer_string(trimmed, format="xml")
+        try:
+            response = self.model.invoke(
+                self.summary_prompt.format(messages=formatted).rstrip(),
+                config=self._summary_call_config(),
+            )
+            return response.text.strip()
+        except Exception as e:
+            logger.exception("Summary generation failed")
+            return f"Error generating summary: {e!s}"
+
+    @override
+    async def _acreate_summary(self, messages_to_summarize: list) -> str:
+        """Async variant — 同 _create_summary."""
+        if not messages_to_summarize:
+            return "No previous conversation history."
+        trimmed = self._trim_messages_for_summary(messages_to_summarize)
+        if not trimmed:
+            return "Previous conversation was too long to summarize."
+        formatted = get_buffer_string(trimmed, format="xml")
+        try:
+            response = await self.model.ainvoke(
+                self.summary_prompt.format(messages=formatted).rstrip(),
+                config=self._summary_call_config(),
+            )
+            return response.text.strip()
+        except Exception as e:
+            logger.exception("Summary generation failed")
+            return f"Error generating summary: {e!s}"
+
     def _maybe_summarize(self, state: AgentState, runtime: Runtime) -> dict | None:
         """Full summarization flow with skill rescue and pre-compression hooks.
 
@@ -260,8 +322,18 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         )
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
 
+        logger.info(
+            "Summarization started: msgs=%d tokens≈%d, compressing=%d preserving=%d",
+            len(messages), total_tokens,
+            len(messages_to_summarize), len(preserved_messages),
+        )
+        _t0 = time.monotonic()
         summary = self._create_summary(messages_to_summarize)
         new_messages = self._build_new_messages(summary)
+        logger.info(
+            "Summarization done in %.1fs: %d msgs -> summary + %d preserved",
+            time.monotonic() - _t0, len(messages), len(preserved_messages),
+        )
 
         return {
             "messages": [
@@ -292,8 +364,65 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         )
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
 
+        logger.info(
+            "Summarization started: msgs=%d tokens≈%d, compressing=%d preserving=%d",
+            len(messages), total_tokens,
+            len(messages_to_summarize), len(preserved_messages),
+        )
+        _t0 = time.monotonic()
         summary = await self._acreate_summary(messages_to_summarize)
         new_messages = self._build_new_messages(summary)
+        logger.info(
+            "Summarization done in %.1fs: %d msgs -> summary + %d preserved",
+            time.monotonic() - _t0, len(messages), len(preserved_messages),
+        )
+
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *new_messages,
+                *preserved_messages,
+            ]
+        }
+
+    async def aforce_summarize(self, messages: list) -> dict | None:
+        """手动触发压缩 (如 /compact 指令): 跳过 _should_summarize 阈值判断.
+
+        复用与 ``_amaybe_summarize`` 相同的管线 (skill rescue + 动态上下文
+        提醒保留 + 独立摘要模型), 但不 fire before_summarization hooks。
+
+        Args:
+            messages: 当前完整消息历史 (不需要 AgentState / Runtime).
+
+        Returns:
+            可传给 ``graph.aupdate_state`` 的 state 更新; 历史太短
+            (cutoff_index <= 0, 即压缩后没有可保留的尾部) 时返回 None.
+        """
+        messages = list(messages)
+        self._ensure_message_ids(messages)
+
+        cutoff_index = self._determine_cutoff_index(messages)
+        if cutoff_index <= 0:
+            return None
+
+        messages_to_summarize, preserved_messages = self._partition_with_skill_rescue(
+            messages, cutoff_index
+        )
+        messages_to_summarize, preserved_messages = self._preserve_dynamic_context_reminders(
+            messages_to_summarize, preserved_messages
+        )
+
+        logger.info(
+            "Manual summarization (/compact) started: msgs=%d, compressing=%d preserving=%d",
+            len(messages), len(messages_to_summarize), len(preserved_messages),
+        )
+        _t0 = time.monotonic()
+        summary = await self._acreate_summary(messages_to_summarize)
+        new_messages = self._build_new_messages(summary)
+        logger.info(
+            "Manual summarization (/compact) done in %.1fs: %d msgs -> summary + %d preserved",
+            time.monotonic() - _t0, len(messages), len(preserved_messages),
+        )
 
         return {
             "messages": [

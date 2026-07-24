@@ -64,6 +64,9 @@ def filter_messages_for_memory(messages: list[Any]) -> list[Any]:
         msg_type = getattr(msg, "type", None)
 
         if msg_type == "human":
+            # 压缩产生的摘要消息 (name="summary") 不是真实用户发言, 不进记忆
+            if getattr(msg, "name", None) == "summary":
+                continue
             content_str = extract_message_text(msg)
             if "<uploaded_files>" in content_str:
                 stripped = _UPLOAD_BLOCK_RE.sub("", content_str).strip()

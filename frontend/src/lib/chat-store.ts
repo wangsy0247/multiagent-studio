@@ -552,6 +552,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         }
         break;
 
+      // ── /clear 指令: 上下文已清空, 同步清空本地历史显示 ──
+      case "context_cleared": {
+        const clearedTid = s.activeThreadId;
+        set({
+          messages: [],
+          todos: [],
+          tokenUsage: null,
+          pendingClarification: null,
+          _streamingMessageId: null,
+          _streamingThinkingId: null,
+          ...(clearedTid
+            ? { threadMessages: { ...s.threadMessages, [clearedTid]: [] } }
+            : {}),
+        });
+        break;
+      }
+
       case "finished":
         set({
           isStreaming: false,

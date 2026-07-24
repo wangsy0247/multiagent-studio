@@ -78,8 +78,6 @@ def build_teammate_middlewares(
     loop_cfg: dict[str, Any] | None = None,
     # 自定义中间件 (InboxDrain 等)
     custom_middlewares: list[AgentMiddleware] | None = None,
-    # 记忆相关 hook
-    memory_flush_hook: Callable | None = None,
     # 模型配置
     summary_model: str = "",
     memory_model: str = "",
@@ -125,10 +123,9 @@ def build_teammate_middlewares(
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
 
     # [8] Summarization (长运行 teammate 需要上下文压缩)
+    # 不挂 memory_flush_hook: MemoryMiddleware 每轮已增量提交最新交换.
     if summarization_enabled and _has_summarization:
-        hooks = [memory_flush_hook] if memory_flush_hook and memory_enabled else []
         summ_mw = _create_summarization(
-            before_summarization=hooks,
             model_name=summary_model,
             api_key=api_key,
             base_url=base_url,

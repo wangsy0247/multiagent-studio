@@ -40,6 +40,12 @@ _current_req_creds: contextvars.ContextVar[dict[str, str]] = contextvars.Context
 )
 
 
+def parse_slash_command(message: str) -> str | None:
+    """识别聊天输入中的斜杠指令 (目前: /compact, /clear), 容忍大小写与首尾空白."""
+    cmd = (message or "").strip().lower()
+    return cmd if cmd in ("/compact", "/clear") else None
+
+
 def _get_memory_context(user_id: str) -> str:
     """Extract memory facts for *user_id* to pass to the review fork.
 
@@ -215,6 +221,16 @@ class HarnessService(_BaseService):
             self.tool_registry.load_tools_from_config(tool_configs)
             plugin_tools = self.config_manager.get("plugins.tools", [])
             self.tool_registry.load_plugins_from_config(plugin_tools)
+
+        # 2.5 Summarization config — 把 config.yaml 的 trigger/keep 注入中间件单例,
+        # 否则 create_summarization_middleware 读到 trigger=None 永远不会触发压缩.
+        if self.config_manager is not None:
+            from harness.config.summarization_config import (
+                load_summarization_config_from_dict,
+                set_summarization_config,
+            )
+            _summ_raw = self.config_manager.get("summarization")
+            set_summarization_config(load_summarization_config_from_dict(_summ_raw))
 
         # 3. MCP tools
         mcp_path = cfg.mcp_config_path or "./extensions_config.json"
@@ -702,7 +718,7 @@ class HarnessService(_BaseService):
         """Build RunnableConfig with Langfuse callbacks wired in."""
         cfg = RunnableConfig(
             configurable={"thread_id": thread_id},
-            recursion_limit=200,  # 默认 25 不够：11 中间件 + 17 工具时单轮对话 ~50 步
+            recursion_limit=100000,  # 实际不限步数，由 LoopDetectionMiddleware 兜底
         )
         if self.observability and self.observability.enabled and public_key:
             try:
@@ -983,6 +999,19 @@ class HarnessService(_BaseService):
             "base_url": ctx.effective_config.base_url,
             "model": ctx.effective_config.model,
         })
+
+        # ── 斜杠指令: /compact, /clear (不走 agent 执行, team 路由之前拦截) ──
+        cmd = parse_slash_command(message)
+        if cmd is not None:
+            _cmd_config = self._build_config(
+                thread_id, public_key=ctx.effective_config.langfuse_public_key,
+            )
+            async for event in self._handle_slash_command(
+                cmd, thread_id=thread_id, user_id=user_id,
+                ctx=ctx, build_config=_cmd_config,
+            ):
+                yield event
+            return
 
         # ── Team 模式路由 ──
         if mode == "team" and project_id:
@@ -1519,8 +1548,100 @@ class HarnessService(_BaseService):
                     self._thread_skill_iters[thread_id] = _skill_iters
                 if not has_pending_clarification:
                     self._active_runs.pop(thread_id, None)
-                    self._thread_skill_iters.pop(thread_id, None)  # 清理计数器
+                    # 计数器跨轮累积, 不在此清理 — 仅在达标归零 (line 1517) 或
+                    # 客户端断开回调 (line 1472) 时重置.
 
+
+    async def _handle_slash_command(
+        self,
+        cmd: str,
+        *,
+        thread_id: str,
+        user_id: str,
+        ctx: GraphContext,
+        build_config: dict,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """处理 /compact 与 /clear 斜杠指令 (不走 agent 执行)."""
+
+        def _reply(text: str) -> list[dict[str, Any]]:
+            return [
+                {"type": "message", "content": text, "thread_id": thread_id},
+                {"type": "finished", "thread_id": thread_id},
+            ]
+
+        # 活跃运行中禁止操作 (压缩/清空会与正在写入的 checkpoint 冲突)
+        existing = self._active_runs.get(thread_id)
+        if existing and existing.get("agent_task") and not existing["agent_task"].done():
+            for e in _reply("当前任务正在执行中，请先停止或等待完成后再操作。"):
+                yield e
+            return
+
+        if cmd == "/clear":
+            # 只清 checkpoint + 中间件状态, 不删工作区文件 (区别于 delete_thread)
+            if self._checkpointer is not None:
+                try:
+                    await self._checkpointer.adelete_thread(thread_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete checkpoint for thread %s: %s",
+                        thread_id, exc,
+                    )
+            self._cleanup_middleware_state(thread_id)
+            self._thread_skill_iters.pop(thread_id, None)
+            self._active_runs.pop(thread_id, None)
+            logger.info("/clear executed (thread=%s, user=%s)", thread_id, user_id)
+            # 通知中间层 (app_service 清空 DB 消息记录) 与前端 (清空本地历史显示)
+            yield {"type": "context_cleared", "thread_id": thread_id}
+            for e in _reply("上下文已清空。下一轮消息将开始全新会话（工作区文件保留）。"):
+                yield e
+            return
+
+        # /compact — 跳过阈值, 强制对当前历史执行一次摘要压缩
+        try:
+            snapshot = await ctx.graph.aget_state(build_config)
+        except Exception:
+            logger.exception("aget_state failed for /compact (thread=%s)", thread_id)
+            snapshot = None
+        messages = (
+            list(snapshot.values.get("messages", []))
+            if snapshot and snapshot.values else []
+        )
+        if not messages:
+            for e in _reply("当前没有可压缩的上下文。"):
+                yield e
+            return
+
+        from harness.middleware.summarization import SummarizationMiddleware
+        summ_mw = next(
+            (m for m in ctx.middlewares if isinstance(m, SummarizationMiddleware)),
+            None,
+        )
+        if summ_mw is None:
+            for e in _reply("压缩功能未启用（summarization.enabled=false）。"):
+                yield e
+            return
+
+        update = await summ_mw.aforce_summarize(messages)
+        if update is None:
+            for e in _reply("上下文太短，无需压缩。"):
+                yield e
+            return
+
+        await ctx.graph.aupdate_state(build_config, update)
+        after = len(update["messages"]) - 1  # 去掉 RemoveMessage 占位
+        logger.info(
+            "/compact executed (thread=%s, user=%s, %d -> %d messages)",
+            thread_id, user_id, len(messages), after,
+        )
+        # 摘要消息 (name="summary") 对 UI 隐藏且不入 app DB — 在回复中回显,
+        # 同时让 "0.0s 完成" 这类异常 (错误/降级文案) 对用户可自诊断.
+        summary_text = str(getattr(update["messages"][1], "content", "") or "")
+        preview = summary_text[:2000] + ("…" if len(summary_text) > 2000 else "")
+        for e in _reply(
+            f"上下文已压缩：{len(messages)} 条消息 → {after} 条（历史摘要 + 保留尾部）。"
+            f"\n\n{preview}"
+        ):
+            yield e
 
     async def respond_to_clarification(
         self,

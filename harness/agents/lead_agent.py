@@ -808,17 +808,9 @@ def _build_middlewares(
     middlewares.append(ToolErrorHandlingMiddleware({"max_retries": tool_max_retries}))
     middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
     if summarization_enabled:
-        from harness.memory.summarization_hook import memory_flush_hook
-        hooks: list = []
-        if memory_enabled:
-            _mem_enabled = memory_enabled
-            _mem_model = cfg.get("memory_model", "")
-            hooks.append(lambda ev: memory_flush_hook(
-                ev, api_key=api_key, base_url=base_url,
-                model_name=_mem_model, enabled=_mem_enabled,
-            ))
+        # 不再挂 memory_flush_hook: MemoryMiddleware 每轮已增量提交最新交换,
+        # 被压缩的旧消息在其所属轮次就已入队, 无需压缩前抢救.
         summ_mw = create_summarization_middleware(
-            before_summarization=hooks,
             model_name=summary_model,
             api_key=api_key,
             base_url=base_url,

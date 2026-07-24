@@ -14,6 +14,7 @@ from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
 from harness.middleware.base import HarnessAgentMiddleware
+from harness.middleware.dynamic_context import is_dynamic_context_reminder
 from harness.memory.message_processing import (
     detect_correction,
     detect_reinforcement,
@@ -33,8 +34,12 @@ class MemoryMiddleware(HarnessAgentMiddleware):
     """Middleware that queues conversation for memory update after agent execution.
 
     This middleware:
-    1. After each agent execution, queues the conversation for memory update
-    2. Only includes user inputs and final assistant responses (ignores tool calls)
+    1. After each agent execution, queues the latest exchange for memory update
+    2. Only submits the final assistant reply + the user message preceding it —
+       since ``aafter_agent`` fires once per turn, this pair is inherently
+       incremental (no cursor / full-history replay needed). The leading hidden
+       dynamic-context reminder (date/memory injection) is included to give the
+       fact extractor temporal and existing-memory context.
     3. The queue uses debouncing to batch multiple updates together
     4. Memory is updated asynchronously via LLM summarization (file) or mem0.add()
     """
@@ -54,7 +59,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
-        """Queue conversation for memory update after agent completes."""
+        """Queue the latest exchange for memory update after agent completes."""
         # Per-user enabled 优先, 回退到全局 MemoryConfig
         per_user_enabled = self.config.get("memory_enabled", None)
         if per_user_enabled is False:
@@ -77,18 +82,57 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         if not messages:
             return None
 
-        # Filter to only keep user inputs and final assistant responses
+        user_id = state.get("user_id", "")
+
+        # 过滤出用户输入与最终回复 (剥离 tool 往返 / 上传块 / 摘要消息)
         filtered = filter_messages_for_memory(messages)
 
-        user_messages = [m for m in filtered if getattr(m, "type", None) == "human"]
-        assistant_messages = [m for m in filtered if getattr(m, "type", None) == "ai"]
-        if not user_messages or not assistant_messages:
+        # 当前轮次的最终回复 = 最后一条无 tool_calls 的 AI 消息
+        last_ai_idx = next(
+            (i for i in range(len(filtered) - 1, -1, -1)
+             if getattr(filtered[i], "type", None) == "ai"),
+            None,
+        )
+        if last_ai_idx is None:
+            return None
+        last_ai = filtered[last_ai_idx]
+
+        # 被截断 (length / content_filter 等) 的回复不提炼进记忆;
+        # provider 未上报 finish_reason 时 (None) 视为正常完成.
+        finish_reason = (
+            getattr(last_ai, "response_metadata", None) or {}
+        ).get("finish_reason")
+        if finish_reason is not None and finish_reason != "stop":
+            logger.debug(
+                "Skip memory update (thread=%s): finish_reason=%s",
+                thread_id, finish_reason,
+            )
             return None
 
-        correction_detected = detect_correction(filtered)
-        reinforcement_detected = not correction_detected and detect_reinforcement(filtered)
+        # 与最终回复配对的用户消息 = 它之前最近的一条 human
+        last_human = next(
+            (m for m in reversed(filtered[:last_ai_idx])
+             if getattr(m, "type", None) == "human"),
+            None,
+        )
+        if last_human is None:
+            return None
 
-        user_id = state.get("user_id", "")
+        # 第一条隐藏的动态上下文提醒 (日期/记忆注入) 一并提交,
+        # 为事实提取提供时间与已有记忆上下文; 该消息在压缩时由
+        # SummarizationMiddleware._preserve_dynamic_context_reminders 保留.
+        leading: list = []
+        if (
+            filtered
+            and is_dynamic_context_reminder(filtered[0])
+            and filtered[0] is not last_human
+        ):
+            leading.append(filtered[0])
+
+        latest_exchange = [*leading, last_human, last_ai]
+
+        correction_detected = detect_correction(latest_exchange)
+        reinforcement_detected = not correction_detected and detect_reinforcement(latest_exchange)
 
         # 时间 metadata（mem0 backend 用）
         current_time_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -97,7 +141,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         queue = get_memory_queue()
         queue.add(
             thread_id=thread_id,
-            messages=filtered,
+            messages=latest_exchange,
             agent_name=self._agent_name,
             user_id=user_id,
             correction_detected=correction_detected,

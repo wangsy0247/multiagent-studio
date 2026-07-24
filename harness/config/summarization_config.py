@@ -1,8 +1,11 @@
 """Configuration for conversation summarization — adapted from DeerFlow."""
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 ContextSizeType = Literal["fraction", "tokens", "messages"]
 
@@ -47,6 +50,31 @@ class SummarizationConfig(BaseModel):
 
 
 _summarization_config: SummarizationConfig = SummarizationConfig()
+
+
+def load_summarization_config_from_dict(data: dict | None) -> SummarizationConfig:
+    """从 config.yaml 的 summarization 小节构造 SummarizationConfig.
+
+    兼容两种形式:
+      - 嵌套 (config.yaml):  ``trigger: [{type: tokens, value: 20000}]`` /
+        ``keep: {type: messages, value: 10}``
+      - 扁平 (SYSTEM_DEFAULTS / SummarizationGlobalConfig):
+        ``trigger_tokens: 20000`` / ``keep_messages: 10``
+
+    非法输入回退到默认值 (trigger=None, 即不触发).
+    """
+    if not isinstance(data, dict):
+        return SummarizationConfig()
+    payload = {k: v for k, v in data.items() if k in SummarizationConfig.model_fields}
+    if "trigger" not in payload and data.get("trigger_tokens"):
+        payload["trigger"] = {"type": "tokens", "value": data["trigger_tokens"]}
+    if "keep" not in payload and data.get("keep_messages"):
+        payload["keep"] = {"type": "messages", "value": data["keep_messages"]}
+    try:
+        return SummarizationConfig(**payload)
+    except Exception:
+        logger.warning("Invalid summarization config %r, using defaults", data)
+        return SummarizationConfig()
 
 
 def get_summarization_config() -> SummarizationConfig:
