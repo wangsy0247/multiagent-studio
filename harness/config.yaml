@@ -131,6 +131,9 @@ memory:
   # ── mem0 工具配置（与 backend 独立）──
   mem0_tool_enabled: true       # ← 启用 memory_search 工具
   mem0_search_top_k: 5          # 工具查询的 top_k（精准查询不需要太多）
+  # ── 项目记忆 (仅 Team 模式) ──
+  # project_memory_enabled: true
+  # project_memory_root: ""      # 空 = 使用项目的 git root
   # ── 以下 mem0 配置在写入路径和工具查询时使用 ──
   mem0_config:
     vector_store:

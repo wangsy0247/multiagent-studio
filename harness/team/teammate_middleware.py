@@ -88,6 +88,8 @@ def build_teammate_middlewares(
     title_model: str = "gpt-4o-mini",
     title_emitted_ref: list | None = None,  # mutable [bool] 去重标志
     on_title: Callable | None = None,      # async callable(title: str)
+    # ── 项目记忆 (Team 模式) ──
+    project_context: str = "",
 ) -> list[AgentMiddleware]:
     """构建 Teammate 完整中间件链 (17-18 层).
 
@@ -119,8 +121,10 @@ def build_teammate_middlewares(
     # [7] ToolErrorHandling
     middlewares.append(ToolErrorHandlingMiddleware({"max_retries": tool_max_retries}))
 
-    # [7.5] DynamicContext — 所有 teammate (Lead + Member) 注入记忆 + 日期上下文
-    middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
+    # [7.5] DynamicContext — 所有 teammate (Lead + Member) 注入记忆 + 日期 + 项目上下文
+    middlewares.append(DynamicContextMiddleware(
+        agent_name=agent_name, project_context=project_context or None,
+    ))
 
     # [8] Summarization (长运行 teammate 需要上下文压缩)
     # 不挂 memory_flush_hook: MemoryMiddleware 每轮已增量提交最新交换.

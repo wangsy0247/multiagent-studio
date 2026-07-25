@@ -45,6 +45,7 @@ Memory Section Guidelines:
 - workContext: Professional role, company, key projects, main technologies (2-3 sentences)
 - personalContext: Languages, communication preferences, key interests (1-2 sentences). CRITICAL: explicitly note the user's preferred spoken/written language (e.g., "prefers Chinese", "uses English", "mixes Chinese and English"). When the user consistently writes in a particular language, treat this as a high-confidence preference.
 - topOfMind: Multiple ongoing focus areas and priorities (3-5 sentences, detailed paragraph)
+- avoidances: Pet peeves, communication style to avoid, things that annoy the user (1-2 sentences). CRITICAL: if the user explicitly says "don't do X", "stop doing Y", or expresses frustration, record it here.
 
 **History** (Temporal context - rich paragraphs):
 - recentWeeks: Detailed summary of activities in the past few weeks (4-6 sentences or 1-2 paragraphs)
@@ -55,7 +56,9 @@ Memory Section Guidelines:
 - Extract specific, quantifiable details
 - Include proper nouns (company names, project names, technology names)
 - CRITICAL: detect the user's preferred language — if the user consistently writes in Chinese, record as fact: "User prefers communicating in Chinese" with category "preference" and confidence 0.95+
-- Categories: preference, knowledge, context, behavior, goal, correction
+- **Tool & Technique facts**: Record discovered tool quirks, CLI flags that actually work, effective patterns, and pitfalls with their workarounds. Example: "docker commands don't need sudo — user is already in the docker group" → technique, confidence 0.95. These are high-value facts because they prevent the agent from repeating mistakes.
+- **7-day value filter**: Do NOT record facts that will be stale within a week. Task progress ("fixed bug X"), PR numbers, commit SHAs, "Phase N done", temporary file paths, session outcomes — these belong in session history, not memory. Ask yourself: "Will this fact still matter 7 days from now?" Only record it if the answer is yes.
+- Categories: preference, knowledge, context, behavior, goal, correction, technique
 - Confidence levels: 0.9-1.0 explicit, 0.7-0.8 strongly implied, 0.5-0.6 inferred patterns
 
 Output Format (JSON):
@@ -63,7 +66,8 @@ Output Format (JSON):
   "user": {{
     "workContext": {{ "summary": "...", "shouldUpdate": true/false }},
     "personalContext": {{ "summary": "...", "shouldUpdate": true/false }},
-    "topOfMind": {{ "summary": "...", "shouldUpdate": true/false }}
+    "topOfMind": {{ "summary": "...", "shouldUpdate": true/false }},
+    "avoidances": {{ "summary": "...", "shouldUpdate": true/false }}
   }},
   "history": {{
     "recentWeeks": {{ "summary": "...", "shouldUpdate": true/false }},
@@ -78,9 +82,11 @@ Output Format (JSON):
 
 Important Rules:
 - Only set shouldUpdate=true if there's meaningful new information
-- Follow length guidelines: workContext/personalContext are concise, topOfMind and history are detailed
+- Follow length guidelines: workContext/personalContext/avoidances are concise (1-2 sentences), topOfMind and history are detailed
 - Only add facts that are clearly stated (0.9+) or strongly implied (0.7+)
 - Use category "correction" for explicit agent mistakes; assign confidence >= 0.95
+- Use category "technique" for discovered tool quirks, effective patterns, and workarounds; assign confidence >= 0.95 (agent's own experience is authoritative)
+- Apply the 7-day filter: if a fact will be stale in a week, do NOT record it
 - Remove facts that are contradicted by new information
 - IMPORTANT: Do NOT record file upload events in memory.
 - If the memory includes a "_facts_omitted" hint, the full fact store is larger than shown. Only add facts that are genuinely new — the system handles deduplication automatically.
@@ -144,6 +150,9 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
         top_of_mind = user_data.get("topOfMind", {})
         if top_of_mind.get("summary"):
             user_sections.append(f"Current Focus: {top_of_mind['summary']}")
+        avoidances = user_data.get("avoidances", {})
+        if avoidances.get("summary"):
+            user_sections.append(f"Avoid: {avoidances['summary']}")
         if user_sections:
             sections.append("User Context:\n" + "\n".join(f"- {s}" for s in user_sections))
 

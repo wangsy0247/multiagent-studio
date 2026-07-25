@@ -263,7 +263,11 @@ class HarnessService(_BaseService):
         if mem_cfg.backend == "mem0" or mem_cfg.mem0_tool_enabled:
             from harness.memory.mem0_client import get_mem0
             get_mem0()
-        logger.info("Memory system initialized: backend=%s", mem_cfg.backend)
+        logger.info(
+            "Memory system initialized: backend=%s project_memory=%s",
+            mem_cfg.backend,
+            "enabled" if mem_cfg.project_memory_enabled else "disabled",
+        )
 
         # 5. Observability — bootstrap_eff 驱动 (基础设施)
         langfuse_cfg = {
@@ -470,7 +474,7 @@ class HarnessService(_BaseService):
         )
 
         # 3. 创建 per-user middlewares
-        middlewares = self._build_middlewares_for(eff, user_id)
+        middlewares = self._build_middlewares_for(eff, user_id, agent_name=agent_name)
 
         # 4. 设置 contextvar — 子 agent 通过 _init_llm 读取当前用户凭证和模型
         _current_req_creds.set({
@@ -513,9 +517,9 @@ class HarnessService(_BaseService):
         )
 
     def _build_middlewares_for(
-        self, eff: EffectiveConfig, user_id: str,
+        self, eff: EffectiveConfig, user_id: str, *, agent_name: str | None = None,
     ) -> list:
-        """根据 EffectiveConfig 构建中间件列表 (per-user)."""
+        """根据 EffectiveConfig 构建中间件列表 (per-user + per-agent)."""
         config = RunnableConfig(configurable={
             "workspace_root": self.config.workspace_root,
             "is_plan_mode": eff.subagent_enabled,
@@ -538,7 +542,7 @@ class HarnessService(_BaseService):
         mw_list = build_lead_middlewares(
             config,
             config_manager=self.config_manager,
-            agent_name=None,
+            agent_name=agent_name,
         )
         logger.info("Built %d middlewares for user=%s", len(mw_list), user_id)
         return mw_list

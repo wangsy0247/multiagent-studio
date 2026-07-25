@@ -95,6 +95,20 @@ class MemoryConfig(BaseModel):
         ),
     )
 
+    # ── 项目记忆 (仅 Team 模式) ──
+    project_memory_enabled: bool = Field(
+        default=True,
+        description="Whether to load project memory (description.md) in team mode",
+    )
+    project_memory_root: str = Field(
+        default="",
+        description=(
+            "Root directory for project memory files. "
+            "When empty, defaults to the project's git root. "
+            "Only used in team mode (single-agent mode does not load project memory)."
+        ),
+    )
+
 
 # Global configuration instance
 _memory_config: MemoryConfig = MemoryConfig()

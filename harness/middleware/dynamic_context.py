@@ -2,21 +2,20 @@
 
 使用 file backend（memory.json）：
 - 首回合注入完整 reminder（memory + date）
-- 跨午夜只更新日期
-- 同日续聊不注入（frozen snapshot persists）
+- 跨午夜重新注入完整 reminder（memory 可能在当天更新）
+- 同日续聊不注入（memory 快照留在消息历史中）
 
 Reminder format:
 
     <system-reminder>
-    <memory>...</memory>
+    <project_memory>...</project_memory>
+
+    <memory>
+    User Context: ...
+    Facts: ...
+    </memory>
 
     <current_date>2026-07-02, Thursday</current_date>
-    </system-reminder>
-
-Date-update format (midnight crossing):
-
-    <system-reminder>
-    <current_date>2026-07-03, Friday</current_date>
     </system-reminder>
 """
 
@@ -34,6 +33,7 @@ from langgraph.runtime import Runtime
 from harness.middleware.base import HarnessAgentMiddleware
 from harness.memory.prompt import format_memory_for_injection
 from harness.memory.updater import get_memory_data
+from harness.memory.safety import sanitize_memory_if_unsafe
 from harness.config.memory_config import get_memory_config
 from harness.models import HarnessState
 
@@ -99,20 +99,32 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
         if injection_enabled:
             try:
                 memory_data = get_memory_data(self._agent_name, user_id=user_id)
-                memory_context = format_memory_for_injection(
-                    memory_data,
-                    max_tokens=mem_cfg.max_injection_tokens,
+                # ── 安全检测: 防止用户编辑注入恶意内容 ──
+                safe_data, findings = sanitize_memory_if_unsafe(
+                    memory_data, source="memory.json",
                 )
-                if memory_context:
-                    memory_block = f"<memory>\n{memory_context}\n</memory>\n\n"
+                if findings:
+                    logger.warning(
+                        "Memory injection blocked for agent=%s user=%s — safety findings: %s",
+                        self._agent_name, user_id or "default", ", ".join(findings),
+                    )
+                else:
+                    memory_context = format_memory_for_injection(
+                        safe_data,
+                        max_tokens=mem_cfg.max_injection_tokens,
+                    )
+                    if memory_context:
+                        memory_block = f"<memory>\n{memory_context}\n</memory>\n\n"
             except Exception as exc:
                 logger.warning("Failed to load memory for injection: %s", exc)
 
         current_date = datetime.now().strftime("%Y-%m-%d, %A")
-        # ── Team 模式: 注入项目上下文 ──
+        # ── Team 模式: 注入项目记忆 ──
         project_block = ""
         if self._project_context:
-            project_block = f"{self._project_context}\n\n"
+            project_block = (
+                f"<project_memory>\n{self._project_context}\n</project_memory>\n\n"
+            )
         reminder = (
             f"<system-reminder>\n"
             f"{project_block}"
@@ -121,14 +133,6 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
             f"</system-reminder>"
         )
         return reminder, memory_context
-
-    def _build_date_update_reminder(self) -> str:
-        current_date = datetime.now().strftime("%Y-%m-%d, %A")
-        return (
-            f"<system-reminder>\n"
-            f"<current_date>{current_date}</current_date>\n"
-            f"</system-reminder>"
-        )
 
     @staticmethod
     def _make_reminder_and_user_messages(
@@ -190,7 +194,7 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
             # Same day: nothing to do
             return None
 
-        # Midnight crossed: inject date-update reminder
+        # Midnight crossed: re-inject full reminder (memory may have been updated)
         last_human_idx = next(
             (i for i in reversed(range(len(messages)))
              if _is_user_injection_target(messages[i])),
@@ -199,11 +203,12 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
         if last_human_idx is None:
             return None
 
+        full_reminder, memory_context = self._build_full_reminder(user_id=user_id)
         reminder_msg, user_msg = self._make_reminder_and_user_messages(
-            messages[last_human_idx], self._build_date_update_reminder(),
+            messages[last_human_idx], full_reminder,
         )
         logger.info(
-            "DynamicContextMiddleware: midnight crossing — injected date update (user_id=%s)",
+            "DynamicContextMiddleware: midnight crossing — re-injected full reminder (user_id=%s)",
             user_id or "default",
         )
         return {"messages": [reminder_msg, user_msg]}

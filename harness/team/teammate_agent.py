@@ -375,6 +375,33 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
         is_lead = self._role == "lead"
 
+        # ── 项目记忆: 仅 Team 模式下加载 description.md ──
+        project_context = ""
+        if self._team_context is not None:
+            try:
+                from harness.memory.project_storage import get_project_memory_storage
+                from harness.config.memory_config import get_memory_config
+                mem_cfg = get_memory_config()
+                if mem_cfg.project_memory_enabled:
+                    project_root = (
+                        mem_cfg.project_memory_root
+                        or str(paths.base_dir / "users" / self._user_id
+                               / "projects" / self._team_context.project_id)
+                    )
+                    pm_storage = get_project_memory_storage()
+                    pm_storage.set_project_root(project_root)
+                    project_context = pm_storage.load_description()
+                    if project_context:
+                        logger.info(
+                            "Project memory loaded for teammate '%s': %d chars",
+                            self.name, len(project_context),
+                        )
+            except Exception:
+                logger.debug(
+                    "Failed to load project memory for teammate '%s'",
+                    self.name, exc_info=True,
+                )
+
         # ── InboxDrainMiddleware: 每次 LLM 调用前 drain inbox + 检查 shutdown ──
         _self = self
 
@@ -436,6 +463,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             api_key=eff.api_key if eff else "",
             base_url=eff.base_url if eff else "",
             user_id=self._user_id,
+            project_context=project_context,
         )
         return middlewares
 

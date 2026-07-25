@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.config.memory_config import get_memory_config
+from harness.memory.safety import sanitize_memory_if_unsafe, validate_memory_json
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ def create_empty_memory() -> dict[str, Any]:
             "workContext": {"summary": "", "updatedAt": ""},
             "personalContext": {"summary": "", "updatedAt": ""},
             "topOfMind": {"summary": "", "updatedAt": ""},
+            "avoidances": {"summary": "", "updatedAt": ""},
         },
         "history": {
             "recentWeeks": {"summary": "", "updatedAt": ""},
@@ -102,8 +104,15 @@ class FileMemoryStorage(MemoryStorage):
             logger.warning("Failed to load memory file: %s", e)
             return create_empty_memory()
 
+        # ── 安全检测: 提示注入 / 凭证外泄 / 不可见字符 ──
+        safe_data, findings = sanitize_memory_if_unsafe(
+            memory_data, source=str(file_path),
+        )
+        if findings:
+            return create_empty_memory()
+
         # ── 惰性清理: 过滤过期 facts ──
-        memory_data = self._maybe_cleanup_expired(memory_data)
+        memory_data = self._maybe_cleanup_expired(safe_data)
         return memory_data
 
     def _maybe_cleanup_expired(self, memory_data: dict[str, Any]) -> dict[str, Any]:
@@ -172,6 +181,16 @@ class FileMemoryStorage(MemoryStorage):
     def save(self, memory_data: dict[str, Any], agent_name: str | None = None, *,
              user_id: str | None = None) -> bool:
         file_path = self._get_memory_file_path(agent_name, user_id=user_id)
+
+        # ── 安全检测: 写入前校验 ──
+        findings = validate_memory_json(memory_data, source=str(file_path))
+        if findings:
+            logger.error(
+                "Memory save BLOCKED for %s — safety findings: %s",
+                file_path, ", ".join(findings),
+            )
+            return False
+
         cache_key = self._cache_key(agent_name, user_id=user_id)
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
