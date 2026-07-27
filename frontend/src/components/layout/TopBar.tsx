@@ -8,7 +8,7 @@ export default function TopBar() {
   const { user, logout } = useAuthStore();
   const router = useRouter();
 
-  const displayName = user?.displayName || user?.username || "未登录";
+  const displayName = user?.display_name || user?.username || "未登录";
 
   return (
     <header className="h-12 border-b flex items-center justify-between px-4 bg-white flex-shrink-0">

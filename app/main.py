@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from app.db.engine import init_db
 from app.api import auth, threads, execute, files, configs, monitoring, agents, projects, scheduled_tasks, internal

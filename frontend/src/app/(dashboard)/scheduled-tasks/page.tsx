@@ -56,7 +56,7 @@ export default function ScheduledTasksPage() {
         {/* Header */}
         <div className="flex items-start justify-between mb-6">
           <div>
-            <h2 className="text-xl font-bold text-slate-900">定时任务</h2>
+            <h2 className="text-xl font-bold font-display text-slate-900">定时任务</h2>
             <p className="text-xs text-slate-400 mt-1">
               按 cron 时间表自动执行 Agent 任务，结果写入会话，随时回看
             </p>

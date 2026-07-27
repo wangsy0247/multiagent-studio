@@ -23,7 +23,7 @@ const TokenUsageBar = React.memo(function TokenUsageBar({ tokens }: TokenUsageBa
       </div>
       <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden flex">
         <div
-          className="h-full bg-blue-400 transition-all duration-300 rounded-full"
+          className="h-full bg-hermes-400 transition-all duration-300 rounded-full"
           style={{ width: `${Math.max(inputPct, 4)}%` }}
           title={`输入: ${formatTokens(tokens.prompt_tokens)}`}
         />

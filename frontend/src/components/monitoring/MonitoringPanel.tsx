@@ -43,12 +43,12 @@ export default function MonitoringPanel({ threadId }: MonitoringPanelProps) {
       <section className="bg-white border border-slate-200 rounded-xl p-4">
         <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">实时 Token 消耗</h3>
         <div className="grid grid-cols-3 gap-3 mb-4">
-          <div className="p-3.5 bg-blue-50 border border-blue-100 rounded-xl">
+          <div className="p-3.5 bg-hermes-50 border border-hermes-100 rounded-xl">
             <div className="flex items-center gap-1.5 mb-1.5">
-              <ArrowDown className="w-3.5 h-3.5 text-blue-500" />
-              <p className="text-[10px] text-blue-600 font-semibold">输入 Tokens</p>
+              <ArrowDown className="w-3.5 h-3.5 text-hermes-500" />
+              <p className="text-[10px] text-hermes-600 font-semibold">输入 Tokens</p>
             </div>
-            <p className="text-xl font-bold text-blue-700 tabular-nums">
+            <p className="text-xl font-bold text-hermes-700 tabular-nums">
               {((cumulativeTokens?.prompt_tokens ?? 0) / 1000).toFixed(1)}K
             </p>
           </div>

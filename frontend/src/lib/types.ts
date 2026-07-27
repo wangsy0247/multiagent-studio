@@ -58,6 +58,7 @@ export interface ExecutionGraph {
 // ===== SSE 事件 (对齐 SSEEventType) =====
 export type SSEEventType =
   | "message"
+  | "thinking"
   | "tool_call"
   | "tool_result"
   | "subagent_start"
@@ -145,7 +146,7 @@ export interface ClarificationRequest {
 
 // ===== 上传文件附件 =====
 export interface AttachedFile {
-  id?: string;
+  id: string; // 本地生成的唯一 id — 同名附件按 id 区分
   filename: string;
   original_name?: string;
   mime_type?: string;
@@ -197,14 +198,15 @@ export interface ThreadDetail {
 }
 
 // ===== 用户 =====
+// 与后端 app/schemas/auth.py UserResponse 对齐 (snake_case)
 export interface User {
   id: string;
   email: string;
   username: string;
-  displayName: string;
+  display_name: string;
   role: "user" | "admin";
-  avatarUrl: string;
-  isActive: boolean;
+  avatar_url: string;
+  is_active: boolean;
 }
 
 export interface AuthState {

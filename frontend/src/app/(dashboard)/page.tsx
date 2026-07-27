@@ -1,27 +1,40 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { MessageSquare, BarChart3, ArrowRight } from "lucide-react";
+import { MessageSquare, BarChart3, ArrowRight, Loader2 } from "lucide-react";
+import { threadsAPI } from "@/lib/api-client";
 
 const cards = [
   {
     icon: MessageSquare,
     title: "对话式编排",
     desc: "通过自然语言描述需求，AI 自动生成多 Agent 协作流程",
-    color: "bg-blue-50 text-blue-600",
-    href: null,
+    color: "bg-hermes-50 text-hermes-600",
   },
   {
     icon: BarChart3,
     title: "实时监控",
     desc: "追踪 token 消耗、任务状态与 Agent 间消息流转",
     color: "bg-amber-50 text-amber-600",
-    href: null,
   },
 ];
 
 export default function DashboardPage() {
   const router = useRouter();
+  const [creating, setCreating] = useState(false);
+
+  async function startNewThread() {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const { data } = await threadsAPI.create({ title: "新会话" });
+      router.push(`/threads/${data.id}`);
+    } catch (err) {
+      console.error("创建会话失败", err);
+      setCreating(false);
+    }
+  }
 
   return (
     <div className="flex items-center justify-center h-full bg-gradient-to-b from-slate-50 to-white">
@@ -37,7 +50,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <h2 className="text-2xl font-bold text-slate-900 mb-2">多 Agent 协作工作台</h2>
+        <h2 className="text-2xl font-bold font-display text-slate-900 mb-2">多 Agent 协作工作台</h2>
         <p className="text-muted-foreground text-sm mb-8">
           灵活编排多智能体协作流程，拖拽即用，对话即建
         </p>
@@ -47,7 +60,7 @@ export default function DashboardPage() {
           {cards.map((card) => (
             <div
               key={card.title}
-              className="card-hover bg-white border rounded-xl p-4 text-left cursor-pointer group"
+              className="bg-white border rounded-xl p-4 text-left"
             >
               <div className={`w-9 h-9 rounded-lg ${card.color} flex items-center justify-center mb-3`}>
                 <card.icon className="w-5 h-5" />
@@ -60,14 +73,12 @@ export default function DashboardPage() {
 
         {/* Quick action */}
         <button
-          onClick={() => {
-            const sidebarBtn = document.querySelector('[class*="新建会话"]') as HTMLElement;
-            sidebarBtn?.click();
-          }}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-all duration-200 text-sm font-medium shadow-sm hover:shadow-md active:scale-[0.98]"
+          onClick={startNewThread}
+          disabled={creating}
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white rounded-lg hover:bg-hermes-600 transition-all duration-200 text-sm font-medium shadow-sm hover:shadow-md active:scale-[0.98] disabled:opacity-60"
         >
-          开始新会话
-          <ArrowRight className="w-4 h-4" />
+          {creating ? "创建中..." : "开始新会话"}
+          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
         </button>
       </div>
     </div>

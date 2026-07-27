@@ -42,6 +42,13 @@ class GlobalSSEManager {
           this.connections.delete(threadId);
         }
       },
+      onStatus: (status) => {
+        // 读循环异常结束 (网络断开/服务重启, 无终态事件) 时也要清理连接,
+        // 否则残留连接会让后续 connect() 静默跳过, 消息被吞掉
+        if (status === "disconnected" || status === "error") {
+          this.connections.delete(threadId);
+        }
+      },
       maxReconnectAttempts: 0, // 全局管理器不自动重连 (由上层决定)
     });
 

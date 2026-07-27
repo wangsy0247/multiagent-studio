@@ -94,6 +94,10 @@ export default function Sidebar() {
       try {
         await threadsAPI.delete(threadId);
         setThreads((prev) => prev.filter((t) => t.id !== threadId));
+        // 删除的是当前打开的会话 → 返回首页, 避免停留在已删除的页面
+        if (pathname?.includes(threadId)) {
+          router.push("/");
+        }
       } catch (err) {
         console.error("删除会话失败", err);
       }
@@ -113,7 +117,7 @@ export default function Sidebar() {
     const map: Record<string, string> = {
       idle: "bg-slate-300",
       running: "bg-green-500 animate-pulse",
-      finished: "bg-blue-400",
+      finished: "bg-slate-400",
       error: "bg-red-500",
     };
     return map[status] || "bg-slate-300";
@@ -127,11 +131,11 @@ export default function Sidebar() {
           <div className="w-8 h-8 rounded-lg bg-slate-900 flex items-center justify-center">
             <Workflow className="w-4 h-4 text-white" />
           </div>
-          <h1 className="text-base font-semibold text-slate-900">MultiAgent Studio</h1>
+          <h1 className="text-base font-semibold font-display tracking-wide text-slate-900">MultiAgent Studio</h1>
         </div>
         <button
           onClick={createThread}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-all duration-200 text-sm font-medium shadow-sm active:scale-[0.98]"
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-lg hover:bg-hermes-600 transition-all duration-200 text-sm font-medium shadow-sm active:scale-[0.98]"
         >
           <Plus className="w-4 h-4" />
           新建会话
@@ -142,17 +146,17 @@ export default function Sidebar() {
       <div className="px-3 py-2 space-y-0.5">
         <button onClick={() => router.push("/projects")}
           className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
-            pathname.startsWith("/projects") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+            pathname.startsWith("/projects") ? "bg-hermes-50 text-hermes-700 font-medium" : "text-slate-600 hover:bg-slate-50")}>
           <FolderKanban className="w-4 h-4 text-slate-400" /> 项目
         </button>
         <button onClick={() => router.push("/agents")}
           className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
-            pathname.startsWith("/agents") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+            pathname.startsWith("/agents") ? "bg-hermes-50 text-hermes-700 font-medium" : "text-slate-600 hover:bg-slate-50")}>
           <Bot className="w-4 h-4 text-slate-400" /> Agent
         </button>
         <button onClick={() => router.push("/scheduled-tasks")}
           className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
-            pathname.startsWith("/scheduled-tasks") ? "bg-slate-100 text-slate-900 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+            pathname.startsWith("/scheduled-tasks") ? "bg-hermes-50 text-hermes-700 font-medium" : "text-slate-600 hover:bg-slate-50")}>
           <CalendarClock className="w-4 h-4 text-slate-400" /> 定时任务
           {unreadTotal > 0 && (
             <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-medium flex items-center justify-center">

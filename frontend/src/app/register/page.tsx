@@ -23,18 +23,18 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-blue-50/50">
+    <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-background">
       {/* Decorative blurs */}
-      <div className="absolute top-0 -right-40 w-96 h-96 bg-blue-100/40 rounded-full blur-3xl" />
-      <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-slate-100/40 rounded-full blur-3xl" />
+      <div className="absolute top-0 -right-40 w-96 h-96 bg-hermes-200/40 rounded-full blur-3xl" />
+      <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-hermes-300/30 rounded-full blur-3xl" />
 
       <div className="w-full max-w-sm relative z-10 animate-fade-in-up">
         {/* Brand header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 shadow-lg mb-4">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-hermes-500 to-hermes-600 shadow-lg mb-4">
             <UserPlus className="w-7 h-7 text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">创建账号</h1>
+          <h1 className="text-2xl font-bold font-display text-slate-900">创建账号</h1>
           <p className="text-muted-foreground text-sm mt-1.5">注册 MultiAgent Studio</p>
         </div>
 
@@ -96,7 +96,7 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-2.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-all duration-200 disabled:opacity-50 font-medium text-sm shadow-sm hover:shadow-md active:scale-[0.98]"
+              className="w-full py-2.5 bg-slate-900 text-white rounded-lg hover:bg-hermes-600 transition-all duration-200 disabled:opacity-50 font-medium text-sm shadow-sm hover:shadow-md active:scale-[0.98]"
             >
               {isLoading ? "注册中..." : "注册"}
             </button>

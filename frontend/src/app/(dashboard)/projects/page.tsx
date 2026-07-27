@@ -53,10 +53,13 @@ export default function ProjectsPage() {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-5xl mx-auto p-6">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">📁 项目</h1>
+          <h1 className="text-2xl font-bold font-display text-slate-900 flex items-center gap-2">
+            <FolderKanban className="w-6 h-6 text-hermes-500" /> 项目
+          </h1>
           <p className="text-sm text-slate-500 mt-1">Agent 团队协作空间</p>
         </div>
         <button
@@ -115,6 +118,7 @@ export default function ProjectsPage() {
           ))}
         </div>
       )}
+    </div>
     </div>
   );
 }

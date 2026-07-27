@@ -53,7 +53,7 @@ interface MessageItemProps {
 }
 
 const roleConfig = {
-  human: { icon: User, bg: "bg-blue-500/10", iconColor: "text-blue-500", label: "你" },
+  human: { icon: User, bg: "bg-hermes-500/10", iconColor: "text-hermes-600", label: "你" },
   ai: { icon: Bot, bg: "bg-slate-800/10", iconColor: "text-slate-700", label: "AI" },
   tool: { icon: Wrench, bg: "bg-amber-500/10", iconColor: "text-amber-500", label: "工具" },
   subagent: { icon: Network, bg: "bg-emerald-500/10", iconColor: "text-emerald-500", label: "SubAgent" },
@@ -114,7 +114,7 @@ const markdownComponents: Record<string, React.FC<any>> = {
   // Blockquote
   blockquote({ children }: any) {
     return (
-      <blockquote className="my-3 pl-4 border-l-[3px] border-blue-400 text-slate-600 italic">
+      <blockquote className="my-3 pl-4 border-l-[3px] border-hermes-400 text-slate-600 italic">
         {children}
       </blockquote>
     );
@@ -122,13 +122,13 @@ const markdownComponents: Record<string, React.FC<any>> = {
 
   // Headings
   h1({ children }: any) {
-    return <h1 className="text-lg font-bold text-slate-900 mt-4 mb-2 first:mt-0">{children}</h1>;
+    return <h1 className="text-lg font-bold font-display text-slate-900 mt-4 mb-2 first:mt-0">{children}</h1>;
   },
   h2({ children }: any) {
-    return <h2 className="text-base font-bold text-slate-900 mt-3 mb-1.5 first:mt-0 pb-1 border-b border-slate-100">{children}</h2>;
+    return <h2 className="text-base font-bold font-display text-slate-900 mt-3 mb-1.5 first:mt-0 pb-1 border-b border-slate-100">{children}</h2>;
   },
   h3({ children }: any) {
-    return <h3 className="text-sm font-semibold text-slate-800 mt-3 mb-1 first:mt-0">{children}</h3>;
+    return <h3 className="text-sm font-semibold font-display text-slate-800 mt-3 mb-1 first:mt-0">{children}</h3>;
   },
   h4({ children }: any) {
     return <h4 className="text-sm font-medium text-slate-700 mt-2 mb-1 first:mt-0">{children}</h4>;
@@ -153,7 +153,7 @@ const markdownComponents: Record<string, React.FC<any>> = {
   // Links
   a({ children, href }: any) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 underline underline-offset-2">
+      <a href={href} target="_blank" rel="noopener noreferrer" className="text-hermes-600 hover:text-hermes-700 underline underline-offset-2">
         {children}
       </a>
     );
@@ -259,13 +259,13 @@ const MessageItem = React.memo(function MessageItem({ message }: MessageItemProp
         <div className="flex items-center gap-2 mb-2">
           <span className={cn(
             "text-[10px] font-semibold",
-            isHuman ? "text-blue-300" : "text-slate-500"
+            isHuman ? "text-hermes-300" : "text-slate-500"
           )}>
             {config.label}
           </span>
           <span className={cn(
             "text-[9px]",
-            isHuman ? "text-blue-300/70" : "text-slate-400"
+            isHuman ? "text-hermes-300/70" : "text-slate-400"
           )}>
             {formatDateTime(message.createdAt)}
           </span>

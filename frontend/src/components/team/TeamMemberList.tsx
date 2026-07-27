@@ -44,7 +44,7 @@ export function TeamMemberList({ agents }: TeamMemberListProps) {
                     status === "idle"
                       ? "bg-slate-300"
                       : status === "busy"
-                        ? "bg-blue-500 animate-pulse"
+                        ? "bg-hermes-500 animate-pulse"
                         : status === "done"
                           ? "bg-green-500"
                           : "bg-red-500"

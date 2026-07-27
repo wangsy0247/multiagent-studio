@@ -35,6 +35,55 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Signature Hermès orange — the only vivid accent in the system
+        hermes: {
+          50: "hsl(30 100% 97%)",
+          100: "hsl(29 95% 92%)",
+          200: "hsl(28 90% 83%)",
+          300: "hsl(27 88% 72%)",
+          400: "hsl(25 88% 61%)",
+          500: "hsl(24 89% 54%)",
+          600: "hsl(22 85% 48%)",
+          700: "hsl(22 84% 40%)",
+          800: "hsl(21 78% 34%)",
+          900: "hsl(21 70% 28%)",
+          950: "hsl(20 72% 18%)",
+        },
+        // slate remapped from cool blue-grey to warm greige so the ~999
+        // existing slate-* classes turn warm without touching every file
+        slate: {
+          50: "hsl(36 33% 97%)",
+          100: "hsl(35 25% 94%)",
+          200: "hsl(30 18% 89%)",
+          300: "hsl(30 14% 82%)",
+          400: "hsl(30 9% 63%)",
+          500: "hsl(28 8% 46%)",
+          600: "hsl(28 10% 34%)",
+          700: "hsl(26 13% 26%)",
+          800: "hsl(25 18% 17%)",
+          900: "hsl(25 30% 12%)",
+          950: "hsl(24 35% 8%)",
+        },
+      },
+      fontFamily: {
+        sans: [
+          "var(--font-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "PingFang SC",
+          "Microsoft YaHei",
+          "sans-serif",
+        ],
+        display: [
+          "var(--font-display)",
+          "Playfair Display",
+          "Georgia",
+          "Songti SC",
+          "Noto Serif SC",
+          "SimSun",
+          "serif",
+        ],
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -42,15 +91,16 @@ const config: Config = {
         sm: "calc(var(--radius) - 4px)",
       },
       boxShadow: {
-        xs: "0 1px 2px 0 rgba(0, 0, 0, 0.04)",
-        sm: "0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.06)",
-        md: "0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05)",
-        lg: "0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04)",
+        // luxury surfaces stay flat; shadows only appear on hover/emphasis
+        xs: "0 1px 2px 0 rgba(40, 28, 18, 0.03)",
+        sm: "0 1px 3px 0 rgba(40, 28, 18, 0.05), 0 1px 2px -1px rgba(40, 28, 18, 0.05)",
+        md: "0 4px 8px -1px rgba(40, 28, 18, 0.06), 0 2px 4px -2px rgba(40, 28, 18, 0.04)",
+        lg: "0 10px 16px -3px rgba(40, 28, 18, 0.07), 0 4px 6px -4px rgba(40, 28, 18, 0.04)",
       },
       keyframes: {
         "pulse-glow": {
-          "0%, 100%": { boxShadow: "0 0 8px rgba(59, 130, 246, 0.5)" },
-          "50%": { boxShadow: "0 0 20px rgba(59, 130, 246, 0.8)" },
+          "0%, 100%": { boxShadow: "0 0 8px hsl(24 89% 54% / 0.4)" },
+          "50%": { boxShadow: "0 0 20px hsl(24 89% 54% / 0.65)" },
         },
         "fade-in-up": {
           from: { opacity: "0", transform: "translateY(8px)" },

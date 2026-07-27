@@ -25,8 +25,9 @@ export default function AdminPage() {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-4xl mx-auto p-6">
-      <h2 className="text-lg font-semibold mb-6">管理面板</h2>
+      <h2 className="text-lg font-semibold font-display mb-6">管理面板</h2>
 
       {loading ? (
         <div className="text-center py-12 text-muted-foreground">加载中...</div>
@@ -110,6 +111,7 @@ export default function AdminPage() {
           </div>
         </div>
       )}
+    </div>
     </div>
   );
 }

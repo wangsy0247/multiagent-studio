@@ -27,6 +27,7 @@ const MODEL_OPTIONS = [
 export default function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("api");
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [loading, setLoading] = useState(false);
   const [bootstrapOk, setBootstrapOk] = useState(true);
 
@@ -98,6 +99,7 @@ export default function SettingsPage() {
 
   async function saveAll() {
     setLoading(true);
+    setSaveError("");
     try {
       // Save profile
       await authAPI.updateMe({ display_name: displayName });
@@ -130,6 +132,7 @@ export default function SettingsPage() {
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       console.error("保存配置失败", err);
+      setSaveError("保存失败，请检查网络或稍后重试");
     } finally {
       setLoading(false);
     }
@@ -143,8 +146,9 @@ export default function SettingsPage() {
   ];
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-2xl mx-auto p-8">
-      <h2 className="text-xl font-bold text-slate-900 mb-2">设置</h2>
+      <h2 className="text-xl font-bold font-display text-slate-900 mb-2">设置</h2>
       <p className="text-xs text-slate-400 mb-6">
         配置 API Key、模型和记忆 — 这些设置对所有 Agent 生效
       </p>
@@ -184,7 +188,7 @@ export default function SettingsPage() {
       {/* ═══ API 配置 ═══ */}
       {tab === "api" && (
         <div className="space-y-5 animate-fade-in">
-          <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-700">
+          <div className="p-4 bg-hermes-50 border border-hermes-200 rounded-xl text-xs text-hermes-700">
             <strong>🔑 API Key</strong> 是 LLM 调用的凭证。你的 Key 仅存储在服务器上，不会泄露给第三方。
           </div>
 
@@ -472,7 +476,9 @@ export default function SettingsPage() {
             <><Save className="w-4 h-4" /> {loading ? "保存中..." : "保存设置"}</>
           )}
         </button>
+        {saveError && <p className="text-xs text-red-500">{saveError}</p>}
       </div>
+    </div>
     </div>
   );
 }

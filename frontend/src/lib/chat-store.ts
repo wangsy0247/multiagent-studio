@@ -513,9 +513,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case "title_update":
         if (event.title && event.thread_id) {
+          const threadId = event.thread_id;
           set((s) => ({
             title: event.title,
-            threadTitles: { ...s.threadTitles, [event.thread_id]: event.title! },
+            threadTitles: { ...s.threadTitles, [threadId]: event.title! },
           }));
         }
         break;

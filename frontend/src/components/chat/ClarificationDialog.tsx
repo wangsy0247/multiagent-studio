@@ -41,6 +41,7 @@ export default function ClarificationDialog({ threadId }: ClarificationDialogPro
     });
 
     setPendingClarification(null);
+    setAnswer(""); // 清空答案, 避免下一轮澄清预填上次内容
     setStreaming(true);
     setError(null);
 
@@ -52,10 +53,15 @@ export default function ClarificationDialog({ threadId }: ClarificationDialogPro
           setStreaming(false);
           setStopClarificationFn(null);
         }
-        // Guard: if agent requests another clarification mid-stream, stop streaming state
+        // Guard: agent 在流中再次请求澄清 — 恢复可交互状态并保留停止函数,
+        // 否则 submitting 卡在 true 且无法取消, 对话框死锁
         if (event.type === "clarification") {
           setStreaming(false);
-          setStopClarificationFn(null);
+          setSubmitting(false);
+          setStopClarificationFn(() => {
+            sseRef.current?.stop();
+            setSubmitting(false);
+          });
         }
       },
       onStatus: (status) => {
@@ -64,6 +70,7 @@ export default function ClarificationDialog({ threadId }: ClarificationDialogPro
           setStopClarificationFn(null);
         }
       },
+      maxReconnectAttempts: 0, // /respond 是 POST — 自动重连会用相同答案重复恢复 agent
     });
     sseRef.current = sse;
 

@@ -1594,7 +1594,7 @@ class HarnessService(_BaseService):
             self._thread_skill_iters.pop(thread_id, None)
             self._active_runs.pop(thread_id, None)
             logger.info("/clear executed (thread=%s, user=%s)", thread_id, user_id)
-            # 通知中间层 (app_service 清空 DB 消息记录) 与前端 (清空本地历史显示)
+            # 通知前端清空本地状态; App DB 历史消息保留不删
             yield {"type": "context_cleared", "thread_id": thread_id}
             for e in _reply("上下文已清空。下一轮消息将开始全新会话（工作区文件保留）。"):
                 yield e

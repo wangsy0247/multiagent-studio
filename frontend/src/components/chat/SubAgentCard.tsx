@@ -19,8 +19,8 @@ const STATUS_STYLE: Record<
   { bg: string; border: string; icon: typeof CheckCircle; color: string; label: string }
 > = {
   running: {
-    bg: "bg-blue-50", border: "border-blue-200",
-    icon: Loader2, color: "text-blue-500", label: "执行中",
+    bg: "bg-hermes-50", border: "border-hermes-200",
+    icon: Loader2, color: "text-hermes-500", label: "执行中",
   },
   success: {
     bg: "bg-emerald-50", border: "border-emerald-200",
@@ -39,8 +39,8 @@ const STATUS_STYLE: Record<
     icon: Clock, color: "text-orange-500", label: "超时",
   },
   max_iterations_reached: {
-    bg: "bg-indigo-50", border: "border-indigo-200",
-    icon: Cpu, color: "text-indigo-500", label: "达到上限",
+    bg: "bg-hermes-50", border: "border-hermes-200",
+    icon: Cpu, color: "text-hermes-500", label: "达到上限",
   },
 };
 
@@ -143,13 +143,13 @@ const SubAgentCard = React.memo(function SubAgentCard({ message }: SubAgentCardP
           <div className="mt-2">
             <div className="flex items-center justify-between text-[9px] text-slate-400 mb-1">
               <span>
-                {message.metadata?.iterations || 0}/{message.metadata?.max_turns || "?"} turns
+                {(message.metadata?.iterations as number) || 0}/{(message.metadata?.max_turns as number) || "?"} turns
               </span>
               {isProgress && <span>{progressPercent}%</span>}
             </div>
             <div className="w-full h-1 bg-white/60 rounded-full overflow-hidden">
               <div
-                className="h-full bg-blue-400 rounded-full transition-all duration-500"
+                className="h-full bg-hermes-400 rounded-full transition-all duration-500"
                 style={{ width: `${Math.min(progressPercent, 100)}%` }}
               />
             </div>

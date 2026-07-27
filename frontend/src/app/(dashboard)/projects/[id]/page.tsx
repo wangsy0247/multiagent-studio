@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Wrench, Brain } from "lucide-react";
+import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Wrench, Brain, Bot } from "lucide-react";
 import { projectsAPI, agentsAPI } from "@/lib/api-client";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
@@ -25,7 +25,7 @@ function ElapsedTimer({ startedAt }: { startedAt: string }) {
   const m = Math.floor(elapsed / 60);
   const s = elapsed % 60;
   const display = m > 0 ? `${m}m ${s}s` : `${s}s`;
-  return <span className="text-[10px] text-blue-500 font-mono ml-1">{display}</span>;
+  return <span className="text-[10px] text-hermes-500 font-mono ml-1">{display}</span>;
 }
 
 type TabType = "chat" | "tasks" | "members";
@@ -324,7 +324,7 @@ function TasksTab({ projectId }: { projectId: string }) {
   // 5 态看板 — 与后端 TeamTaskStatus 对齐 (A2A 兼容)
   const columns: { key: ProjectTaskStatus; label: string; color: string }[] = [
     { key: "pending", label: "待办", color: "bg-slate-100" },
-    { key: "in_progress", label: "进行中", color: "bg-blue-100" },
+    { key: "in_progress", label: "进行中", color: "bg-hermes-100" },
     { key: "completed", label: "已完成", color: "bg-green-100" },
     { key: "failed", label: "失败", color: "bg-red-100" },
     { key: "cancelled", label: "已取消", color: "bg-orange-100" },
@@ -448,9 +448,10 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
   const availableAgents = agents.filter((a) => !members.includes(a.name));
 
   const statusLabels: Record<string, string> = { idle: "空闲", busy: "执行中", spawning: "启动中", shutting_down: "关闭中", failed: "失败" };
-  const statusColors: Record<string, string> = { idle: "bg-slate-300", busy: "bg-blue-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
+  const statusColors: Record<string, string> = { idle: "bg-slate-300", busy: "bg-hermes-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-2xl mx-auto p-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-semibold text-slate-700">团队成员</h3>
@@ -488,7 +489,7 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
                     <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColors[status] || "bg-slate-300"}`} />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5 flex-wrap">
-                        <span>🤖</span>
+                        <Bot className="w-4 h-4 text-hermes-500" />
                         {a.display_name || a.name}
                         <span className="text-xs text-slate-400 font-normal">({statusLabels[status] || status})</span>
                         {runtime?.started_at && status === "busy" && (
@@ -513,7 +514,7 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
                                 <Wrench className="w-3 h-3" />
                                 <span className="flex gap-1 flex-wrap">
                                   {card.tools.slice(0, 6).map((t) => (
-                                    <span key={t} className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-mono">{t}</span>
+                                    <span key={t} className="px-1.5 py-0.5 bg-hermes-50 text-hermes-600 rounded font-mono">{t}</span>
                                   ))}
                                   {card.tools.length > 6 && (
                                     <span className="text-slate-400">…+{card.tools.length - 6}</span>
@@ -535,7 +536,7 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
                       )}
 
                       {runtime?.current_task_title && (
-                        <p className="text-xs text-blue-600 mt-1.5">📋 {runtime.current_task_title}</p>
+                        <p className="text-xs text-hermes-600 mt-1.5">📋 {runtime.current_task_title}</p>
                       )}
                     </div>
                   </div>
@@ -546,6 +547,7 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
           })}
         </div>
       )}
+    </div>
     </div>
   );
 }

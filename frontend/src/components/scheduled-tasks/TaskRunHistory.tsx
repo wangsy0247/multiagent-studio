@@ -70,7 +70,7 @@ export default function TaskRunHistory({ taskId }: { taskId: string }) {
             {run.thread_id && (
               <button
                 onClick={() => router.push(`/threads/${run.thread_id}`)}
-                className="ml-auto flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-600"
+                className="ml-auto flex items-center gap-1 text-[11px] text-hermes-600 hover:text-hermes-700"
               >
                 查看会话 <ExternalLink className="w-3 h-3" />
               </button>

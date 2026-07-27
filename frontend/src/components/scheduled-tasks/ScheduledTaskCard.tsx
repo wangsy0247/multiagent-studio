@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Bot, CalendarClock, ChevronDown, ChevronUp, Clock, History,
   MoonStar, Pencil, Play, Trash2, Users,
@@ -25,6 +25,16 @@ export default function ScheduledTaskCard({ task, onEdit, onChanged }: Props) {
   const [acting, setActing] = useState(false);
   const [feedback, setFeedback] = useState("");
   const unreadCount = useUnreadStore((s) => s.byTask[task.id] || 0);
+  // 记录 setTimeout id，卸载时清理，避免回调在组件卸载后触发
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    };
+  }, []);
 
   async function toggleEnabled() {
     setActing(true);
@@ -41,7 +51,7 @@ export default function ScheduledTaskCard({ task, onEdit, onChanged }: Props) {
     try {
       await scheduledTasksAPI.trigger(task.id);
       setFeedback("已触发，将在约 15 秒内开始执行");
-      setTimeout(() => {
+      feedbackTimer.current = setTimeout(() => {
         setFeedback("");
         onChanged();
       }, 2000);
@@ -53,7 +63,7 @@ export default function ScheduledTaskCard({ task, onEdit, onChanged }: Props) {
   async function handleDelete() {
     if (!confirmDelete) {
       setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 3000);
+      confirmTimer.current = setTimeout(() => setConfirmDelete(false), 3000);
       return;
     }
     setActing(true);

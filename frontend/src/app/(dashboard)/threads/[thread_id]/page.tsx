@@ -2,7 +2,7 @@
 
 import { useState, useEffect, lazy, Suspense } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { MessageCircle, BarChart3, ExternalLink } from "lucide-react";
+import { MessageCircle, BarChart3, ExternalLink, FolderKanban, Bot } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { ThreadDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -96,19 +96,19 @@ export default function WorkspacePage() {
         {projectId && (
           <button
             onClick={() => router.push(`/projects/${projectId}`)}
-            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 bg-blue-50 px-2 py-1 rounded-lg mr-2 transition-colors"
+            className="flex items-center gap-1 text-xs text-hermes-600 hover:text-hermes-700 bg-hermes-50 px-2 py-1 rounded-lg mr-2 transition-colors"
           >
-            📁 项目
+            <FolderKanban className="w-3 h-3" /> 项目
             <ExternalLink className="w-3 h-3" />
           </button>
         )}
         {agentName && (
-          <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded-lg mr-2">
-            🤖 @{agentName}
+          <span className="flex items-center gap-1 text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded-lg mr-2">
+            <Bot className="w-3 h-3" /> @{agentName}
           </span>
         )}
         {threadMode === "team" && (
-          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg mr-2 font-medium">
+          <span className="text-xs bg-hermes-100 text-hermes-700 px-2 py-1 rounded-lg mr-2 font-medium">
             Team
           </span>
         )}

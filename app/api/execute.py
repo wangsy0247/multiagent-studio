@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update as sa_update, delete as sa_delete
+from sqlalchemy import select, update as sa_update
 
 from app.db.engine import get_db
 from app.api.deps import get_current_user
@@ -100,12 +100,9 @@ async def execute(
 
                 event_type = event.get("type", "")
 
-                # ── /clear 指令: 清空该线程的 DB 消息记录 (含本条指令本身) ──
-                if event_type == "context_cleared":
-                    await db.execute(
-                        sa_delete(Message).where(Message.thread_id == req.thread_id)
-                    )
-                    await db.commit()
+                # ── /clear 指令: 不删 DB 消息记录, 仅清空 checkpoint 上下文 ──
+                # 前端收到 context_cleared 会清空本地 Zustand 状态,
+                # 但 App DB 中的历史消息保留, 页面刷新后仍可查看
 
                 # ── 累积 token 流式输出的 AI 回复文本 ──
                 if event_type == "message" and event.get("content"):

@@ -7,7 +7,7 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
   skipped: { label: "已跳过", cls: "bg-slate-50 text-slate-500 border-slate-200" },
   expired: { label: "已过期", cls: "bg-slate-50 text-slate-500 border-slate-200" },
   interrupted: { label: "已中断", cls: "bg-slate-50 text-slate-500 border-slate-200" },
-  running: { label: "运行中", cls: "bg-blue-50 text-blue-600 border-blue-200" },
+  running: { label: "运行中", cls: "bg-hermes-50 text-hermes-600 border-hermes-200" },
 };
 
 export default function StatusBadge({ status }: { status: string | null }) {
@@ -16,7 +16,7 @@ export default function StatusBadge({ status }: { status: string | null }) {
   return (
     <span className={cn("inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border", s.cls)}>
       {status === "running" && (
-        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse mr-1" />
+        <span className="w-1.5 h-1.5 rounded-full bg-hermes-500 animate-pulse mr-1" />
       )}
       {s.label}
     </span>

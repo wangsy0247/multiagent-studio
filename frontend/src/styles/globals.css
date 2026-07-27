@@ -4,26 +4,28 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    /* Hermès-inspired palette: ivory background, espresso foreground,
+       warm greige neutrals, signature orange as the sole vivid accent */
+    --background: 36 33% 97%;
+    --foreground: 25 30% 13%;
+    --card: 40 40% 99%;
+    --card-foreground: 25 30% 13%;
+    --popover: 40 40% 99%;
+    --popover-foreground: 25 30% 13%;
+    --primary: 25 30% 12%;
+    --primary-foreground: 36 33% 97%;
+    --secondary: 35 25% 94%;
+    --secondary-foreground: 25 30% 13%;
+    --muted: 35 22% 94%;
+    --muted-foreground: 28 8% 46%;
+    --accent: 35 25% 93%;
+    --accent-foreground: 25 30% 13%;
+    --destructive: 5 65% 48%;
+    --destructive-foreground: 36 33% 97%;
+    --border: 30 16% 88%;
+    --input: 30 16% 86%;
+    --ring: 24 89% 54%;
+    --radius: 0.375rem;
   }
 
 
@@ -35,9 +37,9 @@
     @apply bg-background text-foreground;
   }
 
-  /* Selection color */
+  /* Selection color — signature orange tint */
   ::selection {
-    background-color: rgba(59, 130, 246, 0.2);
+    background-color: hsl(24 89% 54% / 0.22);
     color: inherit;
   }
 
@@ -50,80 +52,33 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: hsl(215.4 16.3% 80%);
+    background: hsl(30 14% 80%);
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: hsl(215.4 16.3% 65%);
+    background: hsl(28 10% 64%);
   }
 
   /* Custom scrollbar - Firefox */
   * {
     scrollbar-width: thin;
-    scrollbar-color: hsl(215.4 16.3% 80%) transparent;
+    scrollbar-color: hsl(30 14% 80%) transparent;
   }
 }
 
 @layer utilities {
-  /* Unified input focus ring */
+  /* Unified input focus ring — signature orange */
   .input-focus {
-    @apply focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-shadow duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-hermes-500/40 focus:border-hermes-500 transition-shadow duration-200;
   }
 
   /* Card hover lift effect */
   .card-hover {
     @apply transition-all duration-200 hover:shadow-md hover:-translate-y-0.5;
   }
-}
 
-@layer components {
-  /* Fade in up animation */
-  @keyframes fade-in-up {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-  .animate-fade-in-up {
-    animation: fade-in-up 0.35s ease-out both;
-  }
-
-  /* Plain fade in */
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  .animate-fade-in {
-    animation: fade-in 0.3s ease-out both;
-  }
-
-  /* Scale in */
-  @keyframes scale-in {
-    from {
-      opacity: 0;
-      transform: scale(0.95);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-  .animate-scale-in {
-    animation: scale-in 0.25s ease-out both;
-  }
-
-  /* Gradient shift for backgrounds */
-  @keyframes gradient-shift {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-  }
-  .animate-gradient {
-    background-size: 200% 200%;
-    animation: gradient-shift 8s ease infinite;
+  /* Hairline divider used across luxury surfaces */
+  .border-hairline {
+    border-color: hsl(30 16% 88%);
   }
 }

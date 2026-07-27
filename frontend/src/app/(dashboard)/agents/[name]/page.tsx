@@ -102,9 +102,9 @@ export default function AgentEditPage() {
       const payload: Record<string, unknown> = {
         name: agentName.trim(),
         model,
-        display_name: displayName.trim() || undefined,
-        description: description.trim() || undefined,
-        soul: soul.trim() || undefined,
+        display_name: displayName.trim(),
+        description: description.trim(),
+        soul: soul.trim(),
         tool_groups: tg,
         temperature,
         max_tokens: maxTokens,
@@ -163,6 +163,7 @@ export default function AgentEditPage() {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-3xl mx-auto p-6">
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
@@ -170,7 +171,7 @@ export default function AgentEditPage() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold text-slate-900">
+          <h1 className="text-2xl font-bold font-display text-slate-900">
             {isNew ? "新建 Agent" : `编辑: ${displayName || agentName}`}
           </h1>
           {isDefault && (
@@ -215,6 +216,9 @@ export default function AgentEditPage() {
               placeholder="my-coder"
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200 disabled:bg-slate-50"
             />
+            <p className="text-[10px] text-slate-400 mt-1">
+              唯一标识（小写英文/数字/连字符），用于 @提及、任务委派和 API 调用，创建后不可修改
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">显示名称</label>
@@ -222,9 +226,12 @@ export default function AgentEditPage() {
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="My Coder"
+              placeholder="代码助手"
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
             />
+            <p className="text-[10px] text-slate-400 mt-1">
+              可选，仅用于界面展示的友好名称（支持中文），留空则显示 Agent 名称
+            </p>
           </div>
         </div>
 
@@ -258,7 +265,10 @@ export default function AgentEditPage() {
             <input
               type="number"
               value={temperature}
-              onChange={(e) => setTemperature(parseFloat(e.target.value) || 0.3)}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                setTemperature(Number.isNaN(v) ? 0.3 : v);
+              }}
               min={0} max={2} step={0.1}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-200"
             />
@@ -410,6 +420,7 @@ export default function AgentEditPage() {
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 }

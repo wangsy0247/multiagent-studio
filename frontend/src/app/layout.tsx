@@ -1,6 +1,19 @@
 import type { Metadata } from "next";
+import { Inter, Playfair_Display } from "next/font/google";
 import "@/styles/globals.css";
 import AuthProvider from "@/components/providers/AuthProvider";
+
+const sans = Inter({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const display = Playfair_Display({
+  subsets: ["latin"],
+  variable: "--font-display",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "MultiAgent Studio — 多Agent协作工作台",
@@ -9,8 +22,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN">
-      <body className="min-h-screen bg-background antialiased">
+    <html lang="zh-CN" className={`${sans.variable} ${display.variable}`}>
+      <body className="min-h-screen bg-background font-sans antialiased">
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

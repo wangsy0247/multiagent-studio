@@ -6,6 +6,7 @@ import { useChatStore } from "@/lib/chat-store";
 import { globalSSEManager } from "@/lib/global-sse";
 import { threadsAPI, filesAPI, getCurrentUserId } from "@/lib/api-client";
 import { ChatMessage, AttachedFile } from "@/lib/types";
+import { generateId } from "@/lib/utils";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
 import { TeamMemberList } from "@/components/team/TeamMemberList";
@@ -61,6 +62,7 @@ export default function ChatPanel({
   const handleAttachFiles = useCallback((fileList: FileList | null) => {
     if (!fileList) return;
     const newFiles: AttachedFile[] = Array.from(fileList).map((file) => ({
+      id: generateId(), // 本地唯一 id — 同名文件按 id 区分, 避免互相覆盖状态
       filename: file.name,
       original_name: file.name,
       mime_type: file.type,
@@ -71,12 +73,12 @@ export default function ChatPanel({
     setAttachedFiles((prev) => [...prev, ...newFiles]);
 
     // Upload each file immediately
-    newFiles.forEach((attached) => {
-      const file = Array.from(fileList).find((f) => f.name === attached.filename);
+    newFiles.forEach((attached, index) => {
+      const file = fileList[index];
       if (!file) return;
 
       setAttachedFiles((prev) =>
-        prev.map((f) => (f.filename === attached.filename ? { ...f, status: "uploading" } : f))
+        prev.map((f) => (f.id === attached.id ? { ...f, status: "uploading" } : f))
       );
 
       filesAPI
@@ -85,10 +87,9 @@ export default function ChatPanel({
           const data = res.data || {};
           setAttachedFiles((prev) =>
             prev.map((f) =>
-              f.filename === attached.filename
+              f.id === attached.id
                 ? {
                     ...f,
-                    id: data.id,
                     filename: data.filename || f.filename,
                     original_name: data.original_name || f.original_name,
                     mime_type: data.mime_type || f.mime_type,
@@ -104,19 +105,53 @@ export default function ChatPanel({
           const msg = err?.response?.data?.detail || err.message || "Upload failed";
           setAttachedFiles((prev) =>
             prev.map((f) =>
-              f.filename === attached.filename ? { ...f, status: "error", error: msg } : f
+              f.id === attached.id ? { ...f, status: "error", error: msg } : f
             )
           );
         });
     });
   }, [threadId]);
 
-  const handleRemoveFile = useCallback((filename: string) => {
-    setAttachedFiles((prev) => prev.filter((f) => f.filename !== filename));
+  const handleRemoveFile = useCallback((fileId: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
   }, []);
 
   async function sendMessage(text: string, files: AttachedFile[]) {
     if ((!text.trim() && files.length === 0) || isStreaming) return;
+
+    const resolvedMode = propMode || (projectId ? "team" : "single");
+
+    // 无 threadId (项目页快速单聊): 先创建线程再发送
+    let currentThreadId: string | undefined = threadId;
+    if (!currentThreadId) {
+      if (onThreadCreated && projectId) {
+        try {
+          const { data } = await threadsAPI.create({
+            title: resolvedMode === "single" ? `与 ${selectedAgent} 的对话` : "团队对话",
+            project_id: projectId,
+            agent_name: resolvedMode === "single" ? selectedAgent : undefined,
+            mode: resolvedMode,
+          });
+          currentThreadId = data.id;
+          setActiveThread(data.id); // 立即切换, 保住下面的乐观消息气泡
+          onThreadCreated(data.id);
+        } catch (err) {
+          console.error("创建会话线程失败", err);
+          setError("创建会话线程失败，请重试");
+          return;
+        }
+      } else {
+        setError("尚未创建会话线程");
+        return;
+      }
+    }
+    if (!currentThreadId) return; // 类型收窄: 上面所有分支均已返回或赋值
+
+    // 该线程已有活跃 SSE 连接 → connect() 会静默跳过, 提前拦截避免消息被吞
+    if (globalSSEManager.isRunning(currentThreadId)) {
+      setError("该会话正在运行中，请等待完成或先停止");
+      return;
+    }
 
     // Build file metadata payload for Harness UploadsMiddleware
     const readyFiles = files.filter((f) => f.status === "done");
@@ -146,16 +181,6 @@ export default function ChatPanel({
     setStreaming(true);
     setError(null);
     setAttachedFiles([]);
-
-    // 如果没有 threadId 但有 projectId，等待由外部传入
-    const currentThreadId = threadId;
-    if (!currentThreadId) {
-      setStreaming(false);
-      setError("尚未创建会话线程");
-      return;
-    }
-
-    const resolvedMode = propMode || (projectId ? "team" : "single");
 
     // 通过全局 SSE 管理器启动连接 (连接生命周期独立于组件)
     globalSSEManager.connect(currentThreadId, "/api/execute", {

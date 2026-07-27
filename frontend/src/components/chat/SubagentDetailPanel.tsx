@@ -13,12 +13,12 @@ import remarkGfm from "remark-gfm";
 
 // ── 状态配置 ──────────────────────────────────────────────────────────
 const STATUS_META: Record<string, { icon: typeof CheckCircle; color: string; label: string }> = {
-  running:   { icon: Clock,   color: "text-blue-500",   label: "执行中" },
+  running:   { icon: Clock,   color: "text-hermes-600",   label: "执行中" },
   success:   { icon: CheckCircle, color: "text-emerald-500", label: "成功" },
   error:     { icon: XCircle, color: "text-red-500",     label: "失败" },
   cancelled: { icon: AlertTriangle, color: "text-amber-500",  label: "已取消" },
   timed_out: { icon: Clock,   color: "text-orange-500",  label: "超时" },
-  max_iterations_reached: { icon: Cpu, color: "text-indigo-500", label: "达到上限" },
+  max_iterations_reached: { icon: Cpu, color: "text-hermes-600", label: "达到上限" },
 };
 
 export default function SubagentDetailPanel() {
@@ -225,7 +225,7 @@ export default function SubagentDetailPanel() {
                     : JSON.stringify(msg.content);
                 // 检测是否包含 tool_calls
                 const hasToolCalls =
-                  msg.tool_calls &&
+                  Boolean(msg.tool_calls) &&
                   Array.isArray(msg.tool_calls) &&
                   (msg.tool_calls as unknown[]).length > 0;
 

@@ -14,7 +14,7 @@ interface InputBarProps {
   isStreaming: boolean;
   attachedFiles?: AttachedFile[];
   onAttachFiles?: (files: FileList | null) => void;
-  onRemoveFile?: (filename: string) => void;
+  onRemoveFile?: (fileId: string) => void;
   // ── Agent Team 扩展 ──
   members?: AgentDefinition[];
   mode?: "single" | "team";
@@ -118,7 +118,7 @@ export default function InputBar({
                 className={cn(
                   "px-2 py-0.5 rounded-md text-[10px] font-medium whitespace-nowrap",
                   todo.status === "completed" && "bg-emerald-50 text-emerald-700",
-                  todo.status === "in_progress" && "bg-blue-50 text-blue-700",
+                  todo.status === "in_progress" && "bg-hermes-50 text-hermes-700",
                   todo.status === "failed" && "bg-red-50 text-red-700",
                   todo.status === "pending" && "bg-slate-100 text-slate-600",
                 )}
@@ -134,7 +134,7 @@ export default function InputBar({
         <div className="flex flex-wrap gap-2 px-1">
           {attachedFiles.map((file) => (
             <div
-              key={file.filename}
+              key={file.id}
               className={cn(
                 "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border",
                 file.status === "error"
@@ -149,7 +149,7 @@ export default function InputBar({
               )}
               {onRemoveFile && file.status !== "uploading" && (
                 <button
-                  onClick={() => onRemoveFile(file.filename)}
+                  onClick={() => onRemoveFile(file.id)}
                   className="ml-0.5 hover:text-red-500 transition-colors"
                   aria-label={`Remove ${file.filename}`}
                 >
@@ -191,7 +191,7 @@ export default function InputBar({
         {mode && (
           <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
             mode === "team"
-              ? "bg-blue-100 text-blue-700"
+              ? "bg-hermes-100 text-hermes-700"
               : "bg-slate-100 text-slate-600"
           }`}>
             {mode === "team" ? "Team" : "Single"}
