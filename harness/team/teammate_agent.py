@@ -195,10 +195,11 @@ class TeammateAgent:
         # 5. Teammate 特定指令 (按角色区分 Lead/Member, 含协议工具说明)
         parts.append(self._get_teammate_instructions())
 
-        # 6. Skills (per-user + per-agent 过滤, 与 LeadAgent 一致的渐进加载模式)
-        skills_section = self._build_skills_section()
-        if skills_section:
-            parts.append(skills_section)
+        # 6. Skills (仅 Member, Lead 不需要 skill 能力)
+        if self._role != "lead":
+            skills_section = self._build_skills_section()
+            if skills_section:
+                parts.append(skills_section)
 
         return "\n\n".join(parts)
 
@@ -371,7 +372,10 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         from harness.config.paths import get_paths
 
         paths = get_paths()
-        workspace_root = str(paths.sandbox_work_dir(self.name))
+        workspace_root = str(
+            paths.thread_dir(self._thread_id, user_id=self._user_id)
+            / "agents" / self.name / "workspace"
+        )
 
         is_lead = self._role == "lead"
 
@@ -708,7 +712,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 if board_task is None:
                     # 临时任务 (triage/synthesis), 不在任务板 → 计成功
                     self.completed_tasks += 1
-                elif board_task.status == TeamTaskStatus.COMPLETED:
+                elif board_task.status.is_success:
+                    # APPROVED / COMPLETED (终态成功)
+                    self.completed_tasks += 1
+                elif board_task.status == TeamTaskStatus.IN_REVIEW:
+                    # 成员已提交审查, 等待 Lead task_review — 工作周期正常结束
                     self.completed_tasks += 1
                 elif board_task.status == TeamTaskStatus.IN_PROGRESS:
                     # 协议违规: 跑完了但没调 task_update 上报 → 任务会永远卡 IN_PROGRESS.
@@ -790,22 +798,64 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             )
             return False
 
-        self.current_task_id = task.id
-        self._messages.append(HumanMessage(
-            content=(
-                f"<assigned_task>\n"
-                f"  <task_id>{task.id}</task_id>\n"
-                f"  <title>{task.title}</title>\n"
-                f"  <description>{task.description}</description>\n"
-                f"  <priority>{task.priority}</priority>\n"
-                f"</assigned_task>\n\n"
-                f"请完成上述任务。完成后使用 task_update 将状态改为 completed 并附上结果。\n"
-                f"如果失败, 使用 task_update 将状态改为 failed 并说明原因。"
+        # ── 构建任务消息 ──
+        content_parts = [
+            f"<assigned_task>\n"
+            f"  <task_id>{task.id}</task_id>\n"
+            f"  <title>{task.title}</title>\n"
+            f"  <description>{task.description}</description>\n"
+            f"  <priority>{task.priority}</priority>\n"
+            f"</assigned_task>",
+        ]
+
+        # ── 注入依赖任务的执行结果 ──
+        if task.dependencies:
+            dep_results: list[str] = []
+            for dep_id in task.dependencies:
+                dep_task = await self._task_store.get_task(dep_id)
+                if dep_task is None:
+                    continue
+                if not dep_task.status.is_success:
+                    continue
+                dep_text = (
+                    f"\n<dependency_result>\n"
+                    f"  <task_id>{dep_task.id}</task_id>\n"
+                    f"  <title>{dep_task.title}</title>\n"
+                    f"  <executor>{dep_task.assigned_agent or '未知'}</executor>\n"
+                    f"  <output>{dep_task.output or '(无输出)'}</output>\n"
+                    f"</dependency_result>"
+                )
+                dep_results.append(dep_text)
+            if dep_results:
+                content_parts.append(
+                    "\n<dependency_results>\n"
+                    f"以下是你依赖的前置任务执行结果，请基于这些结果完成你的任务:"
+                    + "".join(dep_results)
+                    + "\n</dependency_results>"
+                )
+
+        # REVISION_NEEDED: 注入 Lead 的审查反馈
+        if task.status == TeamTaskStatus.REVISION_NEEDED and task.review_feedback:
+            content_parts.append(
+                f"\n<review_feedback>\n"
+                f"⚠️ Lead 审查意见 (第 {task.revision_count} 次修改):\n"
+                f"{task.review_feedback}\n"
+                f"请根据以上反馈修改你的实现，完成后重新提交审查。\n"
+                f"</review_feedback>"
             )
-        ))
+
+        # 完成指引
+        content_parts.append(
+            f"\n请完成上述任务。完成后使用 task_update 将状态改为 in_review "
+            f"(推荐, 等待 Lead 审查) 或 completed (直接完成) 并附上结果。\n"
+            f"如果失败, 使用 task_update 将状态改为 failed 并说明原因。"
+        )
+
+        self.current_task_id = task.id
+        self._messages.append(HumanMessage(content="\n".join(content_parts)))
         self.status = TeammateStatus.WORKING
         self._wake_event.set()
-        logger.info("Teammate '%s' assigned task '%s'", self.name, task.id)
+        logger.info("Teammate '%s' assigned task '%s' (rev=%d)", self.name, task.id, task.revision_count)
         return True
 
     # ------------------------------------------------------------------

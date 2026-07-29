@@ -11,6 +11,7 @@ from langgraph.prebuilt import InjectedState
 from harness.agents.presets import build_subagent_config
 from harness.tools.builtins.cron_tool import cron_tool
 from harness.tools.builtins.memory_tools import create_memory_search_tool
+from harness.tools.builtins.session_search_tool import create_session_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,7 @@ def build_lead_tools(
     Tools included:
     - Agent: Create specialized SubAgents and delegate tasks (merged create_subagent + task)
     - ask_clarification: Ask user for clarification
+    - session_search: Search the user's historical session messages (FTS5)
     - memory_search: Query mem0 long-term memory (if mem0_tool_enabled)
     """
     tools: list[BaseTool] = [
@@ -213,6 +215,13 @@ def build_lead_tools(
         ask_clarification_tool(),
         cron_tool(),
     ]
+
+    # session_search：搜索用户历史会话消息（FTS5 全文检索，App 侧内部 API）。
+    # 默认启用；App 服务未配置 INTERNAL_API_TOKEN 时工具调用会返回明确错误。
+    try:
+        tools.append(create_session_search_tool())
+    except Exception as e:
+        logger.warning("Failed to register session_search tool: %s", e)
 
     # mem0 主动查询工具（如果启用）
     # mem0_tool_enabled 与 backend 独立：

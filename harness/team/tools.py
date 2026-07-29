@@ -46,7 +46,7 @@ def get_current_agent_instance() -> Any:
 
 
 # ── 角色工具集定义 ──
-LEAD_TOOLS = {"delegate_to_member", "list_teammates", "broadcast", "shutdown_teammate", "approve_plan", "spawn_teammate"}
+LEAD_TOOLS = {"delegate_to_member", "list_teammates", "broadcast", "shutdown_teammate", "approve_plan", "spawn_teammate", "task_review"}
 SHARED_TOOLS = {"task_create", "task_list", "task_update", "send_message", "read_inbox"}
 MEMBER_TOOLS = {"request_plan_approval", "claim_task", "shutdown_response"}
 
@@ -88,6 +88,9 @@ def create_team_tools(
         通过任务板分配: 更新 assigned_agent 字段后,
         orchestrator 的 dispatch 循环会将其分配给目标 TeammateAgent。
 
+        成员完成工作后应提交审查 (task_update status="in_review"),
+        而非直接标记 completed。你会收到审查通知, 通过 task_review 审查。
+
         Args:
             agent_name: 目标 Member Agent 名称
             instruction: 自包含的任务指令 (会追加到任务描述中)
@@ -105,11 +108,16 @@ def create_team_tools(
         if task.status.value not in ("pending",):
             return f"Error: Task '{task_id}' is not pending (current: {task.status.value})"
 
-        # 追加委派指令到任务描述
+        # 追加委派指令到任务描述 (引导成员走 Review 流程)
         full_desc = task.description or ""
         if context:
             full_desc += f"\n\n[上下文]\n{context}"
-        full_desc += f"\n\n[委派指令]\n{instruction}"
+        full_desc += (
+            f"\n\n[委派指令]\n{instruction}"
+            f"\n\n[提交要求]\n"
+            f"完成后请用 task_update(task_id=\"{task_id}\", status=\"in_review\", "
+            f"output=\"你的成果总结\") 提交审查。"
+        )
 
         await task_store.update_task(
             task_id,
@@ -210,6 +218,96 @@ def create_team_tools(
             return result
         except Exception as exc:
             return f"Error: Failed to spawn '{agent_name}': {exc}"
+
+    @tool
+    async def task_review(task_id: str, approve: bool, feedback: str = "") -> str:
+        """审查成员提交的任务 (Lead 专属).
+
+        当成员完成任务并调用 task_update(status="in_review") 提交审查后,
+        你应审阅其 output 并决定通过还是要求修改。
+
+        Args:
+            task_id: 要审查的任务 ID
+            approve: True=通过, 任务变为 approved (终态)
+            feedback: 审查意见。通过时可附简要评价; 要求修改时必须写清具体的修改要求,
+                      让成员明确知道要改什么。
+        """
+        if task_store is None:
+            return "Error: Task store not available"
+
+        task = await task_store.get_task(task_id)
+        if task is None:
+            return f"Error: Task '{task_id}' not found"
+        if task.status != TeamTaskStatus.IN_REVIEW:
+            return (
+                f"Error: Task '{task_id}' 当前状态为 '{task.status.value}', "
+                f"不是 'in_review', 无法审查。只有成员通过 task_update(status=\"in_review\") "
+                f"提交的任务才能审查。"
+            )
+
+        if approve:
+            await task_store.update_task(
+                task_id,
+                status=TeamTaskStatus.APPROVED,
+                review_feedback=feedback or "已通过",
+            )
+            # ── SSE: 推送任务状态变更 ──
+            if event_emitter is not None:
+                try:
+                    updated = await task_store.get_task(task_id)
+                    if updated:
+                        await event_emitter({
+                            "type": "team_task_update",
+                            "task": updated.model_dump(),
+                        })
+                except Exception:
+                    pass
+            return (
+                f"已通过任务 [{task_id}] '{task.title}'。"
+                + (f" 评价: {feedback}" if feedback else "")
+            )
+
+        # ── 要求修改 ──
+        if not feedback:
+            return "Error: 要求修改时必须提供 feedback 说明具体需要修改什么。"
+        new_revision = task.revision_count + 1
+        await task_store.update_task(
+            task_id,
+            status=TeamTaskStatus.REVISION_NEEDED,
+            review_feedback=feedback,
+            revision_count=new_revision,
+        )
+        # ── SSE: 推送任务状态变更 ──
+        if event_emitter is not None:
+            try:
+                updated = await task_store.get_task(task_id)
+                if updated:
+                    await event_emitter({
+                        "type": "team_task_update",
+                        "task": updated.model_dump(),
+                    })
+            except Exception:
+                pass
+        # ── 发送消息通知成员 ──
+        if message_bus is not None and task.assigned_agent:
+            from harness.team.models import TeamMessage, TeamMessageType
+            msg = TeamMessage(
+                from_agent=get_current_agent(),
+                to_agent=task.assigned_agent,
+                msg_type=TeamMessageType.TEXT,
+                content=(
+                    f"任务 [{task_id}] '{task.title}' 第 {new_revision} 次审查不通过。\n"
+                    f"反馈: {feedback}\n"
+                    f"请修改后重新提交审查: task_update(task_id=\"{task_id}\", "
+                    f"status=\"in_review\", output=\"...\")"
+                ),
+                task_id=task_id,
+            )
+            await message_bus.send(msg)
+        return (
+            f"已要求修改任务 [{task_id}] '{task.title}' (第 {new_revision} 次)。\n"
+            f"反馈: {feedback}"
+        )
 
     # ═════════════════════════════════════════════════════════════════
     # 共享工具
@@ -445,6 +543,7 @@ def create_team_tools(
         "shutdown_teammate": shutdown_teammate,
         "approve_plan": approve_plan,
         "spawn_teammate": spawn_teammate,
+        "task_review": task_review,
         # 共享
         "task_create": task_create,
         "task_list": task_list,

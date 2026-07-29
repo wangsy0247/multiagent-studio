@@ -244,11 +244,16 @@ export interface Project {
   updated_at: string;
 }
 
-/** 任务状态 — 与后端 TeamTaskStatus 5 态对齐 (A2A 兼容).
- *  pending → in_progress → completed / failed / cancelled.
+/** 任务状态 — 与后端 TeamTaskStatus 对齐 (含 Review 流程).
+ *  pending → in_progress → in_review → approved (终态)
+ *                        ↘ completed (终态, 兼容)
+ *                        ↘ revision_needed → in_progress
+ *                        ↘ failed / cancelled (终态)
  */
 export type ProjectTaskStatus =
-  | "pending" | "in_progress" | "completed" | "failed" | "cancelled";
+  | "pending" | "in_progress"
+  | "in_review" | "approved" | "revision_needed"
+  | "completed" | "failed" | "cancelled";
 
 export interface ProjectTask {
   id: string;
@@ -258,14 +263,24 @@ export interface ProjectTask {
   status: ProjectTaskStatus;
   assigned_agent?: string;
   dependencies: string[];
-  priority: "low" | "medium" | "high";
+  priority: "low" | "medium" | "high" | "critical";
+  output?: string;               // 成员执行结果文本
+  review_feedback?: string;      // Lead 审查反馈 (REVISION_NEEDED 时)
+  revision_count?: number;       // 修改轮次
+  error?: string;                // 失败原因
+  retry_count?: number;          // crash 恢复重试次数
   result_summary?: string;
   result_detail?: Record<string, any>;
   created_at: string;
   updated_at: string;
 }
 
-export type TeamMemberRuntimeStatus = "idle" | "busy" | "done" | "failed";
+/** 成员运行时状态 — 对齐后端 TeammateStatus 枚举.
+ *  spawning → working ↔ idle → shutting_down → shutdown / failed
+ */
+export type TeamMemberRuntimeStatus =
+  | "spawning" | "idle" | "working"
+  | "shutting_down" | "shutdown" | "failed";
 
 export interface TeamMemberRuntime {
   agent_name: string;
@@ -274,13 +289,15 @@ export interface TeamMemberRuntime {
   current_task_id?: string;
   current_task_title?: string;
   last_result?: string;
-  /** ISO 时间戳 — status=busy 时记录开始时间，前端用于显示计时 */
+  /** ISO 时间戳 — status=working 时记录开始时间，前端用于显示计时 */
   started_at?: string;
 }
 
+/** 团队消息类型 — 对齐后端 TeamMessageType 枚举. */
 export type TeamMessageType =
-  | "task" | "result" | "question" | "answer"
-  | "broadcast" | "lifecycle";
+  | "text" | "broadcast" | "lifecycle"
+  | "shutdown_request" | "shutdown_response"
+  | "plan_approval_request" | "plan_approval_response";
 
 export interface TeamMessage {
   id: string;

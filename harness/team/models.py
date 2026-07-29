@@ -16,27 +16,43 @@ from pydantic import BaseModel, Field
 class TeamTaskStatus(str, Enum):
     """Team 任务状态.
 
-    pending → in_progress → completed / failed / cancelled.
+    标准流程 (含 Review):
+      pending → in_progress → in_review → approved (终态)
+                          ↘ completed (终态, 兼容旧行为)
+                          ↘ revision_needed → in_progress (成员拿回修改)
+                          ↘ failed / cancelled (终态)
     crash 恢复: in_progress → interrupted → 原成员恢复 or 回池 PENDING.
 
     A2A 映射: submitted=pending, working=in_progress, completed=completed,
               failed=failed, canceled=cancelled.
     """
 
-    PENDING = "pending"            # 等待依赖完成或待分配 (A2A: submitted)
-    IN_PROGRESS = "in_progress"    # member 正在执行 (A2A: working)
-    COMPLETED = "completed"        # 已完成 (A2A: completed)
-    FAILED = "failed"              # 执行失败 (A2A: failed)
-    CANCELLED = "cancelled"        # 已取消 (A2A: canceled)
-    INTERRUPTED = "interrupted"    # 成员中断 (crash 恢复), 保留 assigned_agent + checkpoint
+    PENDING = "pending"               # 等待依赖完成或待分配 (A2A: submitted)
+    IN_PROGRESS = "in_progress"       # member 正在执行 (A2A: working)
+    IN_REVIEW = "in_review"           # 成员已提交, 等待 Lead 审查
+    APPROVED = "approved"             # Lead 审查通过 (终态)
+    REVISION_NEEDED = "revision_needed"  # Lead 要求修改, 成员拿回继续
+    COMPLETED = "completed"           # 已完成 (终态, 兼容旧行为)
+    FAILED = "failed"                 # 执行失败 (终态)
+    CANCELLED = "cancelled"           # 已取消 (终态)
+    INTERRUPTED = "interrupted"       # 成员中断 (crash 恢复), 保留 assigned_agent + checkpoint
 
     @property
     def is_terminal(self) -> bool:
-        """返回 True 表示任务已到达终态."""
+        """返回 True 表示任务已到达终态 (不可再流转)."""
         return self in {
+            TeamTaskStatus.APPROVED,
             TeamTaskStatus.COMPLETED,
             TeamTaskStatus.FAILED,
             TeamTaskStatus.CANCELLED,
+        }
+
+    @property
+    def is_success(self) -> bool:
+        """返回 True 表示任务以成功终态结束 (用于依赖检查)."""
+        return self in {
+            TeamTaskStatus.APPROVED,
+            TeamTaskStatus.COMPLETED,
         }
 
 
@@ -57,8 +73,10 @@ class TeamTask(BaseModel):
     priority: str = "medium"                # "low" | "medium" | "high" | "critical"
     output: str = ""                        # 执行结果文本
     error: str | None = None                # 失败原因
-    retry_count: int = 0                    # 已重试次数
-    max_retries: int = 3                    # 最大重试次数
+    retry_count: int = 0                    # 已重试次数 (crash 恢复)
+    max_retries: int = 3                    # 最大重试次数 (crash 恢复)
+    revision_count: int = 0                 # Review 修改轮次
+    review_feedback: str = ""               # Lead 审查反馈 (REVISION_NEEDED 时写入)
     origin: str = "team"                    # "team"=团队运行产生 | "user"=用户手工创建
     created_at: str = ""
     updated_at: str = ""

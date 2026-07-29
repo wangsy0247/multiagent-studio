@@ -4,6 +4,7 @@
 
 import json
 import logging
+import uuid as uuid_mod
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -49,10 +50,11 @@ async def execute(
     执行 Agent 任务 — 代理到 Harness 服务，流式返回 SSE 事件
     """
     harness = get_harness_client()
+    thread_uuid = uuid_mod.UUID(req.thread_id)
 
     # 更新线程状态
     thread_result = await db.execute(
-        select(Thread).where(Thread.id == req.thread_id, Thread.user_id == current_user.id)
+        select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
     )
     thread = thread_result.scalar_one_or_none()
     if thread is None:
@@ -66,7 +68,7 @@ async def execute(
         """SSE 事件流生成器 — 转发 Harness SSE 事件并持久化关键事件"""
         # ── 持久化用户消息 (HumanMessage 不会通过 SSE 事件发送) ──
         human_msg = Message(
-            thread_id=req.thread_id,
+            thread_id=thread_uuid,
             role="human",
             content=req.message,
             msg_type="text",
@@ -76,14 +78,15 @@ async def execute(
         db.add(human_msg)
         await db.commit()
 
-        # 追踪最后一条 AI 消息的 ID，用于 token_usage 回填
-        _last_ai_message_id: str | None = None
-        # 累积 token 流式输出的 AI 回复文本（在 finished 时持久化）
+        # 批量累积中间事件的 Message，在 finished 时一次性 commit
+        _pending_messages: list[Message] = []
+        # 累积流式 AI 回复文本 + 待回填的 token 数据
         _accumulated_ai_text: str = ""
+        _pending_token_total: int = 0
         try:
             async for event_json in harness.stream_execute(
                 thread_id=req.thread_id,
-                user_id=current_user.username,  # 文件系统目录统一使用 username
+                user_id=current_user.username,
                 message=req.message,
                 execution_graph=req.execution_graph,
                 files=req.files,
@@ -91,7 +94,6 @@ async def execute(
                 agent_name=req.agent_name,
                 mode=req.mode,
             ):
-                # 解析事件
                 try:
                     event = json.loads(event_json) if isinstance(event_json, str) else event_json
                 except json.JSONDecodeError:
@@ -100,18 +102,14 @@ async def execute(
 
                 event_type = event.get("type", "")
 
-                # ── /clear 指令: 不删 DB 消息记录, 仅清空 checkpoint 上下文 ──
-                # 前端收到 context_cleared 会清空本地 Zustand 状态,
-                # 但 App DB 中的历史消息保留, 页面刷新后仍可查看
-
-                # ── 累积 token 流式输出的 AI 回复文本 ──
+                # ── 累积流式 AI 回复文本 ──
                 if event_type == "message" and event.get("content"):
                     _accumulated_ai_text += event["content"]
 
-                # ── 持久化关键事件 ──
+                # ── 中间事件: 只 db.add(), 不 commit ──
                 if event_type in ("tool_call", "tool_result", "subagent_start", "subagent_end", "error"):
                     msg = Message(
-                        thread_id=req.thread_id,
+                        thread_id=thread_uuid,
                         role=_map_event_role(event_type, event),
                         content=event.get("content", "") or event.get("tool_result", "") or event.get("instruction", ""),
                         msg_type=event_type,
@@ -119,11 +117,8 @@ async def execute(
                         token_count=0,
                     )
                     db.add(msg)
-                    await db.commit()
-                    if event_type == "tool_call":
-                        _last_ai_message_id = str(msg.id)
+                    _pending_messages.append(msg)
                 elif event_type in ("team_start", "team_task_update", "member_status", "team_message", "team_end"):
-                    # ── 团队协作过程落库 — 刷新页面后可回放 ──
                     if event_type == "team_message":
                         _m = event.get("message", {}) or {}
                         content = f"[{_m.get('from_agent', '')} → {_m.get('to_agent') or '全员'}] {_m.get('content', '')[:500]}"
@@ -137,7 +132,7 @@ async def execute(
                     else:
                         content = f"团队结束 (status={event.get('status', '')}, rounds={event.get('total_rounds', '')})"
                     msg = Message(
-                        thread_id=req.thread_id,
+                        thread_id=thread_uuid,
                         role="system",
                         content=content,
                         msg_type=event_type,
@@ -145,11 +140,10 @@ async def execute(
                         token_count=0,
                     )
                     db.add(msg)
-                    await db.commit()
+                    _pending_messages.append(msg)
                 elif event_type == "message" and event.get("msg_type"):
-                    # Complete (non-streaming) message — persist once
                     msg = Message(
-                        thread_id=req.thread_id,
+                        thread_id=thread_uuid,
                         role=_map_event_role(event_type, event),
                         content=event.get("content", ""),
                         msg_type=event.get("msg_type", "message"),
@@ -157,41 +151,27 @@ async def execute(
                         token_count=event.get("tokens", {}).get("total_tokens", 0) if isinstance(event.get("tokens"), dict) else 0,
                     )
                     db.add(msg)
-                    await db.commit()
-                    _last_ai_message_id = str(msg.id)
-                elif event_type == "token_usage" and _last_ai_message_id:
-                    # 回填已持久化消息的 token 统计
-                    try:
-                        tokens = event.get("tokens", {})
-                        total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
-                        stmt = (
-                            sa_update(Message)
-                            .where(Message.id == _last_ai_message_id)
-                            .values(token_count=total)
-                        )
-                        await db.execute(stmt)
-                        await db.commit()
-                    except Exception:
-                        pass  # best-effort; don't break the SSE stream
+                    _pending_messages.append(msg)
+                elif event_type == "token_usage":
+                    tokens = event.get("tokens", {})
+                    _pending_token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
 
                 # 转发 SSE 到前端
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
-                # 处理线程结束
+                # ── 终态事件: 一次性 commit 所有累积数据 ──
                 if event_type == "finished":
-                    # ── 持久化累积的 AI 回复文本 ──
                     if _accumulated_ai_text.strip():
                         msg = Message(
-                            thread_id=req.thread_id,
+                            thread_id=thread_uuid,
                             role="ai",
                             content=_accumulated_ai_text,
                             msg_type="message",
                             extra_metadata={},
-                            token_count=0,
+                            token_count=_pending_token_total,
                         )
                         db.add(msg)
-                        await db.commit()
-                        _last_ai_message_id = str(msg.id)
+                        _pending_messages.append(msg)
                     thread.status = "finished"
                     db.add(thread)
                     await db.commit()
@@ -200,7 +180,6 @@ async def execute(
                     db.add(thread)
                     await db.commit()
                 elif event_type == "title_update":
-                    # ── 持久化自动生成的标题 ──
                     title_text = event.get("title", "")
                     if title_text and thread.title != title_text:
                         thread.title = title_text
@@ -239,16 +218,34 @@ async def respond_to_clarification(
 ):
     """回复澄清请求 — 流式返回 Agent 恢复执行后的输出"""
     harness = get_harness_client()
+    thread_uuid = uuid_mod.UUID(thread_id)
 
-    # 更新线程状态
-    thread_result = await db.execute(select(Thread).where(Thread.id == thread_id))
+    # 更新线程状态 (含所有权校验)
+    thread_result = await db.execute(
+        select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
+    )
     thread = thread_result.scalar_one_or_none()
-    if thread:
-        thread.status = "running"
-        db.add(thread)
-        await db.commit()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    thread.status = "running"
+    db.add(thread)
+    await db.commit()
 
     async def event_generator():
+        # 持久化用户的澄清回答
+        answer_msg = Message(
+            thread_id=thread_uuid,
+            role="human",
+            content=req.answer,
+            msg_type="text",
+            extra_metadata={},
+            token_count=0,
+        )
+        db.add(answer_msg)
+        await db.commit()
+
+        _accumulated_ai_text: str = ""
+        _pending_token_total: int = 0
         try:
             async for event_json in harness.stream_respond_clarification(
                 thread_id=thread_id,
@@ -260,32 +257,58 @@ async def respond_to_clarification(
                     yield f"data: {event_json}\n\n"
                     continue
 
+                event_type = event.get("type", "")
+
+                # 累积流式 AI 回复文本
+                if event_type == "message" and event.get("content"):
+                    _accumulated_ai_text += event["content"]
+
+                # 中间事件: 只 add, finished 时一起 commit
+                if event_type in ("tool_call", "tool_result", "subagent_start", "subagent_end", "error"):
+                    msg = Message(
+                        thread_id=thread_uuid,
+                        role=_map_event_role(event_type, event),
+                        content=event.get("content", "") or event.get("tool_result", "") or event.get("instruction", ""),
+                        msg_type=event_type,
+                        extra_metadata=event,
+                        token_count=0,
+                    )
+                    db.add(msg)
+                elif event_type == "token_usage":
+                    tokens = event.get("tokens", {})
+                    _pending_token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
+
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
-                event_type = event.get("type", "")
                 if event_type == "finished":
-                    if thread:
-                        thread.status = "finished"
-                        db.add(thread)
-                        await db.commit()
+                    if _accumulated_ai_text.strip():
+                        msg = Message(
+                            thread_id=thread_uuid,
+                            role="ai",
+                            content=_accumulated_ai_text,
+                            msg_type="message",
+                            extra_metadata={},
+                            token_count=_pending_token_total,
+                        )
+                        db.add(msg)
+                    thread.status = "finished"
+                    db.add(thread)
+                    await db.commit()
                 elif event_type == "error":
-                    if thread:
-                        thread.status = "error"
-                        db.add(thread)
-                        await db.commit()
+                    thread.status = "error"
+                    db.add(thread)
+                    await db.commit()
 
         except HarnessUnavailableError:
-            if thread:
-                thread.status = "error"
-                db.add(thread)
-                await db.commit()
+            thread.status = "error"
+            db.add(thread)
+            await db.commit()
             yield f"data: {json.dumps({'type': 'error', 'content': 'Harness 服务不可用', 'status': 'service_unavailable'})}\n\n"
         except Exception as e:
             logger.exception(f"Clarification respond SSE 异常: {e}")
-            if thread:
-                thread.status = "error"
-                db.add(thread)
-                await db.commit()
+            thread.status = "error"
+            db.add(thread)
+            await db.commit()
             yield f"data: {json.dumps({'type': 'error', 'content': str(e), 'status': 'error'})}\n\n"
 
     return StreamingResponse(
@@ -307,11 +330,14 @@ async def stop_execution(
 ):
     """停止执行"""
     harness = get_harness_client()
+    thread_uuid = uuid_mod.UUID(thread_id)
     try:
         result = await harness.stop_execution(thread_id)
 
-        # 更新线程状态
-        thread_result = await db.execute(select(Thread).where(Thread.id == thread_id))
+        # 更新线程状态 (含所有权校验)
+        thread_result = await db.execute(
+            select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
+        )
         thread = thread_result.scalar_one_or_none()
         if thread:
             thread.status = "idle"
@@ -327,8 +353,16 @@ async def stop_execution(
 async def get_execution_status(
     thread_id: str,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """查询执行状态"""
+    # 所有权校验
+    thread_uuid = uuid_mod.UUID(thread_id)
+    thread_result = await db.execute(
+        select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
+    )
+    if thread_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
     harness = get_harness_client()
     try:
         return await harness.get_status(thread_id)

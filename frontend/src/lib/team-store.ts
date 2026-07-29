@@ -54,7 +54,7 @@ export const useTeamStore = create<TeamState>((set) => ({
       members: agentNames.map((name) => ({
         agent_name: name,
         display_name: displayNames?.[name] || name,
-        status: "idle",
+        status: "spawning",  // 初始状态对齐后端 TeammateStatus.SPAWNING
       })),
     }),
 

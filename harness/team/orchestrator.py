@@ -47,7 +47,7 @@ TEAM_LEAD_NAME = "__team_lead__"
 
 # Lead Agent 允许加载的 tool_groups 白名单 — 仅保留搜索/只读文件/MCP,
 # 排除 files(含写入)、sandbox、code 等执行类工具, 确保 Lead 只做意图识别+任务分发
-LEAD_ALLOWED_TOOL_GROUPS = {"search", "files_readonly", "mcp"}
+LEAD_ALLOWED_TOOL_GROUPS = {"files_readonly", "files"}
 
 
 def _now_iso() -> str:
@@ -116,8 +116,8 @@ class TeamOrchestrator:
         self._checkpointer = checkpointer
 
         # ── 核心组件 ──
-        self.task_store = TeamTaskStore(project_id, user_id)
-        self.message_bus = TeamMessageBus(project_id, user_id)
+        self.task_store = TeamTaskStore(project_id, user_id, thread_id)
+        self.message_bus = TeamMessageBus(project_id, user_id, thread_id)
         self.team_context: TeamContext | None = None
         self.teammates: dict[str, TeammateAgent] = {}  # agent_name → TeammateAgent
 
@@ -296,6 +296,11 @@ class TeamOrchestrator:
 
         # ── 5. 团队成员快照保鲜 (spawn 完成后状态已从 SPAWNING 变为 IDLE) ──
         self._refresh_team_context()
+
+        # ── 6. 回收无主 IN_PROGRESS 任务 (上一个 run crash 后的遗留) ──
+        orphaned = await self.task_store.recover_orphaned_tasks(set(self.teammates.keys()))
+        if orphaned:
+            logger.info("Recovered %d orphaned tasks from previous crashed run", len(orphaned))
 
     async def _create_teammate(self, name: str) -> TeammateAgent | None:
         """创建并 spawn 一个 TeammateAgent — 使用 ConfigLoader 加载 per-agent 配置."""
@@ -530,11 +535,11 @@ class TeamOrchestrator:
             self.tracer.trace_phase("triage")
             yield await self._emit_team_status("triage", "Lead Agent 正在分析目标...")
 
-            # 清理上一轮遗留的团队任务 (origin=team 且非终态);
-            # 用户手工创建的任务保留, 本轮会被正常调度
-            stale = await self.task_store.cancel_stale_tasks()
-            if stale:
-                logger.info("Cancelled %d stale team tasks from previous run", len(stale))
+            # 加载已有任务，让 Lead 感知任务板全貌 (不再自动 cancel_stale_tasks)
+            existing_tasks = await self.task_store.load_tasks()
+            triage_message = message
+            if existing_tasks:
+                triage_message = message + self._format_existing_tasks(existing_tasks)
 
             lead = self._get_lead()
             plan_summary = ""
@@ -544,8 +549,8 @@ class TeamOrchestrator:
                     triage_task = TeamTask(
                         id=str(uuid.uuid4())[:8],
                         project_id=self._project_id,
-                        title=f"用户目标: {message[:80]}",
-                        description=message,
+                        title=f"用户目标: {triage_message[:80]}",
+                        description=triage_message,
                         priority="high",
                     )
                     triage_accepted = await lead.assign_task(triage_task)
@@ -850,6 +855,25 @@ class TeamOrchestrator:
         dispatched = 0
 
         for task in ready_tasks:
+            # ── REVISION_NEEDED: 直接分回原成员 (不经过领域匹配) ──
+            if task.status == TeamTaskStatus.REVISION_NEEDED:
+                tm = self.teammates.get(task.assigned_agent) if task.assigned_agent else None
+                if tm is not None and tm.status == TeammateStatus.IDLE:
+                    if await self._assign_task_to_teammate(tm, task):
+                        dispatched += 1
+                elif tm is not None and tm.status != TeammateStatus.IDLE:
+                    pass  # 原成员正忙, 留待下轮
+                else:
+                    # 原成员不可用 (已退出/不存在), 回池 PENDING 重新分配
+                    logger.warning(
+                        "REVISION_NEEDED task '%s': original member '%s' unavailable — returning to pool",
+                        task.id, task.assigned_agent,
+                    )
+                    await self.task_store.update_task(task.id, assigned_agent=None, status=TeamTaskStatus.PENDING)
+                    self._progress_event.set()
+                continue
+
+            # ── PENDING: 原有分配逻辑 ──
             if task.status != TeamTaskStatus.PENDING:
                 continue
 
@@ -992,7 +1016,7 @@ class TeamOrchestrator:
     ) -> AsyncIterator[dict[str, Any]]:
         """让 Lead LLM 智能汇总所有任务结果 (替代静态 dump)."""
         all_tasks = await self.task_store.load_tasks()
-        completed = [t for t in all_tasks if t.status == TeamTaskStatus.COMPLETED
+        completed = [t for t in all_tasks if t.status.is_success
                      and not t.title.startswith("规划:") and not t.title.startswith("用户目标:")]
         # 失败汇总含级联取消的任务 (error 中带依赖失败原因)
         failed = [t for t in all_tasks if t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED)]
@@ -1071,7 +1095,7 @@ class TeamOrchestrator:
     async def _synthesize_results(self) -> AsyncIterator[dict[str, Any]]:
         """静态汇总 (保留作为 fallback, _llm_synthesize 内部已包含)."""
         all_tasks = await self.task_store.load_tasks()
-        completed = [t for t in all_tasks if t.status == TeamTaskStatus.COMPLETED]
+        completed = [t for t in all_tasks if t.status.is_success]
         failed = [t for t in all_tasks if t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED)]
 
         if completed:
@@ -1191,6 +1215,31 @@ class TeamOrchestrator:
                     await self._emit_team_error(f"检测到任务依赖环: {'; '.join(cycle_strs)}"))
                 self._cancelled = True
                 return
+
+    @staticmethod
+    def _format_existing_tasks(tasks: list[TeamTask]) -> str:
+        """将已有任务格式化为 Lead triage 阶段的上下文注入."""
+        icons = {
+            "pending": "⏳", "in_progress": "🔄", "in_review": "👁️",
+            "revision_needed": "↩️", "approved": "✅", "completed": "✅",
+            "failed": "❌", "cancelled": "🚫",
+        }
+        lines = []
+        for t in tasks:
+            icon = icons.get(t.status.value, "❓")
+            agent = t.assigned_agent or "未分配"
+            lines.append(f"- {icon} [{t.id}] {t.title} → {agent} ({t.status.value})")
+        return (
+            f"\n\n<existing_tasks>\n"
+            f"任务板上有 {len(tasks)} 个已有任务:\n"
+            + "\n".join(lines)
+            + "\n\n你可以:\n"
+            "- task_list() 查看任务详情\n"
+            "- task_update(task_id, status=\"cancelled\") 取消不需要的任务\n"
+            "- 直接基于已有任务继续工作 (创建新任务、分配未完成的任务等)\n"
+            "- task_review(task_id, ...) 审查已提交 in_review 的任务\n"
+            + "</existing_tasks>"
+        )
 
     async def _emit_team_status(self, phase: str, message: str) -> dict[str, Any]:
         return {"type": "team_status", "thread_id": self._thread_id,

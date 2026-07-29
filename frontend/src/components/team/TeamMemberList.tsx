@@ -7,10 +7,13 @@ interface TeamMemberListProps {
   agents: AgentDefinition[];
 }
 
+/** 成员状态标签 — 对齐后端 TeammateStatus 枚举 */
 const statusLabels: Record<string, string> = {
+  spawning: "启动中",
   idle: "空闲",
-  busy: "执行中",
-  done: "完成",
+  working: "执行中",
+  shutting_down: "关闭中",
+  shutdown: "已关闭",
   failed: "失败",
 };
 
@@ -41,13 +44,17 @@ export function TeamMemberList({ agents }: TeamMemberListProps) {
               <div className="flex items-center gap-2">
                 <span
                   className={`w-2 h-2 rounded-full ${
-                    status === "idle"
-                      ? "bg-slate-300"
-                      : status === "busy"
-                        ? "bg-hermes-500 animate-pulse"
-                        : status === "done"
-                          ? "bg-green-500"
-                          : "bg-red-500"
+                    status === "spawning"
+                      ? "bg-slate-300 animate-pulse"
+                      : status === "idle"
+                        ? "bg-slate-300"
+                        : status === "working"
+                          ? "bg-hermes-500 animate-pulse"
+                          : status === "shutting_down"
+                            ? "bg-amber-400 animate-pulse"
+                            : status === "shutdown"
+                              ? "bg-slate-400"
+                              : "bg-red-500"
                   }`}
                 />
                 <span className="font-medium text-slate-700 truncate max-w-[100px]">

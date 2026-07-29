@@ -53,22 +53,22 @@ def _project_dir(project_id: str, user_id: str) -> Path:
     return _proj_dir(user_id) / project_id
 
 
-def _tasks_path(project_id: str, user_id: str) -> Path:
-    """项目任务文件: {base}/users/{uid}/projects/{pid}/tasks.json."""
-    d = _project_dir(project_id, user_id)
+def _tasks_path(project_id: str, user_id: str, thread_id: str = "") -> Path:
+    """项目任务文件: {base}/users/{uid}/projects/{pid}/threads/{tid}/tasks.json."""
+    d = _project_dir(project_id, user_id) / "threads" / thread_id
     d.mkdir(parents=True, exist_ok=True)
     return d / "tasks.json"
 
 
-def _load_tasks(project_id: str, user_id: str) -> list:
-    p = _tasks_path(project_id, user_id)
+def _load_tasks(project_id: str, user_id: str, thread_id: str = "") -> list:
+    p = _tasks_path(project_id, user_id, thread_id)
     if not p.exists():
         return []
     return _json.loads(p.read_text())
 
 
-def _save_tasks(project_id: str, tasks: list, user_id: str):
-    _tasks_path(project_id, user_id).write_text(_json.dumps(tasks, indent=2))
+def _save_tasks(project_id: str, tasks: list, user_id: str, thread_id: str = ""):
+    _tasks_path(project_id, user_id, thread_id).write_text(_json.dumps(tasks, indent=2))
 
 
 # ── 路由 ──
@@ -224,12 +224,13 @@ async def remove_member(
 @router.get("/{project_id}/tasks")
 async def list_tasks(
     project_id: str,
+    thread_id: str = "",
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
 ):
     uid = await resolve_fs_user_id(user_id, authorization, db)
-    return {"tasks": _load_tasks(project_id, uid)}
+    return {"tasks": _load_tasks(project_id, uid, thread_id)}
 
 
 @router.post("/{project_id}/tasks")
@@ -237,9 +238,11 @@ async def create_task(project_id: str, request: Request, db: AsyncSession = Depe
     body = await request.json()
     auth_header = request.headers.get("Authorization")
     user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
-    tasks = _load_tasks(project_id, user_id)
-    # 校验 status (与后端 TeamTaskStatus 5 态保持一致)
-    valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
+    thread_id = body.get("thread_id", "")
+    tasks = _load_tasks(project_id, user_id, thread_id)
+    # 校验 status (与后端 TeamTaskStatus 8 态保持一致)
+    valid_statuses = {"pending", "in_progress", "in_review", "approved",
+                      "revision_needed", "completed", "failed", "cancelled"}
     raw_status = body.get("status", "pending")
     if raw_status not in valid_statuses:
         raise HTTPException(400, f"Invalid status: {raw_status}. Must be one of {valid_statuses}")
@@ -257,7 +260,7 @@ async def create_task(project_id: str, request: Request, db: AsyncSession = Depe
         "updated_at": datetime.now().isoformat(),
     }
     tasks.append(task)
-    _save_tasks(project_id, tasks, user_id)
+    _save_tasks(project_id, tasks, user_id, thread_id)
     return task
 
 
@@ -266,19 +269,21 @@ async def update_task(project_id: str, task_id: str, request: Request, db: Async
     body = await request.json()
     auth_header = request.headers.get("Authorization")
     user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
-    tasks = _load_tasks(project_id, user_id)
+    thread_id = body.get("thread_id", "")
+    tasks = _load_tasks(project_id, user_id, thread_id)
     for t in tasks:
         if t["id"] == task_id:
             for k in ("title", "description", "status", "assigned_agent", "priority"):
                 if k in body:
                     # 校验 status 合法性
                     if k == "status":
-                        valid_statuses = {"pending", "in_progress", "completed", "failed", "cancelled"}
+                        valid_statuses = {"pending", "in_progress", "in_review", "approved",
+                                          "revision_needed", "completed", "failed", "cancelled"}
                         if body[k] not in valid_statuses:
                             raise HTTPException(400, f"Invalid status: {body[k]}. Must be one of {valid_statuses}")
                     t[k] = body[k]
             t["updated_at"] = datetime.now().isoformat()
-            _save_tasks(project_id, tasks, user_id)
+            _save_tasks(project_id, tasks, user_id, thread_id)
             return t
     raise HTTPException(404, "Task not found")
 
@@ -310,12 +315,13 @@ async def get_agent_cards(
 async def delete_task(
     project_id: str,
     task_id: str,
+    thread_id: str = "",
     user_id: str = "default",
     authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
 ):
     uid = await resolve_fs_user_id(user_id, authorization, db)
-    tasks = _load_tasks(project_id, uid)
+    tasks = _load_tasks(project_id, uid, thread_id)
     tasks = [t for t in tasks if t["id"] != task_id]
-    _save_tasks(project_id, tasks, uid)
+    _save_tasks(project_id, tasks, uid, thread_id)
     return {"status": "deleted", "id": task_id}

@@ -4,8 +4,9 @@ PostgreSQL → SQLite 数据迁移脚本
 将 App DB 从 PostgreSQL 迁移到 ~/.multiagent-studio/app.db (SQLite)
 """
 
-import sqlite3
+import json
 import os
+import sqlite3
 import sys
 
 # ── 配置 ──
@@ -33,36 +34,18 @@ def migrate():
     pg_conn.autocommit = False
     pg_cur = pg_conn.cursor()
 
+    os.makedirs(os.path.dirname(SQLITE_PATH), exist_ok=True)
     sqlite_conn = sqlite3.connect(SQLITE_PATH)
     sqlite_conn.execute("PRAGMA foreign_keys = OFF")
     sqlite_cur = sqlite_conn.cursor()
 
     try:
-        # ── 0. 补全 SQLite 缺失的列 ──
-        print("[结构] 检查 SQLite 缺失列...")
-        existing_cols = set()
-        for row in sqlite_cur.execute("PRAGMA table_info(threads)"):
-            existing_cols.add(row[1])
-
-        additions = [
-            ("project_id", "VARCHAR(50)"),
-            ("agent_name", "VARCHAR(100)"),
-            ("mode", "VARCHAR(20) DEFAULT 'single'"),
-        ]
-        for col_name, col_type in additions:
-            if col_name not in existing_cols:
-                sqlite_cur.execute(
-                    f"ALTER TABLE threads ADD COLUMN {col_name} {col_type}"
-                )
-                print(f"  + threads.{col_name} {col_type}")
-        sqlite_conn.commit()
-
-        # 创建缺失的表
-        missing_tables = []
+        # ── 0. 检查并补全缺失的表 ──
+        existing_tables = []
         for row in sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table'"):
-            missing_tables.append(row[0])
+            existing_tables.append(row[0])
 
-        if "scheduled_tasks" not in missing_tables:
+        if "scheduled_tasks" not in existing_tables:
             sqlite_cur.execute("""
                 CREATE TABLE scheduled_tasks (
                     id CHAR(32) NOT NULL PRIMARY KEY,
@@ -94,7 +77,7 @@ def migrate():
             sqlite_cur.execute("CREATE INDEX ix_scheduled_tasks_user_id ON scheduled_tasks(user_id)")
             print("  + 创建 scheduled_tasks 表")
 
-        if "task_runs" not in missing_tables:
+        if "task_runs" not in existing_tables:
             sqlite_cur.execute("""
                 CREATE TABLE task_runs (
                     id CHAR(32) NOT NULL PRIMARY KEY,
@@ -114,6 +97,25 @@ def migrate():
             sqlite_cur.execute("CREATE INDEX ix_task_runs_seen ON task_runs(seen)")
             print("  + 创建 task_runs 表")
 
+        sqlite_conn.commit()
+
+        # ── 0.5 补全 SQLite 缺失的列 (在 CREATE TABLE 之后) ──
+        print("[结构] 检查 threads 缺失列...")
+        existing_cols = set()
+        for row in sqlite_cur.execute("PRAGMA table_info(threads)"):
+            existing_cols.add(row[1])
+
+        additions = [
+            ("project_id", "VARCHAR(50)"),
+            ("agent_name", "VARCHAR(100)"),
+            ("mode", "VARCHAR(20) DEFAULT 'single'"),
+        ]
+        for col_name, col_type in additions:
+            if col_name not in existing_cols:
+                sqlite_cur.execute(
+                    f"ALTER TABLE threads ADD COLUMN {col_name} {col_type}"
+                )
+                print(f"  + threads.{col_name} {col_type}")
         sqlite_conn.commit()
 
         # ── 1. 逐表迁移 ──
@@ -163,7 +165,6 @@ def migrate():
                         converted.append(1 if val else 0)
                     elif isinstance(val, (dict, list)):
                         # JSON → string
-                        import json
                         converted.append(json.dumps(val))
                     else:
                         converted.append(str(val) if not isinstance(val, (int, float, str)) else val)

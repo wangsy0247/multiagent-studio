@@ -38,11 +38,15 @@ class TeamTaskStore:
     使用文件锁 (fcntl.flock) 保证并发安全。每次写操作都是全量覆盖。
     """
 
-    def __init__(self, project_id: str, user_id: str = "default") -> None:
+    def __init__(self, project_id: str, user_id: str = "default", thread_id: str = "") -> None:
         self._project_id = project_id
         self._user_id = user_id
+        self._thread_id = thread_id
         paths = get_paths()
-        self._tasks_dir = paths.base_dir / "users" / user_id / "projects" / project_id
+        self._tasks_dir = (
+            paths.base_dir / "users" / user_id / "projects" /
+            project_id / "threads" / thread_id
+        )
         self._tasks_dir.mkdir(parents=True, exist_ok=True)
         self._file = self._tasks_dir / "tasks.json"
         # 内存缓存（受文件锁保护）
@@ -216,24 +220,28 @@ class TeamTaskStore:
         """原子认领任务 — 消除多成员并发认领/派单的竞态 (CAS).
 
         认领条件 (全部在 flock 锁内校验, 单一收口兜底所有并发写):
-        - status == PENDING
-        - 未分配, 或已分配给认领者本人
-        - 依赖全部 COMPLETED (依赖不变式在认领点强制)
+        ├─ PENDING: 未分配或已分配给认领者, 且依赖全部 is_success
+        └─ REVISION_NEEDED: 仅原成员可认领 (拿回修改)
 
         返回认领成功后的任务; 条件不满足返回 None (= 已被他人拿走/不可认领).
-
-        注: completed_ids 快照取在锁外, 但 COMPLETED 集合单调增长,
-        快照偏旧只会让认领偶发偏保守 (返回 None, 下轮重试), 不会放行不满足依赖的任务.
         """
         tasks_snapshot = await self.load_tasks()
-        completed_ids = {t.id for t in tasks_snapshot if t.status == TeamTaskStatus.COMPLETED}
+        success_ids = {t.id for t in tasks_snapshot if t.status.is_success}
 
         def _do(t: TeamTask) -> TeamTask | None:
+            # ── REVISION_NEEDED → IN_PROGRESS (仅原成员) ──
+            if t.status == TeamTaskStatus.REVISION_NEEDED:
+                if t.assigned_agent != agent_name:
+                    return None
+                t.status = TeamTaskStatus.IN_PROGRESS
+                return t
+
+            # ── PENDING → IN_PROGRESS ──
             if t.status != TeamTaskStatus.PENDING:
                 return None
             if t.assigned_agent is not None and t.assigned_agent != agent_name:
                 return None
-            if not all(dep in completed_ids for dep in t.dependencies):
+            if not all(dep in success_ids for dep in t.dependencies):
                 return None
             t.assigned_agent = agent_name
             t.status = TeamTaskStatus.IN_PROGRESS
@@ -302,39 +310,42 @@ class TeamTaskStore:
     # ------------------------------------------------------------------
 
     async def get_ready_tasks(self) -> list[TeamTask]:
-        """返回所有依赖已满足的待办任务.
+        """返回所有依赖已满足的就绪任务.
 
         "ready" 条件:
-        - status == PENDING
-        - 所有 dependencies 中的任务状态均为 COMPLETED
+        - PENDING: 所有 dependencies 中的任务状态均为 is_success
+        - REVISION_NEEDED: 所有 dependencies 中的任务状态均为 is_success (成员拿回修改)
+        - IN_REVIEW 不返回 (等待 Lead 审查)
         """
         tasks = await self.load_tasks()
-        completed_ids = {t.id for t in tasks if t.status == TeamTaskStatus.COMPLETED}
+        success_ids = {t.id for t in tasks if t.status.is_success}
         ready: list[TeamTask] = []
         for t in tasks:
-            if t.status != TeamTaskStatus.PENDING:
+            if t.status == TeamTaskStatus.IN_REVIEW:
                 continue
-            if all(dep in completed_ids for dep in t.dependencies):
+            if t.status not in (TeamTaskStatus.PENDING, TeamTaskStatus.REVISION_NEEDED):
+                continue
+            if all(dep in success_ids for dep in t.dependencies):
                 ready.append(t)
         return ready
 
     async def get_unclaimed_tasks(self) -> list[TeamTask]:
         """ 返回所有未被认领且依赖已满足的任务.
 
-        认领条件 (参考 learn-claude-code  scan_unclaimed_tasks):
-        - status == PENDING
+        认领条件:
+        - status == PENDING (不包含 REVISION_NEEDED, 它有 assigned_agent)
         - assigned_agent is None (无 owner)
-        - 所有 dependencies 均为 COMPLETED
+        - 所有 dependencies 均为 is_success
         """
         tasks = await self.load_tasks()
-        completed_ids = {t.id for t in tasks if t.status == TeamTaskStatus.COMPLETED}
+        success_ids = {t.id for t in tasks if t.status.is_success}
         unclaimed: list[TeamTask] = []
         for t in tasks:
             if t.status != TeamTaskStatus.PENDING:
                 continue
             if t.assigned_agent is not None:
                 continue
-            if not all(dep in completed_ids for dep in t.dependencies):
+            if not all(dep in success_ids for dep in t.dependencies):
                 continue
             unclaimed.append(t)
         return unclaimed
@@ -372,18 +383,18 @@ class TeamTaskStore:
 
         return cycles
 
-    async def cancel_stale_tasks(self) -> list[TeamTask]:
-        """处理上一轮运行遗留的非终态团队任务.
+    async def recover_orphaned_tasks(self, active_teammates: set[str]) -> list[TeamTask]:
+        """回收无主 IN_PROGRESS 任务 (上一个 team run 崩溃后遗留).
 
-        策略 (逐任务):
-        - IN_PROGRESS + retry_count < max_retries → INTERRUPTED (保留 assigned_agent, 等待原成员恢复)
-        - IN_PROGRESS + retry_count >= max_retries → CANCELLED (已达重试上限)
-        - PENDING → 保留 (Lead 的规划成果不丢弃, 本轮可正常调度)
+        仅在 initialize() 中调用一次, 不替代 Lead 的决策权。
+        只处理 IN_PROGRESS 且 assigned_agent 不在活跃 teammate 列表中的任务:
+        - retry_count < max_retries → INTERRUPTED (保留 assigned_agent, 等待原成员恢复)
+        - retry_count >= max_retries → CANCELLED (已达重试上限)
 
-        用户手工创建 (origin == "user") 的任务不受影响.
+        PENDING / IN_REVIEW / REVISION_NEEDED 等 Lead 在 triage 阶段感知并自行决策,
+        不做任何自动处理。
         """
-        interrupted: list[TeamTask] = []
-        cancelled: list[TeamTask] = []
+        recovered: list[TeamTask] = []
 
         with open(self._file, "a+") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
@@ -391,34 +402,30 @@ class TeamTaskStore:
                 tasks = self._load_locked()
                 changed = False
                 for t in tasks:
-                    if t.origin != "team" or t.status.is_terminal:
+                    if t.origin != "team" or t.status != TeamTaskStatus.IN_PROGRESS:
                         continue
-                    if t.status == TeamTaskStatus.IN_PROGRESS:
-                        t.retry_count += 1
-                        if t.retry_count < t.max_retries:
-                            t.status = TeamTaskStatus.INTERRUPTED
-                            t.error = "上次团队运行中断, 等待原成员恢复"
-                            t.updated_at = _now_iso()
-                            interrupted.append(t)
-                        else:
-                            t.status = TeamTaskStatus.CANCELLED
-                            t.error = f"中断恢复失败: 已达最大重试次数 ({t.max_retries})"
-                            t.updated_at = _now_iso()
-                            cancelled.append(t)
-                        changed = True
-                    # PENDING 任务保留不动 — Lead 的规划成果
+                    if t.assigned_agent and t.assigned_agent in active_teammates:
+                        continue  # 成员还在, 不是孤儿
+                    t.retry_count += 1
+                    if t.retry_count < t.max_retries:
+                        t.status = TeamTaskStatus.INTERRUPTED
+                        t.error = "上次团队运行中断, 等待原成员恢复"
+                        t.updated_at = _now_iso()
+                    else:
+                        t.status = TeamTaskStatus.CANCELLED
+                        t.error = f"中断恢复失败: 已达最大重试次数 ({t.max_retries})"
+                        t.updated_at = _now_iso()
+                    recovered.append(t)
+                    changed = True
                 if changed:
                     self._save_locked(tasks)
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
-        for t in interrupted:
-            logger.info("Stale task interrupted (retry %d/%d): id=%s title=%s",
-                        t.retry_count, t.max_retries, t.id, t.title[:40])
-        for t in cancelled:
-            logger.warning("Stale task cancelled (retries exhausted): id=%s title=%s",
-                           t.id, t.title[:40])
-        return interrupted + cancelled
+        for t in recovered:
+            logger.info("Orphaned task recovered: id=%s status=%s retry=%d/%d",
+                        t.id, t.status.value, t.retry_count, t.max_retries)
+        return recovered
 
     async def clear_all(self) -> int:
         """清空所有任务（每次新 Team 运行时调用，避免旧结果混入新对话）。返回清除的任务数。"""

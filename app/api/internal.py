@@ -1,5 +1,5 @@
 """
-内部服务间 API — 供 Harness 的 cron 工具调用（Agent 自建定时任务）
+内部服务间 API — 供 Harness 内置工具调用（cron 定时任务、session_search 会话搜索）
 
 认证: X-Internal-Token 共享密钥（INTERNAL_API_TOKEN 环境变量，app 与 harness 需一致）。
 身份: harness 侧的用户标识统一为 username，这里解析为 User 后复用面向用户的路由逻辑。
@@ -11,6 +11,7 @@ import os
 import uuid as uuid_mod
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -105,3 +106,31 @@ async def trigger_task_internal(
 ):
     user = await _resolve_user(username, db)
     return await trigger_task(task_id, current_user=user, db=db)
+
+
+# ── session_search（Agent 搜索历史会话消息）─────────────────────────────────
+
+
+class SessionSearchRequest(BaseModel):
+    username: str
+    query: str
+    exclude_thread_id: str | None = None  # 通常为当前会话，避免搜到自己
+    max_sessions: int = 3
+
+
+@router.post("/session-search", dependencies=[Depends(require_internal_token)])
+async def session_search_internal(
+    req: SessionSearchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.session_search import search_messages
+
+    user = await _resolve_user(req.username, db)
+    sessions = await search_messages(
+        db,
+        user_id=user.id,
+        query=req.query,
+        exclude_thread_id=req.exclude_thread_id,
+        max_sessions=req.max_sessions,
+    )
+    return {"sessions": sessions}

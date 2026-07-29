@@ -138,11 +138,11 @@ export const projectsAPI = {
     apiClient.delete(`/v1/projects/${id}/members/${agentName}?user_id=${getCurrentUserId()}`),
   getAgentCards: (id: string) =>
     apiClient.get(`/v1/projects/${id}/agent-cards?user_id=${getCurrentUserId()}`),
-  // Tasks
-  listTasks: (id: string) => apiClient.get(`/v1/projects/${id}/tasks?user_id=${getCurrentUserId()}`),
-  createTask: (id: string, data: object) => apiClient.post(`/v1/projects/${id}/tasks`, { ...data, user_id: getCurrentUserId() }),
-  updateTask: (id: string, taskId: string, data: object) => apiClient.put(`/v1/projects/${id}/tasks/${taskId}`, { ...data, user_id: getCurrentUserId() }),
-  deleteTask: (id: string, taskId: string) => apiClient.delete(`/v1/projects/${id}/tasks/${taskId}?user_id=${getCurrentUserId()}`),
+  // Tasks (thread_id 为空时返回未关联 thread 的任务)
+  listTasks: (id: string, threadId?: string) => apiClient.get(`/v1/projects/${id}/tasks?user_id=${getCurrentUserId()}&thread_id=${threadId || ""}`),
+  createTask: (id: string, data: object, threadId?: string) => apiClient.post(`/v1/projects/${id}/tasks`, { ...data, user_id: getCurrentUserId(), thread_id: threadId || "" }),
+  updateTask: (id: string, taskId: string, data: object, threadId?: string) => apiClient.put(`/v1/projects/${id}/tasks/${taskId}`, { ...data, user_id: getCurrentUserId(), thread_id: threadId || "" }),
+  deleteTask: (id: string, taskId: string, threadId?: string) => apiClient.delete(`/v1/projects/${id}/tasks/${taskId}?user_id=${getCurrentUserId()}&thread_id=${threadId || ""}`),
 };
 
 export const configsAPI = {

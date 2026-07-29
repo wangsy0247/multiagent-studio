@@ -3,14 +3,15 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Wrench, Brain, Bot } from "lucide-react";
-import { projectsAPI, agentsAPI } from "@/lib/api-client";
+import { projectsAPI, agentsAPI, threadsAPI } from "@/lib/api-client";
+import type { ThreadSummary } from "@/lib/types";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
 import ChatPanel from "@/components/chat/ChatPanel";
 import type { ProjectTaskStatus, AgentCard } from "@/lib/types";
 
 interface Project { id: string; name: string; description: string; members: string[]; thread_count: number; task_count: number; }
-interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; }
+interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; revision_count?: number; review_feedback?: string; output?: string; }
 interface Agent { name: string; display_name: string; description: string; }
 
 function ElapsedTimer({ startedAt }: { startedAt: string }) {
@@ -254,6 +255,8 @@ function ChatTab({ projectId }: { projectId: string }) {
 function TasksTab({ projectId }: { projectId: string }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [selectedThreadId, setSelectedThreadId] = useState("");
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -261,14 +264,20 @@ function TasksTab({ projectId }: { projectId: string }) {
   // 从 team-store 读取运行时状态
   const teamTasks = useTeamStore((state) => state.tasks);
 
-  useEffect(() => { loadTasks(); loadAgents(); }, [projectId]);
+  useEffect(() => { loadAll(); }, [projectId]);
+  useEffect(() => { loadTasks(); }, [selectedThreadId]);
+
+  async function loadAll() {
+    try {
+      await Promise.all([loadTasks(), loadAgents(), loadThreads()]);
+    } finally { setLoading(false); }
+  }
 
   async function loadTasks() {
     try {
-      const { data } = await projectsAPI.listTasks(projectId);
+      const { data } = await projectsAPI.listTasks(projectId, selectedThreadId || undefined);
       setTasks(data.tasks || []);
     } catch (err) { console.error(err); }
-    finally { setLoading(false); }
   }
 
   async function loadAgents() {
@@ -278,13 +287,20 @@ function TasksTab({ projectId }: { projectId: string }) {
     } catch (err) { console.error(err); }
   }
 
+  async function loadThreads() {
+    try {
+      const { data } = await threadsAPI.listByProject(projectId);
+      setThreads(data.threads || []);
+    } catch (err) { console.error(err); }
+  }
+
   async function handleCreate() {
     if (!newTitle.trim()) return;
     try {
       await projectsAPI.createTask(projectId, {
         title: newTitle,
         assigned_agent: newAssignedAgent || undefined,
-      });
+      }, selectedThreadId || undefined);
       setNewTitle(""); setNewAssignedAgent(""); setShowCreate(false);
       loadTasks();
     } catch (err) { console.error(err); }
@@ -292,14 +308,16 @@ function TasksTab({ projectId }: { projectId: string }) {
 
   async function handleStatusChange(taskId: string, newStatus: string) {
     try {
-      await projectsAPI.updateTask(projectId, taskId, { status: newStatus });
+      await projectsAPI.updateTask(projectId, taskId, { status: newStatus }, selectedThreadId || undefined);
       loadTasks();
     } catch (err) { console.error(err); }
   }
 
   async function handleDelete(taskId: string) {
-    try { await projectsAPI.deleteTask(projectId, taskId); loadTasks(); }
-    catch (err) { console.error(err); }
+    try {
+      await projectsAPI.deleteTask(projectId, taskId, selectedThreadId || undefined);
+      loadTasks();
+    } catch (err) { console.error(err); }
   }
 
   if (loading) {
@@ -321,11 +339,13 @@ function TasksTab({ projectId }: { projectId: string }) {
     }
   });
 
-  // 5 态看板 — 与后端 TeamTaskStatus 对齐 (A2A 兼容)
-  const columns: { key: ProjectTaskStatus; label: string; color: string }[] = [
+  // 7 态看板 — 与后端 TeamTaskStatus 对齐 (含 Review 流程)
+  const columns: { key: string; label: string; color: string; aliases?: string[] }[] = [
     { key: "pending", label: "待办", color: "bg-slate-100" },
     { key: "in_progress", label: "进行中", color: "bg-hermes-100" },
-    { key: "completed", label: "已完成", color: "bg-green-100" },
+    { key: "in_review", label: "审查中", color: "bg-blue-100" },
+    { key: "revision_needed", label: "需修改", color: "bg-amber-100" },
+    { key: "completed", label: "已完成", color: "bg-green-100", aliases: ["approved"] },
     { key: "failed", label: "失败", color: "bg-red-100" },
     { key: "cancelled", label: "已取消", color: "bg-orange-100" },
   ];
@@ -333,7 +353,21 @@ function TasksTab({ projectId }: { projectId: string }) {
   return (
     <div className="h-full p-4">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-slate-700">任务面板</h3>
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">任务面板</h3>
+          <select
+            value={selectedThreadId}
+            onChange={(e) => setSelectedThreadId(e.target.value)}
+            className="text-xs px-2 py-1 border border-slate-200 rounded-lg text-slate-600 bg-white focus:outline-none focus:ring-1 focus:ring-slate-300"
+          >
+            <option value="">全部会话</option>
+            {threads.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title?.slice(0, 30) || t.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        </div>
         <button onClick={() => setShowCreate(true)} className="flex items-center gap-1 text-xs px-3 py-1.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800">
           <Plus className="w-3 h-3" /> 添加任务
         </button>
@@ -356,14 +390,14 @@ function TasksTab({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      <div className="grid grid-cols-5 gap-2 h-[calc(100%-4rem)]">
+      <div className="grid grid-cols-7 gap-2 h-[calc(100%-4rem)]">
         {columns.map((col) => (
           <div key={col.key} className="flex flex-col">
             <div className={`text-xs font-medium px-2 py-1.5 rounded-lg mb-2 ${col.color} text-slate-700`}>
-              {col.label} ({allTasks.filter((t) => t.status === col.key).length})
+              {col.label} ({allTasks.filter((t) => t.status === col.key || (col.aliases?.includes(t.status) ?? false)).length})
             </div>
             <div className="flex-1 overflow-y-auto space-y-1.5">
-              {allTasks.filter((t) => t.status === col.key).map((task) => (
+              {allTasks.filter((t) => t.status === col.key || (col.aliases?.includes(t.status) ?? false)).map((task) => (
                 <div key={task.id} className="border border-slate-200 rounded-lg p-2 bg-white text-xs group">
                   <p className="text-slate-800 font-medium truncate">{task.title}</p>
                   {task.assigned_agent && (
@@ -372,10 +406,28 @@ function TasksTab({ projectId }: { projectId: string }) {
                       {task.status === "in_progress" && (
                         <span className="text-[10px] px-1 py-0 bg-green-50 text-green-600 rounded" title="已认领并执行中">🎯 执行中</span>
                       )}
+                      {task.status === "in_review" && (
+                        <span className="text-[10px] px-1 py-0 bg-blue-50 text-blue-600 rounded" title="等待 Lead 审查">👁️ 待审查</span>
+                      )}
+                      {task.status === "approved" && (
+                        <span className="text-[10px] px-1 py-0 bg-green-100 text-green-600 rounded" title="Lead 审查通过">✅ 已审查</span>
+                      )}
                     </p>
                   )}
+                  {task.status === "revision_needed" && (
+                    <div className="mt-1">
+                      <span className="text-[10px] px-1 py-0 bg-amber-50 text-amber-600 rounded">
+                        ↩️ 第{task.revision_count || 1}次修改
+                      </span>
+                      {task.review_feedback && (
+                        <p className="text-[10px] text-slate-400 mt-0.5 truncate" title={task.review_feedback}>
+                          {task.review_feedback.slice(0, 40)}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="flex items-center gap-0.5 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex-wrap">
-                    {columns.filter((c) => c.key !== col.key).slice(0, 4).map((c) => (
+                    {columns.filter((c) => c.key !== col.key && !(col.aliases?.includes(c.key) ?? false)).slice(0, 5).map((c) => (
                       <button
                         key={c.key}
                         onClick={() => handleStatusChange(task.id, c.key)}
@@ -447,8 +499,16 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
   });
   const availableAgents = agents.filter((a) => !members.includes(a.name));
 
-  const statusLabels: Record<string, string> = { idle: "空闲", busy: "执行中", spawning: "启动中", shutting_down: "关闭中", failed: "失败" };
-  const statusColors: Record<string, string> = { idle: "bg-slate-300", busy: "bg-hermes-500 animate-pulse", spawning: "bg-yellow-500", shutting_down: "bg-orange-400", failed: "bg-red-500" };
+  /** 成员状态标签 — 对齐后端 TeammateStatus 枚举 */
+  const statusLabels: Record<string, string> = {
+    spawning: "启动中", idle: "空闲", working: "执行中",
+    shutting_down: "关闭中", shutdown: "已关闭", failed: "失败",
+  };
+  const statusColors: Record<string, string> = {
+    spawning: "bg-slate-300 animate-pulse", idle: "bg-slate-300",
+    working: "bg-hermes-500 animate-pulse", shutting_down: "bg-amber-400 animate-pulse",
+    shutdown: "bg-slate-400", failed: "bg-red-500",
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -492,7 +552,7 @@ function MembersTab({ projectId, members, onUpdate }: { projectId: string; membe
                         <Bot className="w-4 h-4 text-hermes-500" />
                         {a.display_name || a.name}
                         <span className="text-xs text-slate-400 font-normal">({statusLabels[status] || status})</span>
-                        {runtime?.started_at && status === "busy" && (
+                        {runtime?.started_at && status === "working" && (
                           <ElapsedTimer startedAt={runtime.started_at} />
                         )}
                       </p>
