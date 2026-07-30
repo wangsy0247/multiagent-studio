@@ -31,9 +31,5 @@ tavily-python>=0.3.0
 arxiv>=2.0.0
 duckduckgo-search>=8.0.0
 
-# Memory (mem0 + vector store)
-mem0ai>=0.1.0
-chromadb>=0.5.0
-
 # Utilities
 python-multipart>=0.0.12

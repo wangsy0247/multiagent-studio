@@ -69,14 +69,35 @@ class TeamTaskStore:
                 data = json.loads(content)
             if isinstance(data, list):
                 return data
-        except (json.JSONDecodeError, OSError) as exc:
+        except json.JSONDecodeError as exc:
+            # 损坏保护: 先 rename 留档再返回空, 避免后续写直接覆写丢失线索
+            corrupt_path = self._file.with_name(
+                f"{self._file.name}.corrupt-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            )
+            try:
+                os.replace(self._file, corrupt_path)
+                logger.warning(
+                    "Tasks file %s is corrupt (%s) — archived to %s",
+                    self._file, exc, corrupt_path,
+                )
+            except OSError:
+                logger.warning("Failed to read tasks file %s: %s", self._file, exc)
+        except OSError as exc:
             logger.warning("Failed to read tasks file %s: %s", self._file, exc)
         return []
 
     def _write(self, tasks: list[dict[str, Any]]) -> None:
-        """写入原始任务列表（不加锁 — 由调用方负责）."""
-        with open(self._file, "w", encoding="utf-8") as f:
+        """写入原始任务列表（不加锁 — 由调用方负责）.
+
+        原子写: 先写 tmp 再 os.replace, 避免崩溃留下半写文件;
+        tmp 文件名带 pid+uuid, 防止多写者互相覆盖 tmp.
+        """
+        tmp_path = self._file.with_name(
+            f"{self._file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        )
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(tasks, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, self._file)
 
     def _load_locked(self) -> list[TeamTask]:
         """在持有锁的情况下重新加载任务."""
@@ -383,11 +404,12 @@ class TeamTaskStore:
 
         return cycles
 
-    async def recover_orphaned_tasks(self, active_teammates: set[str]) -> list[TeamTask]:
+    async def recover_orphaned_tasks(self) -> list[TeamTask]:
         """回收无主 IN_PROGRESS 任务 (上一个 team run 崩溃后遗留).
 
         仅在 initialize() 中调用一次, 不替代 Lead 的决策权。
-        只处理 IN_PROGRESS 且 assigned_agent 不在活跃 teammate 列表中的任务:
+        新 run 初始化时不可能有任何 agent 在干活, 因此所有 IN_PROGRESS
+        一律视为孤儿任务:
         - retry_count < max_retries → INTERRUPTED (保留 assigned_agent, 等待原成员恢复)
         - retry_count >= max_retries → CANCELLED (已达重试上限)
 
@@ -404,8 +426,6 @@ class TeamTaskStore:
                 for t in tasks:
                     if t.origin != "team" or t.status != TeamTaskStatus.IN_PROGRESS:
                         continue
-                    if t.assigned_agent and t.assigned_agent in active_teammates:
-                        continue  # 成员还在, 不是孤儿
                     t.retry_count += 1
                     if t.retry_count < t.max_retries:
                         t.status = TeamTaskStatus.INTERRUPTED

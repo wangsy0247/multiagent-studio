@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -117,6 +118,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Team 模式澄清暂停 TTL — 超过此时长未回答的暂停 run 懒过期为 cancelled
+CLARIFICATION_TTL_S = 1800
 
 
 # ---------------------------------------------------------------------------
@@ -240,10 +244,8 @@ class HarnessService(_BaseService):
         memory_cfg_dict = bootstrap_eff.raw.get("memory", {})
         mem_cfg = MemoryConfig(
             # 基础设施 (全局部署级)
-            backend=bootstrap_eff.memory_backend,
             storage_path=memory_cfg_dict.get("storage_path") or cfg.memory_root,
             debounce_seconds=int(bootstrap_eff.memory_debounce_seconds),
-            mem0_config=bootstrap_eff.memory_mem0_config,
             # 默认值 (per-user 字段通过 middleware config → queue → updater 覆盖)
             enabled=True,
             model_name="",
@@ -254,18 +256,12 @@ class HarnessService(_BaseService):
             fact_confidence_threshold=bootstrap_eff.memory_fact_confidence_threshold,
             injection_enabled=bootstrap_eff.memory_injection_enabled,
             max_injection_tokens=bootstrap_eff.memory_max_injection_tokens,
-            mem0_search_top_k=bootstrap_eff.memory_mem0_search_top_k,
-            mem0_tool_enabled=bootstrap_eff.memory_mem0_tool_enabled,
         )
         set_memory_config(mem_cfg)
         FileMemoryStorage(memory_root=cfg.memory_root)
         get_memory_queue()
-        if mem_cfg.backend == "mem0" or mem_cfg.mem0_tool_enabled:
-            from harness.memory.mem0_client import get_mem0
-            get_mem0()
         logger.info(
-            "Memory system initialized: backend=%s project_memory=%s",
-            mem_cfg.backend,
+            "Memory system initialized: project_memory=%s",
             "enabled" if mem_cfg.project_memory_enabled else "disabled",
         )
 
@@ -831,15 +827,111 @@ class HarnessService(_BaseService):
         set_skill_user_id(user_id)
 
         from harness.team.orchestrator import TeamOrchestrator
-        from harness.team.models import TeamMessage, TeamMessageType
+        from harness.team.models import TeamMessage, TeamMessageType, TeammateStatus
 
         # ── 运行时消息注入: 同一 thread 已有活跃 team run → 注入 Lead inbox ──
         existing = self._active_runs.get(thread_id)
         if existing and existing.get("mode") == "team":
             orch = existing.get("orchestrator")
             if orch is not None:
+                # ── s32: 澄清恢复 — 用户回答了 Lead 的 ask_clarification ──
+                if getattr(orch, "_clarification_pending", False):
+                    # ── 已取消的暂停 run → 不走 resume, 清理后落入新建 run ──
+                    if existing.get("cancelled"):
+                        try:
+                            await orch.cancel()
+                        except Exception:
+                            pass
+                        self._active_runs.pop(thread_id, None)
+                    else:
+                        # ── 澄清暂停 TTL: 懒过期 — 超时则取消并结束 ──
+                        paused_at = existing.get("paused_at")
+                        if paused_at and (time.time() - paused_at) > CLARIFICATION_TTL_S:
+                            logger.info(
+                                "Clarification pause expired for thread=%s (>%ds), cancelling",
+                                thread_id, CLARIFICATION_TTL_S,
+                            )
+                            try:
+                                await orch.cancel()
+                            except Exception:
+                                pass
+                            self._active_runs.pop(thread_id, None)
+                            yield {
+                                "type": "team_end",
+                                "thread_id": thread_id,
+                                "project_id": project_id,
+                                "status": "cancelled",
+                                "content": "澄清等待超时（30 分钟），团队运行已自动取消。",
+                            }
+                            return
+                        lead = orch._get_lead()
+                        if lead is not None and lead.pending_clarification:
+                            logger.info(
+                                "Resuming team run after clarification: %s",
+                                lead.pending_clarification.get("question", "")[:80],
+                            )
+                            # 恢复执行 → 清除暂停时间戳
+                            existing.pop("paused_at", None)
+                            # 异常兜底: 此分支在主 try/finally 之外, 必须自行清理 active_run,
+                            # 否则残留死 orchestrator 会让后续消息注入死信箱而卡住
+                            try:
+                                async for event in orch.resume(message):
+                                    if self._active_runs.get(thread_id, {}).get("cancelled"):
+                                        await orch.cancel()
+                                        self._active_runs.pop(thread_id, None)
+                                        yield {
+                                            "type": "team_end",
+                                            "thread_id": thread_id,
+                                            "project_id": project_id,
+                                            "status": "cancelled",
+                                        }
+                                        return
+                                    yield event
+                            except asyncio.CancelledError:
+                                await orch.cancel()
+                                self._active_runs.pop(thread_id, None)
+                                yield {
+                                    "type": "team_end",
+                                    "thread_id": thread_id,
+                                    "project_id": project_id,
+                                    "status": "cancelled",
+                                }
+                                return
+                            except Exception as exc:
+                                logger.exception(
+                                    "Team resume failed for thread=%s", thread_id,
+                                )
+                                self._active_runs.pop(thread_id, None)
+                                yield {
+                                    "type": "team_error",
+                                    "thread_id": thread_id,
+                                    "project_id": project_id,
+                                    "content": f"Team 执行异常: {exc}",
+                                }
+                                return
+                            # resume() 返回: 检查是否再次暂停 (clarification) 还是正常结束
+                            if orch._clarification_pending:
+                                # 再次暂停 → 重新记录暂停时间戳, 不发 finished, 不 pop active_run
+                                run_info = self._active_runs.get(thread_id)
+                                if run_info is not None:
+                                    run_info["paused_at"] = time.time()
+                                return
+                            # 正常结束 → 清理 active_run, 避免残留已 shutdown 的 orchestrator
+                            self._active_runs.pop(thread_id, None)
+                            yield {"type": "finished", "thread_id": thread_id}
+                            return
+                        # Lead 已死/澄清状态丢失 → 清理过期记录, 落入下方新建 run
+                        logger.info(
+                            "Stale clarification pause for thread=%s (lead unavailable), "
+                            "starting new team run",
+                            thread_id,
+                        )
+                        self._active_runs.pop(thread_id, None)
+
+                # ── 普通消息注入: 用户追加需求 → 注入 Lead inbox ──
                 lead = orch._get_lead()
-                if lead is not None:
+                if (lead is not None
+                        and lead.status != TeammateStatus.SHUTDOWN):
                     await orch.message_bus.send(TeamMessage(
                         from_agent="user", to_agent=lead.name,
                         msg_type=TeamMessageType.TEXT,
@@ -852,6 +944,12 @@ class HarnessService(_BaseService):
                         "content": f"已注入给 Lead ({lead.name})",
                     }
                     return
+                # team 已结束 (Lead 已 shutdown) → 清理过期记录, 落入下方新建 run
+                logger.info(
+                    "Stale active_run for thread=%s (lead dead), starting new team run",
+                    thread_id,
+                )
+                self._active_runs.pop(thread_id, None)
 
         # ── 并发守卫: 同一项目同时只允许一个 team run ──
         # 任务板/信箱是项目级共享文件, 并发 run 会互相取消任务、抢占认领
@@ -907,8 +1005,14 @@ class HarnessService(_BaseService):
                     return
                 yield event
 
-            # 正常结束 → 补发 finished: App 层依赖它收尾 thread 状态并落库最终文本
-            yield {"type": "finished", "thread_id": thread_id}
+            # 正常结束 → 补发 finished (暂停等待 clarification 时跳过)
+            if not orchestrator or not orchestrator._clarification_pending:
+                yield {"type": "finished", "thread_id": thread_id}
+            else:
+                # ── s32: 澄清暂停 → 记录暂停时间戳 (TTL 懒过期用) ──
+                run_info = self._active_runs.get(thread_id)
+                if run_info is not None:
+                    run_info["paused_at"] = time.time()
 
         except ValueError as exc:
             # 项目未找到等配置错误 → 降级为单 Agent
@@ -946,6 +1050,11 @@ class HarnessService(_BaseService):
             }
 
         finally:
+            # ── s32: 暂停等待 clarification 时不清理, 保留 orchestrator 供下次 resume ──
+            run_info = self._active_runs.get(thread_id)
+            orch_ref = run_info.get("orchestrator") if run_info else None
+            if orch_ref is not None and getattr(orch_ref, "_clarification_pending", False):
+                return  # 保留 active_run, 等待用户回答
             self._active_runs.pop(thread_id, None)
 
     # ------------------------------------------------------------------
@@ -1822,6 +1931,9 @@ class HarnessService(_BaseService):
                     await orchestrator.cancel()
                 except Exception:
                     pass
+                # cancel 后移除 active_run — 避免残留死 orchestrator
+                # 让下一条消息注入死信箱 (澄清暂停时没有运行中的循环来消费 cancelled 标记)
+                self._active_runs.pop(thread_id, None)
 
     async def get_status(self, thread_id: str) -> dict[str, Any]:
         """Return thread execution status, reading from LangGraph checkpoint."""

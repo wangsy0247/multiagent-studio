@@ -299,7 +299,6 @@ def _write_user_global_config(path: Path) -> None:
             "debounce_seconds": 120,
             "max_injection_tokens": 500,
             "fact_confidence_threshold": 0.7,
-            "mem0_config": {},
         },
     })
     path.write_text(content, encoding="utf-8")
@@ -353,13 +352,6 @@ def format_user_global_config_yaml(config: dict) -> str:
     sections.append(f"  debounce_seconds: {mem_cfg.get('debounce_seconds', 120)}")
     sections.append(f"  max_injection_tokens: {mem_cfg.get('max_injection_tokens', 500)}")
     sections.append(f"  fact_confidence_threshold: {mem_cfg.get('fact_confidence_threshold', 0.7)}")
-    mem0 = mem_cfg.get("mem0_config", {})
-    if mem0:
-        sections.append(f"  mem0_config:")
-        for k, v in mem0.items():
-            sections.append(f"    {k}: {v!r}")
-    else:
-        sections.append(f"  mem0_config: {{}}")
     sections.append("")
 
     return "\n".join(sections)

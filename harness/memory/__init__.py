@@ -2,7 +2,6 @@
 
 Memory is a global singleton system:
 - ``FileMemoryStorage`` — single JSON file per user (file backend)
-- ``mem0_client`` — mem0 + Chroma vector store (mem0 backend)
 - ``MemoryUpdateQueue`` — debounced update queue (threading.Timer)
 - ``MemoryUpdater`` — LLM-driven memory extraction and persistence
 - ``DynamicContextMiddleware`` — reads + injects memory at ``abefore_agent``
@@ -24,6 +23,14 @@ from harness.memory.storage import (
     MemoryStorage,
     get_memory_storage,
 )
+from harness.memory.task_memory import (
+    TaskMemory,
+    TaskMemoryStore,
+)
+from harness.memory.team_memory import (
+    TeamMemory,
+    TeamMemoryStore,
+)
 from harness.memory.updater import (
     MemoryUpdater,
     clear_memory_data,
@@ -43,6 +50,12 @@ __all__ = [
     "MemoryStorage",
     "FileMemoryStorage",
     "get_memory_storage",
+    # Task memory
+    "TaskMemory",
+    "TaskMemoryStore",
+    # Team memory
+    "TeamMemory",
+    "TeamMemoryStore",
     # Updater
     "MemoryUpdater",
     "clear_memory_data",

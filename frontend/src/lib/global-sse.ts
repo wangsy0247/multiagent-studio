@@ -53,7 +53,14 @@ class GlobalSSEManager {
     });
 
     this.connections.set(threadId, sse);
-    sse.connect(url, body);
+    // 兜底清理: connect() 在流结束/出错/异常时都会 settle,
+    // 保证任何路径下连接都不会残留为 "僵尸连接" (否则重进会话时
+    // isRunning 恒 true, UI 卡在 "AI 正在思考..." 且无法发送消息)
+    sse.connect(url, body).finally(() => {
+      if (this.connections.get(threadId) === sse) {
+        this.connections.delete(threadId);
+      }
+    });
   }
 
   /** 订阅 thread 的 SSE 事件。返回取消订阅函数 + 连接状态 */

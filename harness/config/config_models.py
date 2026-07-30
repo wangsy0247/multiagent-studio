@@ -51,7 +51,6 @@ class TitleGlobalConfig(BaseModel):
 class MemoryGlobalConfig(BaseModel):
     debounce_seconds: float = 120.0
     fact_confidence_threshold: float = 0.7
-    mem0_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class UserGlobalConfig(BaseModel):
@@ -70,12 +69,9 @@ class UserGlobalConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AgentMemoryConfig(BaseModel):
-    backend: str = "file"
     max_facts: int = 10
     injection_enabled: bool = True
     max_injection_tokens: int = 500
-    mem0_tool_enabled: bool = False
-    mem0_search_top_k: int = 5
 
 
 class AgentFeaturesConfig(BaseModel):
@@ -155,16 +151,20 @@ class EffectiveConfig:
     skills: list[str] = field(default_factory=list)
 
     # 记忆
-    memory_backend: str = "file"
     memory_max_facts: int = 10
     memory_ttl_days: int = 90
     memory_injection_enabled: bool = True
     memory_max_injection_tokens: int = 500
     memory_debounce_seconds: float = 120.0
     memory_fact_confidence_threshold: float = 0.7
-    memory_mem0_tool_enabled: bool = False
-    memory_mem0_search_top_k: int = 5
-    memory_mem0_config: dict[str, Any] = field(default_factory=dict)
+
+    # 任务记忆
+    task_memory_enabled: bool = True
+    task_memory_max_related: int = 3
+    task_memory_max_tokens_per_task: int = 80
+
+    # 团队记忆
+    team_memory_enabled: bool = True
 
     # 功能开关
     summarization_enabled: bool = True
@@ -223,6 +223,8 @@ class EffectiveConfig:
         subagents = merged.get("subagents", {})
         limits = merged.get("limits", {})
         team = merged.get("team", {})
+        tm = merged.get("task_memory", {})
+        tm2 = merged.get("team_memory", {})
         loop = merged.get("loop_detection", {})
         wt = merged.get("worktree", {})
         guardrail = merged.get("guardrail", {})
@@ -239,16 +241,16 @@ class EffectiveConfig:
             memory_model=merged.get("memory_model", ""),
             tool_groups=merged.get("tool_groups", []),
             skills=merged.get("skills", []),
-            memory_backend=mem.get("backend", "file"),
             memory_max_facts=int(mem.get("max_facts", 10)),
             memory_ttl_days=int(mem.get("ttl_days", 90)),
             memory_injection_enabled=bool(mem.get("injection_enabled", True)),
             memory_max_injection_tokens=int(mem.get("max_injection_tokens", 500)),
             memory_debounce_seconds=float(mem.get("debounce_seconds", 120)),
             memory_fact_confidence_threshold=float(mem.get("fact_confidence_threshold", 0.7)),
-            memory_mem0_tool_enabled=bool(mem.get("mem0_tool_enabled", False)),
-            memory_mem0_search_top_k=int(mem.get("mem0_search_top_k", 5)),
-            memory_mem0_config=mem.get("mem0_config", {}),
+            task_memory_enabled=bool(tm.get("enabled", True)),
+            task_memory_max_related=int(tm.get("max_related_tasks", 3)),
+            task_memory_max_tokens_per_task=int(tm.get("max_tokens_per_task", 80)),
+            team_memory_enabled=bool(tm2.get("enabled", True)),
             summarization_enabled=bool(summarization.get("enabled", True)),
             title_enabled=bool(title.get("enabled", True)),
             subagent_enabled=bool(features.get("subagent", True)),

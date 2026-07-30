@@ -3,10 +3,10 @@
 _teammate_loop 设计:
 - 独立 asyncio Task 持续运行
 - WORKING 阶段: 完整 ReAct agent loop, 多轮 LLM 推理
-- IDLE 阶段: 事件驱动等待 (消息 / 新任务), 不再 sleep() 轮询
+- IDLE 阶段: 事件驱动等待消息, 不扫描任务板
 - 完成后回到 IDLE, 不销毁 — 跨任务保持上下文
 - shutdown_request/plan_approval 协议消息处理
-- _maybe_claim_task() 自主认领预留
+- 任务分配统一由 Orchestrator._dispatch_ready_tasks() 负责
 
 设计: _agent_loop() 持续运行 → IDLE → 被唤醒 → WORKING → IDLE → ...
 """
@@ -14,7 +14,9 @@ _teammate_loop 设计:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -37,6 +39,8 @@ from harness.team.models import (
     TeammateStatus,
     RequestStatus,
 )
+from harness.memory.task_memory import TaskMemoryStore
+from harness.team.agent_logs import AgentLogWriter
 from harness.team.task_store import TeamTaskStore
 
 logger = logging.getLogger(__name__)
@@ -44,12 +48,6 @@ logger = logging.getLogger(__name__)
 # ── 常量 ──
 IDLE_POLL_INTERVAL = 5.0       # IDLE 时 inbox 检查间隔 (秒)
 MAX_WORK_TURNS = 50            # WORKING 阶段最大 LLM 轮次
-
-# ── 任务认领常量 ──
-# 阈值: 至少需要 2 个工具命中 (25×2=50) 或 1 技能+1 工具 (30+25=55) 才能自主认领
-# 单工具命中 (25) / 少量关键词重叠不再触发认领, 减少误认领
-CLAIM_THRESHOLD = 50.0              # 匹配分 ≥ 此值 → 认领
-
 
 
 class TeammateAgent:
@@ -71,6 +69,7 @@ class TeammateAgent:
         message_bus: TeamMessageBus,
         task_store: TeamTaskStore,
         *,
+        task_memory_store: TaskMemoryStore | None = None,
         skill_storage: Any | None = None,
         event_queue: asyncio.Queue | None = None,
         role: str = "member",
@@ -89,6 +88,7 @@ class TeammateAgent:
         self._team_context = team_context
         self._message_bus = message_bus
         self._task_store = task_store
+        self._task_memory_store = task_memory_store
         self._skill_storage = skill_storage
         self._event_queue = event_queue
         self._role = role
@@ -136,18 +136,18 @@ class TeammateAgent:
         # ── 对话历史 (跨任务保持, checkpointer 启用时自动从 state 恢复) ──
         self._messages: list[Any] = []
 
+        # ── 任务间上下文裁剪: 积累已完成任务的摘要, 下一任务注入 ──
+        self._task_summaries: list[str] = []
+
         # ── 事件驱动唤醒 ──
         # 与消息总线的 per-agent 通知事件是同一个对象: send() → _notify() 即唤醒,
-        # 不再等 5s 轮询; assign_task/enable_auto_claim/shutdown 的 set 语义不变
+        # 复用 message_bus 的 Event, 消息到达时实时唤醒
         self._wake_event = message_bus.get_event(agent_name)
 
         # ── 关闭 + plan approval 请求追踪 ──
         self._should_exit = False
         self._pending_requests: dict[str, dict[str, Any]] = {}  # req_id → {type, status, ...}
         self._tracker_lock = asyncio.Lock()  # s16: 并发安全锁
-
-        # ── 控制: 延迟 auto-claim (等 Lead 规划完成后再开启) ──
-        self._can_claim: bool = False
 
         # ── asyncio Task 引用 ──
         self._task: asyncio.Task[None] | None = None
@@ -157,6 +157,17 @@ class TeammateAgent:
 
         # ── 构建 system prompt (初始; 每个工作周期在 _work_loop 开头重建以反映最新团队状态) ──
         self._system_prompt = self._build_system_prompt()
+
+        # ── Agent 对话日志写入器 (供前端按 agent 隔离展示) ──
+        self._agent_log_writer: AgentLogWriter | None = None
+
+        # ── AI 流式消息 buffer (member agent 用, 积累 chunks 后写入 JSONL) ──
+        self._streaming_ai_buffer: str = ""
+        self._streaming_ai_task_id: str | None = None
+
+        # ── 暂停/恢复: pending clarification (Lead 调用 ask_clarification 后) ──
+        self.pending_clarification: dict[str, Any] | None = None
+        self._last_completed_task_id: str | None = None
 
         # ── 预构建中间件链 (按角色区分, 只构建一次) ──
         self._middlewares = self._build_middlewares()
@@ -184,18 +195,23 @@ class TeammateAgent:
         # 2. 项目上下文 (含成员能力卡片)
         parts.append(self._team_context.get_project_context_xml())
 
-        # 3. 团队能力矩阵 (agent cards — 所有成员可见)
+        # 3. 团队记忆 (L3 — 跨运行积累的团队知识)
+        team_memory_xml = self._team_context.get_team_memory_xml()
+        if team_memory_xml:
+            parts.append(team_memory_xml)
+
+        # 4. 团队能力矩阵 (agent cards — 所有成员可见)
         capabilities_xml = self._team_context.get_team_capabilities_xml()
         if capabilities_xml:
             parts.append(capabilities_xml)
 
-        # 4. 协作规则
+        # 5. 协作规则
         parts.append(self._team_context.get_team_collaboration_rules())
 
-        # 5. Teammate 特定指令 (按角色区分 Lead/Member, 含协议工具说明)
+        # 6. Teammate 特定指令 (按角色区分 Lead/Member, 含协议工具说明)
         parts.append(self._get_teammate_instructions())
 
-        # 6. Skills (仅 Member, Lead 不需要 skill 能力)
+        # 7. Skills (仅 Member, Lead 不需要 skill 能力)
         if self._role != "lead":
             skills_section = self._build_skills_section()
             if skills_section:
@@ -352,8 +368,8 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 - 高风险操作前, 使用 request_plan_approval 向 Lead 提交计划, 等待 approve_plan 审批结果
 
 ** 自主行为:**
-- IDLE 时自动扫描任务板, 使用 claim_task 认领未分配的任务
-- 空闲状态由系统自动管理: 完成当前任务并 task_update 后即自动回到 IDLE 等待新任务
+- 任务由 Lead 通过 delegate_to_member 或 task_create(assigned_agent=...) 分配
+- 完成当前任务并 task_update 后自动回到 IDLE, 由 Orchestrator 分配下一任务
 
 **子任务委派:**
 - 使用 task 工具将复杂任务的子步骤委派给 SubAgent 并行执行
@@ -477,13 +493,35 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
     async def spawn(self, initial_task: TeamTask | None = None) -> None:
         """启动 teammate 的 agent loop."""
+        self._should_exit = False  # 支持 shutdown 后重新 spawn
         self.status = TeammateStatus.SPAWNING
+
+        # ── 确保总线注册 + wake_event 同步 (重复注册幂等;
+        # 防止 shutdown() unregister 后 event 脱节, 收不到新消息通知) ──
+        self._message_bus.register_agent(self.name)
+        self._wake_event = self._message_bus.get_event(self.name)
 
         if initial_task:
             self.current_task_id = initial_task.id
             self._messages.append(HumanMessage(
                 content=f"[新任务 {initial_task.id}] {initial_task.title}\n\n{initial_task.description}"
             ))
+
+        # ── 创建 Agent 对话日志写入器 (供前端按 agent 隔离展示) ──
+        if self._project_id and self._thread_id:
+            try:
+                from harness.config.paths import get_paths
+                self._agent_log_writer = AgentLogWriter(
+                    base_dir=get_paths().base_dir,
+                    project_id=self._project_id,
+                    thread_id=self._thread_id,
+                    agent_name=self.name,
+                    user_id=self._user_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to create AgentLogWriter for '%s'", self.name, exc_info=True,
+                )
 
         self.status = TeammateStatus.IDLE
         self._task = asyncio.create_task(self._agent_loop())
@@ -503,15 +541,46 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 await self._task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                # agent loop 若已异常死亡, 旧异常会在此重抛 — 吞掉,
+                # 不中断 orchestrator finally 中的整体清理
+                logger.exception(
+                    "Teammate '%s' agent loop raised during shutdown", self.name,
+                )
         self._message_bus.unregister_agent(self.name)
         self.status = TeammateStatus.SHUTDOWN
         logger.info("Teammate '%s' shut down", self.name)
 
-    def enable_auto_claim(self) -> None:
-        """开启自主认领 — orchestrator 在 Lead 规划完成后调用."""
-        self._can_claim = True
-        self._wake_event.set()  # 唤醒 IDLE loop 立即开始扫描
-        logger.info("Teammate '%s' auto-claim enabled", self.name)
+    async def respawn(self) -> None:
+        """重置并重启 agent loop — 幂等, 任意状态下安全调用.
+
+        用于 main.py 澄清恢复等场景, 替代旧的手动 hack
+        (_should_exit=False + status=IDLE + create_task):
+        - 先取消并等待旧 loop, 避免双 loop 并发
+        - 重新注册总线并刷新 wake_event, 解决 shutdown() unregister
+          后 event 脱节 (unregister 会 pop event) 收不到消息通知的问题
+        """
+        # ── 停掉旧 loop (若存活), 避免双 loop 并发 ──
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "Teammate '%s' old agent loop raised during respawn", self.name,
+                )
+
+        self._should_exit = False
+        self.status = TeammateStatus.IDLE
+
+        # ── 重新注册总线 + 刷新 wake_event (注册幂等) ──
+        self._message_bus.register_agent(self.name)
+        self._wake_event = self._message_bus.get_event(self.name)
+
+        self._task = asyncio.create_task(self._agent_loop())
+        logger.info("Teammate '%s' respawned (idle, waiting for tasks)", self.name)
 
     # ------------------------------------------------------------------
     # 核心循环
@@ -539,29 +608,21 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
     # ------------------------------------------------------------------
 
     async def _idle_loop(self) -> None:
-        """IDLE 阶段 — 事件驱动等待消息或新任务.
+        """IDLE 阶段 — 事件驱动等待消息, 收到后处理.
 
-        每 IDLE_POLL_INTERVAL 秒检查一次 inbox; IDLE 时自主扫描任务板认领.
-        成员不在此自行退出: 团队是 per-request 组装, 生命周期由 Orchestrator 统一管理
-        (run() 结束时 finally 统一 shutdown). 空闲自毁会让后续任务派给已死成员,
-        造成任务永久 PENDING 的"幽灵任务".
+        任务分配由 Orchestrator._dispatch_ready_tasks() 统一负责,
+        Member 不自主扫描任务板认领 (避免竞态和重复的领域匹配逻辑).
         """
         while self.status == TeammateStatus.IDLE and not self._should_exit:
             try:
-                # 事件驱动等待 (有消息时立即唤醒, 或超时后检查)
                 await asyncio.wait_for(self._wake_event.wait(), timeout=IDLE_POLL_INTERVAL)
                 self._wake_event.clear()
             except asyncio.TimeoutError:
-                pass  # 超时, 正常轮询
+                pass
 
-            # 1. 检查 inbox
             inbox = await self._message_bus.read_inbox(self.name)
             for msg in inbox:
                 await self._handle_inbox_message(msg)
-
-            # 2. 自主扫描任务板认领
-            if self.status == TeammateStatus.IDLE:
-                await self._maybe_claim_task()
 
     # ------------------------------------------------------------------
     # WORKING 阶段 — 完整 ReAct agent loop
@@ -594,6 +655,8 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         # ── create_agent + astream_events ──
         work_failed = False
         cancelled = False
+        work_checkpoint_id: str | None = None  # 本周期实际使用的 checkpoint thread id
+        staged_baseline = len(self._messages)  # staging 基线兜底 (正常在消息策略后重设)
         try:
             # HarnessState + checkpointer → LangGraph 状态持久化 (短期/会话记忆)
             agent = create_agent(
@@ -612,29 +675,55 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 lc_callback = self._tracer.get_langchain_callback()
                 if lc_callback is not None:
                     callbacks.append(lc_callback)
+            # ── 任务间上下文裁剪 ──
+            # 每个任务使用独立的 checkpointer key, 避免加载前序任务的完整对话历史.
+            # 前序任务的摘要通过 _task_summaries 注入 (压缩格式, ~100 tokens/任务).
+            task_checkpoint_id = (
+                # 消息驱动周期 (current_task_id=None) 用 'msg' 后缀, 保证 thread id 稳定,
+                # 结算后的 pending_clarification 检测才能找回本周期的 checkpoint
+                f"{self._checkpoint_thread_id}-{self.current_task_id or 'msg'}"
+                if self._checkpointer is not None
+                else self._checkpoint_thread_id
+            )
+            work_checkpoint_id = task_checkpoint_id
             config = RunnableConfig(
-                configurable={"thread_id": self._checkpoint_thread_id},
+                configurable={"thread_id": task_checkpoint_id},
                 recursion_limit=max_turns * 3,
                 callbacks=callbacks if callbacks else None,
             )
 
             # ── 消息策略 ──
-            # 有 checkpointer: 只传增量消息 (上次 run 之后新增的). 历史由 checkpointer 恢复.
-            # 无 checkpointer: 传最近 50 条, 手动管理历史.
             if self._checkpointer is not None:
-                # self._messages 是 staging buffer: 两次 graph run 之间累积的新消息
-                # (assign_task 的 HumanMessage, _inject_identity, inbox 消息等)
                 new_msgs = list(self._messages)
                 self._messages.clear()
             else:
                 new_msgs = list(self._messages[-50:] if len(self._messages) > 50 else self._messages)
+
+            # ── staging 基线: 记录消费后 _messages 长度, 结算时据此判断
+            # 本周期内是否有新 staged 消息 (如 WORKING 期间 drain 到的 shutdown_request) ──
+            staged_baseline = len(self._messages)
+
+            # ── 注入前序任务摘要 (压缩格式, 替代完整历史) ──
+            if self._task_summaries:
+                summary_text = (
+                    "<previous_tasks>\n"
+                    "以下是你之前完成的任务的摘要，供参考上下文:\n\n"
+                    + "\n".join(self._task_summaries)
+                    + "\n</previous_tasks>"
+                )
+                new_msgs.insert(0, HumanMessage(content=summary_text))
+
             input_state: dict[str, Any] = {
                 "messages": new_msgs,
                 "thread_id": self._thread_id,
                 "user_id": self._user_id,
             }
 
-            # astream_events — 推送实时思考 / 工具调用事件到 SSE 流
+            # astream_events — 实时推送事件
+            # Lead: 全部事件进入 SSE 主流 ("全部" 视图)
+            # Member: 全部事件写入 agent_logs JSONL (前端 agent 标签页轮询),
+            #         不发送 SSE (保持 "全部" 视图干净, 只显示 Lead 编排 + 任务状态)
+            is_lead = self._role == "lead"
             async for event in agent.astream_events(input_state, config, version="v2"):
                 kind = event.get("event", "")
                 data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
@@ -642,33 +731,70 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 if kind == "on_chat_model_stream":
                     chunk = data.get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
-                        self._push_event({
-                            "type": "message",
-                            "content": str(chunk.content),
-                            "subagent_name": self.name,
-                        })
+                        chunk_text = str(chunk.content)
+                        if is_lead:
+                            self._push_event({
+                                "type": "message",
+                                "content": chunk_text,
+                                "subagent_name": self.name,
+                            })
+                        else:
+                            # Member: 积累到 buffer, 不发送 SSE
+                            self._streaming_ai_buffer += chunk_text
+                            self._streaming_ai_task_id = self.current_task_id
 
                 elif kind == "on_tool_start":
                     tool_name = event.get("name", "")
                     tool_input = data.get("input", {})
-                    # 跳过内部工具 (task_create 等 team 工具)
-                    self._push_event({
-                        "type": "tool_call",
-                        "subagent_name": self.name,
-                        "tool_name": tool_name,
-                        "tool_args": tool_input if isinstance(tool_input, dict) else {},
-                    })
+                    if is_lead:
+                        # Lead: 工具调用发 SSE
+                        self._push_event({
+                            "type": "tool_call",
+                            "subagent_name": self.name,
+                            "tool_name": tool_name,
+                            "tool_args": tool_input if isinstance(tool_input, dict) else {},
+                        })
+                    else:
+                        # Member: flush AI buffer + 写 tool 调用到 JSONL (带参数), 不发 SSE
+                        self._flush_ai_buffer()
+                        if self._agent_log_writer and self.current_task_id:
+                            tool_args_str = (
+                                json.dumps(tool_input, ensure_ascii=False)
+                                if isinstance(tool_input, dict) and tool_input
+                                else str(tool_input) if tool_input else ""
+                            )
+                            self._agent_log_writer.write_message(
+                                role="tool_call",
+                                content=tool_args_str,
+                                task_id=self.current_task_id,
+                                tool_name=tool_name,
+                            )
 
                 elif kind == "on_tool_end":
                     tool_name = event.get("name", "")
                     tool_output = data.get("output", "")
                     output_str = str(tool_output)[:500]
-                    self._push_event({
-                        "type": "tool_result",
-                        "subagent_name": self.name,
-                        "tool_name": tool_name,
-                        "tool_result": output_str,
-                    })
+                    if is_lead:
+                        # Lead: 工具结果发 SSE
+                        self._push_event({
+                            "type": "tool_result",
+                            "subagent_name": self.name,
+                            "tool_name": tool_name,
+                            "tool_result": output_str,
+                        })
+                    else:
+                        # Member: 工具结果写入 JSONL, 不发 SSE
+                        if self._agent_log_writer and self.current_task_id:
+                            self._agent_log_writer.write_message(
+                                role="tool_result",
+                                content=output_str,
+                                task_id=self.current_task_id,
+                                tool_name=tool_name,
+                            )
+
+            # ── Member: flush 残余 AI buffer ──
+            if not is_lead:
+                self._flush_ai_buffer()
 
             # drain 执行期间可能到达的残余 inbox 消息并追加到 staging buffer
             late_inbox = await self._message_bus.read_inbox(self.name)
@@ -699,11 +825,24 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
 
         # ── 任务结算 → 回到 IDLE (或被 shutdown 打断 → SHUTTING_DOWN) ──
         completed_task_id = self.current_task_id
+        self._last_completed_task_id = completed_task_id  # 留存, 供 orchestrator 排查
         if completed_task_id:
             self.current_task_id = None
             if cancelled:
-                # shutdown 打断: 不计数不改板, 由 orchestrator 统一收尾
-                pass
+                # shutdown 打断 (含优雅关机 approve 路径): 不计数, 但任务回池 —
+                # 置回 PENDING 并清除 assigned_agent, 否则任务永久卡 IN_PROGRESS 无人执行.
+                # update_task 走 setattr, assigned_agent=None 可直接清除.
+                try:
+                    await self._task_store.update_task(
+                        completed_task_id,
+                        status=TeamTaskStatus.PENDING,
+                        assigned_agent=None,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Teammate '%s' failed to requeue cancelled task '%s'",
+                        self.name, completed_task_id, exc_info=True,
+                    )
             elif work_failed:
                 self.failed_tasks += 1
             else:
@@ -744,6 +883,80 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                     metadata={"agent_name": self.name, "role": self._role},
                 )
 
+            # ── Task Memory 提取 (fire-and-forget, 不阻塞主流程) ──
+            if (completed_task_id and not work_failed and not cancelled
+                    and self._task_memory_store is not None):
+                asyncio.create_task(self._extract_task_memory(completed_task_id))
+
+            # ── 上下文裁剪: 收集当前任务摘要, 下一任务注入 ──
+            if completed_task_id and not cancelled:
+                try:
+                    task = await self._task_store.get_task(completed_task_id)
+                    if task and task.title:
+                        status_icon = "✅" if not work_failed else "❌"
+                        output_excerpt = (
+                            task.output[:150].replace("\n", " ")
+                            if task.output else "(无输出)"
+                        )
+                        self._task_summaries.append(
+                            f"- {status_icon} [{task.id}] {task.title} → {task.status.value}\n"
+                            f"  摘要: {output_excerpt}"
+                        )
+                        # 保留最近 5 个任务的摘要
+                        if len(self._task_summaries) > 5:
+                            self._task_summaries = self._task_summaries[-5:]
+                except Exception:
+                    pass
+
+            # ── Agent 对话日志: 任务边界 (Leader 还需写 checkpointer 消息) ──
+            if self._agent_log_writer and completed_task_id and not cancelled:
+                try:
+                    _is_lead = self._role == "lead"
+                    # Leader: 从 checkpointer 提取 AI/Tool 消息 (Leader 不走实时 JSONL 写入)
+                    if _is_lead and self._checkpointer is not None:
+                        ckpt = await self._checkpointer.aget_tuple(config)
+                        if ckpt and ckpt.checkpoint:
+                            channel_values = ckpt.checkpoint.get("channel_values", {})
+                            all_msgs = channel_values.get("messages", [])
+                            for msg in all_msgs:
+                                msg_type = getattr(msg, "type", None)
+                                if msg_type == "ai":
+                                    content = getattr(msg, "content", "")
+                                    if isinstance(content, str) and content.strip():
+                                        self._agent_log_writer.write_message(
+                                            role="ai",
+                                            content=content,
+                                            task_id=completed_task_id,
+                                        )
+                                elif msg_type == "tool":
+                                    content = str(getattr(msg, "content", ""))
+                                    tool_name = getattr(msg, "name", "") or ""
+                                    if content.strip():
+                                        self._agent_log_writer.write_message(
+                                            role="tool",
+                                            content=content,
+                                            task_id=completed_task_id,
+                                            tool_name=tool_name,
+                                        )
+                    # 写入任务边界 (Leader + Member 均写入)
+                    _task = await self._task_store.get_task(completed_task_id)
+                    _title = _task.title if _task else ""
+                    _status = _task.status.value if _task else ("failed" if work_failed else "completed")
+                    _summary = (
+                        (_task.output or "")[:300] if _task else ""
+                    )
+                    self._agent_log_writer.write_task_boundary(
+                        task_id=completed_task_id,
+                        title=_title,
+                        status=_status,
+                        summary=_summary,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to write agent log for '%s' task '%s'",
+                        self.name, completed_task_id, exc_info=True,
+                    )
+
         # ── Tracing: 工作结束 ──
         if self._tracer is not None:
             self._tracer.trace_teammate_work_end(
@@ -769,9 +982,47 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             except Exception as exc:
                 logger.warning("Teammate '%s' failed to send summary to Lead: %s", self.name, exc)
 
+        # ── s32: 检测 pending clarification (Lead 调用 ask_clarification 后) ──
+        # 用本周期实际使用的 checkpoint thread id (消息驱动周期为 '...-msg'),
+        # 任务驱动与消息驱动周期都能检测; 只在确实重新检测时才清空旧值,
+        # 避免丢掉已暂存的 pending_clarification.
+        if (not cancelled and not work_failed
+                and self._checkpointer is not None and work_checkpoint_id):
+            self.pending_clarification = None
+            try:
+                from harness.middleware.clarification import get_pending_clarification
+                from langchain_core.runnables import RunnableConfig
+                ckpt = await self._checkpointer.aget_tuple(
+                    RunnableConfig(configurable={"thread_id": work_checkpoint_id})
+                )
+                if ckpt and ckpt.checkpoint:
+                    msgs = ckpt.checkpoint.get("channel_values", {}).get("messages", [])
+                    pending = get_pending_clarification(msgs)
+                    if pending:
+                        self.pending_clarification = pending
+                        logger.info(
+                            "Teammate '%s' has pending clarification: %s",
+                            self.name, pending.get("question", "")[:80],
+                        )
+            except Exception:
+                logger.debug(
+                    "Failed to check pending clarification for '%s'",
+                    self.name, exc_info=True,
+                )
+
         if self._should_exit:
             self.status = TeammateStatus.SHUTTING_DOWN
             logger.info("Teammate '%s' work_loop: shutdown flag set, entering SHUTTING_DOWN", self.name)
+        elif len(self._messages) > staged_baseline:
+            # 本周期内有新 staged 消息 (如 WORKING 期间 drain 到的 shutdown_request) —
+            # 不回落 IDLE, 保持 WORKING 再跑一轮处理, 避免消息孤儿
+            # (IDLE 只等 wake_event + 读 inbox, 从不回看 _messages, 落 IDLE 即搁浅).
+            # 基线比较保证只在确有新 staged 消息时才续跑, 不会空转.
+            logger.info(
+                "Teammate '%s' has %d staged message(s), staying WORKING for another round",
+                self.name, len(self._messages) - staged_baseline,
+            )
+            self.status = TeammateStatus.WORKING
         else:
             # 成功完成一轮工作 → 清除瞬时错误标记.
             # 成员在整个 team run 期间常驻, 一次瞬时错误不应使其永久失去被分配资格
@@ -779,6 +1030,96 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             if not work_failed:
                 self.last_error = None
             self.status = TeammateStatus.IDLE
+
+    # ------------------------------------------------------------------
+    # 任务记忆提取
+    # ------------------------------------------------------------------
+
+    async def _extract_task_memory(self, task_id: str) -> None:
+        """Extract structured memory from a completed task (fire-and-forget).
+
+        Called after task settlement when the task completed successfully.
+        Failure is silent — extraction is best-effort and should never
+        block or crash the agent loop.
+        """
+        try:
+            task = await self._task_store.get_task(task_id)
+            if task is None:
+                return
+            if not task.output or not task.output.strip():
+                logger.debug("Task '%s' has no output, skipping memory extraction", task_id)
+                return
+
+            from harness.memory.prompt import TASK_MEMORY_UPDATE_PROMPT
+            from harness.memory.updater import _create_memory_model, _extract_text
+
+            # ── build extraction prompt ──
+            prompt = TASK_MEMORY_UPDATE_PROMPT.format(
+                task_title=task.title,
+                task_description=task.description or "(无描述)",
+                task_output=task.output[:3000],
+                task_status=task.status.value,
+                assigned_agent=self.name,
+            )
+
+            # ── create lightweight LLM ──
+            api_key = self._extract_api_key()
+            base_url = self._extract_base_url()
+            model_name = (
+                self._effective_config.memory_model
+                or self._effective_config.model
+                or "gpt-4o-mini"
+            ) if self._effective_config else "gpt-4o-mini"
+
+            model = _create_memory_model(model_name, api_key=api_key, base_url=base_url)
+            if model is None:
+                return
+
+            response = await model.ainvoke(prompt)
+            text = _extract_text(response.content).strip()
+            # Strip markdown code fences if present
+            if text.startswith("```"):
+                lines = text.split("\n")
+                text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            data = json.loads(text)
+
+            from harness.memory.task_memory import TaskMemory
+
+            memory = TaskMemory(
+                task_id=task.id,
+                task_title=task.title,
+                assigned_agent=self.name,
+                status=task.status.value,
+                summary=data.get("summary", ""),
+                decisions=data.get("decisions", []),
+                pitfalls=data.get("pitfalls", []),
+                discoveries=data.get("discoveries", []),
+                tags=data.get("tags", []),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            await self._task_memory_store.save(memory)
+            logger.info(
+                "Task memory extracted for '%s': %d decisions, %d pitfalls, "
+                "%d discoveries, tags=%s",
+                task_id, len(memory.decisions), len(memory.pitfalls),
+                len(memory.discoveries), memory.tags,
+            )
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse task memory LLM response for '%s'", task_id)
+        except Exception as exc:
+            logger.warning("Task memory extraction failed for '%s': %s", task_id, exc)
+
+    def _extract_api_key(self) -> str:
+        """Get API key for memory extraction LLM."""
+        if self._effective_config and self._effective_config.api_key:
+            return self._effective_config.api_key
+        return os.environ.get("OPENAI_API_KEY", "")
+
+    def _extract_base_url(self) -> str:
+        """Get base URL for memory extraction LLM."""
+        if self._effective_config and self._effective_config.base_url:
+            return self._effective_config.base_url
+        return os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
     # ------------------------------------------------------------------
     # 外部唤醒
@@ -834,6 +1175,24 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                     + "\n</dependency_results>"
                 )
 
+        # ── 注入相关历史任务记忆 (压缩格式, 每条 ~80 tokens) ──
+        if (self._task_memory_store is not None
+                and task.title and task.description):
+            try:
+                from harness.memory.prompt import format_related_tasks_for_injection
+                related = await self._task_memory_store.find_related(
+                    task.title, task.description, max_results=3,
+                )
+                if related:
+                    memory_block = format_related_tasks_for_injection(related)
+                    if memory_block:
+                        content_parts.append(f"\n{memory_block}")
+            except Exception as exc:
+                logger.debug(
+                    "Failed to inject task memory for '%s': %s",
+                    task.id, exc,
+                )
+
         # REVISION_NEEDED: 注入 Lead 的审查反馈
         if task.status == TeamTaskStatus.REVISION_NEEDED and task.review_feedback:
             content_parts.append(
@@ -855,6 +1214,13 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         self._messages.append(HumanMessage(content="\n".join(content_parts)))
         self.status = TeammateStatus.WORKING
         self._wake_event.set()
+        # ── 写入 agent 日志: 任务分配 (human 消息) ──
+        if self._agent_log_writer:
+            self._agent_log_writer.write_message(
+                role="human",
+                content=f"任务: {task.title}\n\n{task.description or '(无描述)'}",
+                task_id=task.id,
+            )
         logger.info("Teammate '%s' assigned task '%s' (rev=%d)", self.name, task.id, task.revision_count)
         return True
 
@@ -903,6 +1269,20 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 if msg.request_id and msg.request_id in self._pending_requests:
                     new_status = RequestStatus.APPROVED if "approved" in msg.content else RequestStatus.REJECTED
                     self._pending_requests[msg.request_id]["status"] = new_status
+            # 注入消息并唤醒 (对齐 PLAN_APPROVAL_RESPONSE 处理),
+            # 否则 Lead 只更新 _pending_requests, 永远等不到关机确认
+            self._messages.append(HumanMessage(
+                content=(
+                    f"<shutdown_response>\n"
+                    f"  <request_id>{msg.request_id}</request_id>\n"
+                    f"  <from>{msg.from_agent}</from>\n"
+                    f"  <result>{msg.content}</result>\n"
+                    f"</shutdown_response>\n\n"
+                    f"来自 '{msg.from_agent}' 的关机确认。请记录结果并继续编排。"
+                )
+            ))
+            if self.status == TeammateStatus.IDLE:
+                self.status = TeammateStatus.WORKING
             logger.info("Teammate '%s' received shutdown_response from '%s': %s",
                         self.name, msg.from_agent, msg.content)
             return
@@ -973,121 +1353,6 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         if self.status == TeammateStatus.IDLE:
             self.status = TeammateStatus.WORKING
 
-    # ------------------------------------------------------------------
-    # 方案 5: 自主认领 — 三级优先级 + 领域匹配 + 饥饿预防
-    # ------------------------------------------------------------------
-
-    async def _maybe_claim_task(self) -> bool:
-        """IDLE 时自主扫描任务板并认领任务.
-
-        认领优先级 (候选集 = 依赖就绪的 PENDING 任务):
-        1. 明确分配给我 (assigned_agent == me) → 立即认领
-        2. 未分配 + 领域匹配 (score ≥ CLAIM_THRESHOLD) → 认领与自身能力相关的任务
-
-        认领经 task_store.claim 原子完成 (CAS), 竞争失败自动跳到下一个候选.
-        指定成员已死的任务由 orchestrator 统一回池, 成员侧不做饥饿接管.
-
-        Returns:
-            True 如果成功认领了一个任务.
-        """
-        # 门控: 等待 orchestrator 开启 auto-claim
-        if not self._can_claim:
-            return False
-
-        # Lead 不认领执行任务
-        if self._role == "lead":
-            return False
-
-        ready = await self._task_store.get_ready_tasks()
-        if not ready:
-            return False
-
-        my_card = self._get_my_card()
-
-        for task in ready:
-            # 跳过 triage 任务 (标题以 "用户目标:" 或 "规划:" 开头)
-            if task.title.startswith("用户目标:") or task.title.startswith("规划:"):
-                continue
-
-            # ── Tier 1: 明确分配给我 → 立即认领 ──
-            if task.assigned_agent == self.name:
-                if await self._claim(task):
-                    return True
-                continue
-
-            # ── Tier 2: 未分配 + 领域匹配 ──
-            if task.assigned_agent is None:
-                score = self._compute_task_match(task, my_card)
-                if score >= CLAIM_THRESHOLD and await self._claim(task):
-                    return True
-
-        return False
-
-    async def _claim(self, task: TeamTask) -> bool:
-        """认领任务 — 原子认领(CAS) + 设置自身状态.
-
-        认领失败 (返回 None) = 任务已被他人拿走或依赖未就绪, 属正常竞争, 不算错误.
-        """
-        claimed = await self._task_store.claim(task.id, self.name)
-        if claimed is None:
-            logger.debug(
-                "Teammate '%s' claim failed for task '%s' (已被认领/状态已变)",
-                self.name, task.id,
-            )
-            return False
-        self.current_task_id = task.id
-        self._messages.append(HumanMessage(
-            content=(
-                f"[认领任务 {task.id}] {task.title}\n\n{task.description}\n\n"
-                f"请完成上述任务。完成后使用 task_update 将状态改为 completed 并附上结果。"
-            )
-        ))
-        self.status = TeammateStatus.WORKING
-        # ── SSE: 认领成功, 同步前端任务板 ──
-        self._push_event({"type": "team_task_update", "task": claimed.model_dump()})
-        logger.info(
-            "Teammate '%s' claimed task '%s': %s",
-            self.name, task.id, task.title[:60],
-        )
-        return True
-
-    def _compute_task_match(self, task: TeamTask, card: Any | None) -> float:
-        """计算任务与自身能力的匹配分. 委托给 agent_card.compute_card_task_match."""
-        if card is None:
-            return 10.0  # 无 card → 仅 Tier 1 (明确分配) 可认领
-        from harness.team.agent_card import compute_card_task_match, AgentCard
-        if isinstance(card, AgentCard):
-            return compute_card_task_match(card, task.title, task.description)
-        # 兼容旧的 dict 格式
-        return compute_card_task_match(
-            AgentCard(
-                name="",
-                tools=card.get("tools", []),
-                skills=card.get("skills", []),
-                description=card.get("description", ""),
-            ),
-            task.title, task.description,
-        )
-
-    def _get_my_card(self) -> dict | None:
-        """加载自己的 AgentCard (用于领域匹配)."""
-        try:
-            from harness.team.agent_card import get_card
-            card = get_card(
-                self._team_context.project_id,
-                self.name,
-                user_id=self._user_id,
-            )
-            if card is not None:
-                return {
-                    "tools": card.tools,
-                    "skills": card.skills,
-                    "description": card.description,
-                }
-        except Exception:
-            pass
-        return None
-
     def _inject_identity(self) -> None:
         """: 注入身份块 — 防止长上下文后遗忘自己是谁.
 
@@ -1105,6 +1370,21 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             last_content = str(self._messages[-1].content)
             if "<identity>" not in last_content:
                 self._messages.append(HumanMessage(content=identity))
+
+    # ------------------------------------------------------------------
+    # Agent 日志实时写入 (Member 专用, 避免污染主 SSE 流)
+    # ------------------------------------------------------------------
+
+    def _flush_ai_buffer(self) -> None:
+        """将积累的 AI 流式消息 buffer 写入 JSONL 并清空."""
+        if self._streaming_ai_buffer.strip() and self._agent_log_writer and self._streaming_ai_task_id:
+            self._agent_log_writer.write_message(
+                role="ai",
+                content=self._streaming_ai_buffer.strip(),
+                task_id=self._streaming_ai_task_id,
+            )
+        self._streaming_ai_buffer = ""
+        self._streaming_ai_task_id = None
 
     # ------------------------------------------------------------------
     # SSE 事件推送

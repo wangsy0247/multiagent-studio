@@ -51,12 +51,9 @@ def is_default_agent(name: str) -> bool:
 
 class AgentMemoryFields(BaseModel):
     """Per-Agent 记忆配置 (L2)."""
-    backend: str = "file"
     max_facts: int = 10
     injection_enabled: bool = True
     max_injection_tokens: int = 500
-    mem0_tool_enabled: bool = False
-    mem0_search_top_k: int = 5
 
 
 class AgentFeaturesFields(BaseModel):

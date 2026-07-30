@@ -7,14 +7,14 @@ import logging
 import uuid as uuid_mod
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update as sa_update
 
 from app.db.engine import get_db
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, resolve_fs_user_id
 from app.models.user import User
 from app.models.thread import Thread
 from app.models.message import Message
@@ -119,26 +119,7 @@ async def execute(
                     db.add(msg)
                     _pending_messages.append(msg)
                 elif event_type in ("team_start", "team_task_update", "member_status", "team_message", "team_end"):
-                    if event_type == "team_message":
-                        _m = event.get("message", {}) or {}
-                        content = f"[{_m.get('from_agent', '')} → {_m.get('to_agent') or '全员'}] {_m.get('content', '')[:500]}"
-                    elif event_type == "team_task_update":
-                        _t = event.get("task", {}) or {}
-                        content = f"任务 [{_t.get('id', '')}] {_t.get('title', '')} → {_t.get('status', '')}"
-                    elif event_type == "member_status":
-                        content = f"成员 {event.get('agent_name', '')} → {event.get('status', '')} {event.get('task_title', '')}"
-                    elif event_type == "team_start":
-                        content = f"团队启动, 成员: {', '.join(event.get('members', []))}"
-                    else:
-                        content = f"团队结束 (status={event.get('status', '')}, rounds={event.get('total_rounds', '')})"
-                    msg = Message(
-                        thread_id=thread_uuid,
-                        role="system",
-                        content=content,
-                        msg_type=event_type,
-                        extra_metadata=event,
-                        token_count=0,
-                    )
+                    msg = _build_team_message(thread_uuid, event_type, event)
                     db.add(msg)
                     _pending_messages.append(msg)
                 elif event_type == "message" and event.get("msg_type"):
@@ -155,6 +136,10 @@ async def execute(
                 elif event_type == "token_usage":
                     tokens = event.get("tokens", {})
                     _pending_token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
+                elif event_type == "clarification":
+                    # 澄清暂停: 后端会正常结束流但不发 finished, 必须立即落库,
+                    # 否则 session 关闭回滚导致本轮事件全部丢失
+                    await _persist_clarification(db, thread, thread_uuid, event)
 
                 # 转发 SSE 到前端
                 yield f"data: {json.dumps(event, default=str)}\n\n"
@@ -215,6 +200,7 @@ async def respond_to_clarification(
     req: ClarificationResponse,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None, include_in_schema=False),
 ):
     """回复澄清请求 — 流式返回 Agent 恢复执行后的输出"""
     harness = get_harness_client()
@@ -247,10 +233,24 @@ async def respond_to_clarification(
         _accumulated_ai_text: str = ""
         _pending_token_total: int = 0
         try:
-            async for event_json in harness.stream_respond_clarification(
-                thread_id=thread_id,
-                answer=req.answer,
-            ):
+            # ── s32: team 模式澄清恢复走 _execute_team() 路径 ──
+            if thread.mode == "team" and thread.project_id:
+                # user_id 必须是文件系统用户名 (非 UUID), 否则 Harness 找不到项目目录
+                fs_uid = current_user.username or "default"
+                event_stream = harness.stream_execute(
+                    thread_id=thread_id,
+                    user_id=fs_uid,
+                    message=req.answer,
+                    project_id=thread.project_id,
+                    agent_name=thread.agent_name,
+                    mode="team",
+                )
+            else:
+                event_stream = harness.stream_respond_clarification(
+                    thread_id=thread_id,
+                    answer=req.answer,
+                )
+            async for event_json in event_stream:
                 try:
                     event = json.loads(event_json) if isinstance(event_json, str) else event_json
                 except json.JSONDecodeError:
@@ -274,9 +274,14 @@ async def respond_to_clarification(
                         token_count=0,
                     )
                     db.add(msg)
+                elif event_type in ("team_start", "team_task_update", "member_status", "team_message", "team_end"):
+                    db.add(_build_team_message(thread_uuid, event_type, event))
                 elif event_type == "token_usage":
                     tokens = event.get("tokens", {})
                     _pending_token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
+                elif event_type == "clarification":
+                    # 恢复执行中再次澄清: 同样立即落库, 避免流结束无 finished 时回滚
+                    await _persist_clarification(db, thread, thread_uuid, event)
 
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
@@ -381,3 +386,49 @@ def _map_event_role(event_type: str, event: dict) -> str:
         "error": "system",
     }
     return mapping.get(event_type, "system")
+
+
+def _build_team_message(thread_uuid, event_type: str, event: dict) -> Message:
+    """构造 team_* 事件的持久化 Message (execute 与 respond 共用)"""
+    if event_type == "team_message":
+        _m = event.get("message", {}) or {}
+        content = f"[{_m.get('from_agent', '')} → {_m.get('to_agent') or '全员'}] {_m.get('content', '')[:500]}"
+    elif event_type == "team_task_update":
+        _t = event.get("task", {}) or {}
+        content = f"任务 [{_t.get('id', '')}] {_t.get('title', '')} → {_t.get('status', '')}"
+    elif event_type == "member_status":
+        content = f"成员 {event.get('agent_name', '')} → {event.get('status', '')} {event.get('task_title', '')}"
+    elif event_type == "team_start":
+        content = f"团队启动, 成员: {', '.join(event.get('members', []))}"
+    else:
+        content = f"团队结束 (status={event.get('status', '')}, rounds={event.get('total_rounds', '')})"
+    return Message(
+        thread_id=thread_uuid,
+        role="system",
+        content=content,
+        msg_type=event_type,
+        extra_metadata=event,
+        token_count=0,
+    )
+
+
+async def _persist_clarification(db: AsyncSession, thread: Thread, thread_uuid, event: dict) -> None:
+    """澄清暂停落库: 持久化澄清请求 + 提交本轮累积事件 + 标记 suspended。
+
+    澄清时后端正常结束 SSE 流但不发 finished, 若不立即 commit,
+    session 关闭会回滚本轮所有未提交事件; 前端刷新后靠这条
+    msg_type="clarification" 的消息恢复待回答状态。
+    """
+    req = event.get("request", {}) or {}
+    msg = Message(
+        thread_id=thread_uuid,
+        role="system",
+        content=req.get("question", ""),
+        msg_type="clarification",
+        extra_metadata=event,
+        token_count=0,
+    )
+    db.add(msg)
+    thread.status = "suspended"
+    db.add(thread)
+    await db.commit()

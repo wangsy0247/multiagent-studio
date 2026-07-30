@@ -8,6 +8,7 @@ import { create } from "zustand";
 import { ChatMessage, SSEEvent, TodoItem, TokenUsage, ClarificationRequest, TeamMemberRuntimeStatus } from "./types";
 import { generateId } from "./utils";
 import { useTeamStore } from "./team-store";
+import { useProjectStore } from "./project-store";
 
 interface ChatStore {
   messages: ChatMessage[];
@@ -443,6 +444,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case "team_task_update": {
         if (event.task) {
           useTeamStore.getState().addTask(event.task);
+          // 任务到达终态时, 在 "全部" 视图中显示带 agent 标识的系统消息
+          const terminalStatuses = ["completed", "approved", "failed", "cancelled"];
+          if (terminalStatuses.includes(event.task.status)) {
+            const agent = event.task.assigned_agent || event.agent_name || "unknown";
+            const icon = event.task.status === "failed" ? "❌" : "✅";
+            const err = event.task.error ? ` — ${event.task.error}` : "";
+            get().addMessage({
+              role: "system",
+              content: `${icon} **${agent}** ${event.task.status === "failed" ? "任务失败" : "完成任务"} [${event.task.id}] ${event.task.title}${err}`,
+              msgType: "text",
+              metadata: { event_type: "team_task_update", agent_name: agent, task_id: event.task.id },
+              tokenCount: 0,
+            });
+          }
         }
         break;
       }
@@ -461,12 +476,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case "team_message": {
         if (event.message) {
           useTeamStore.getState().addMessage(event.message);
+          // agent 间通信在 "全部" 视图中显示 (带 agent 标识)
+          const msg = event.message;
+          get().addMessage({
+            role: "system",
+            content: `💬 **${msg.from_agent}** → ${msg.to_agent || "全体"}: ${(msg.content || "").slice(0, 300)}`,
+            msgType: "text",
+            metadata: { event_type: "team_message", from_agent: msg.from_agent, to_agent: msg.to_agent, task_id: msg.task_id },
+            tokenCount: 0,
+          });
         }
         break;
       }
 
       case "team_end": {
         useTeamStore.getState().setRunning(false);
+        // team_end 语义上即 run 终止 — 无论后续 finished 是否到达,
+        // 都必须解除 streaming 状态, 否则 UI 永远停在 "AI 正在思考..."
+        set({ isStreaming: false });
         get().addMessage({
           role: "system",
           content: `✅ Team 执行结束 (状态: ${event.status}, 轮次: ${event.total_rounds || 0})`,
@@ -479,6 +506,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case "team_error": {
         useTeamStore.getState().setRunning(false);
+        set({ isStreaming: false });
         get().addMessage({
           role: "system",
           content: `❌ Team 错误: ${event.content || "未知错误"}`,
@@ -518,6 +546,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             title: event.title,
             threadTitles: { ...s.threadTitles, [threadId]: event.title! },
           }));
+          // 同步更新项目页面的线程列表标题
+          const projectState = useProjectStore.getState();
+          const idx = projectState.projectThreads.findIndex(
+            (t) => t.id === threadId,
+          );
+          if (idx !== -1) {
+            const updated = [...projectState.projectThreads];
+            updated[idx] = { ...updated[idx], title: event.title! };
+            useProjectStore.setState({ projectThreads: updated });
+          }
         }
         break;
 

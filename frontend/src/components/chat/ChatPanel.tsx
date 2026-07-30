@@ -1,11 +1,11 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState } from "react";
-import { Send, Square, AlertTriangle } from "lucide-react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { Send, Square, AlertTriangle, Bot } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
 import { globalSSEManager } from "@/lib/global-sse";
-import { threadsAPI, filesAPI, getCurrentUserId } from "@/lib/api-client";
-import { ChatMessage, AttachedFile } from "@/lib/types";
+import { threadsAPI, filesAPI, executeAPI, getCurrentUserId } from "@/lib/api-client";
+import { ChatMessage, AttachedFile, AgentLogEntry, ClarificationRequest } from "@/lib/types";
 import { generateId } from "@/lib/utils";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
@@ -24,6 +24,11 @@ interface ChatPanelProps {
   agentName?: string;
   mode?: "single" | "team";
   onThreadCreated?: (threadId: string) => void;
+  // ── Agent 隔离视图 ──
+  viewMode?: "team" | "agent";
+  viewAgentName?: string;
+  agentLogEntries?: AgentLogEntry[];
+  agentLogsLoading?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -39,6 +44,10 @@ export default function ChatPanel({
   agentName,
   mode: propMode,
   onThreadCreated,
+  viewMode,
+  viewAgentName,
+  agentLogEntries,
+  agentLogsLoading,
 }: ChatPanelProps) {
   const projectAgents = useProjectStore((state) =>
     projectId ? state.projectAgents : [],
@@ -147,10 +156,22 @@ export default function ChatPanel({
     }
     if (!currentThreadId) return; // 类型收窄: 上面所有分支均已返回或赋值
 
-    // 该线程已有活跃 SSE 连接 → connect() 会静默跳过, 提前拦截避免消息被吞
+    // 该线程已有活跃 SSE 连接 → connect() 会静默跳过, 提前拦截避免消息被吞.
+    // 自愈合: 本地记录运行中但后端可能早已结束 (僵尸连接, 如旧 bundle 残留 /
+    // 流异常结束未清理) → 以后端状态为准, 后端说没在跑就清掉本地僵尸连接放行.
     if (globalSSEManager.isRunning(currentThreadId)) {
-      setError("该会话正在运行中，请等待完成或先停止");
-      return;
+      let backendBusy = true;
+      try {
+        const { data } = await executeAPI.getStatus(currentThreadId);
+        backendBusy = data?.status === "running" || data?.status === "cancelling";
+      } catch {
+        backendBusy = true; // 状态查询失败时保持保守拦截
+      }
+      if (backendBusy) {
+        setError("该会话正在运行中，请等待完成或先停止");
+        return;
+      }
+      globalSSEManager.stop(currentThreadId); // 清理僵尸连接
     }
 
     // Build file metadata payload for Harness UploadsMiddleware
@@ -195,7 +216,11 @@ export default function ChatPanel({
   }
 
   function stopExecution() {
-    if (threadId) globalSSEManager.stop(threadId);
+    if (threadId) {
+      // Notify backend to stop the run first; failure must not block local cleanup
+      executeAPI.stop(threadId).catch(() => {});
+      globalSSEManager.stop(threadId);
+    }
     _stopClarificationFn?.();
     setStreaming(false);
   }
@@ -250,6 +275,13 @@ export default function ChatPanel({
           }));
           // 切回时 DB 有 agent 后台执行产生的完整记录, 替换内存残留
           setThreadMessages(threadId, dbMsgs);
+          // 最后一条是未回答的澄清请求 (刷新前 agent 暂停) → 恢复弹出确认框.
+          // 已回答时其后会有人类消息, 不会误恢复
+          const last = dbMsgs[dbMsgs.length - 1];
+          const req = last?.metadata?.request as ClarificationRequest | undefined;
+          if (last?.msgType === "clarification" && req) {
+            useChatStore.getState().setPendingClarification(req);
+          }
         }
       } catch (err) {
         console.error("加载历史消息失败", err);
@@ -263,6 +295,71 @@ export default function ChatPanel({
     };
   }, [threadId]);
 
+  // ── Agent 日志 → ChatMessage 转换 (静态日志, 一次性渲染) ──
+  const agentMessages: ChatMessage[] = useMemo(() => {
+    if (!agentLogEntries) return [];
+    return agentLogEntries.map((entry, index) => {
+      if (entry.type === "task_boundary") {
+        return {
+          id: `boundary-${entry.task_id}-${index}`,
+          role: "system" as const,
+          content: entry.summary || "",
+          msgType: "task_boundary",
+          metadata: {
+            task_id: entry.task_id,
+            title: entry.title,
+            status: entry.status,
+          },
+          createdAt: entry.timestamp,
+          tokenCount: 0,
+        };
+      }
+      // message entry — 区分 tool_call (工具调用) 和 tool_result (工具结果)
+      if (entry.role === "tool_call") {
+        return {
+          id: `log-${entry.task_id}-${index}`,
+          role: "tool" as const,
+          content: entry.content || "",
+          msgType: "tool_call",
+          metadata: {
+            task_id: entry.task_id,
+            tool_name: entry.tool_name || "unknown",
+            tool_args: entry.content || "",
+          },
+          createdAt: entry.timestamp,
+          tokenCount: 0,
+        };
+      }
+      if (entry.role === "tool_result") {
+        return {
+          id: `log-${entry.task_id}-${index}`,
+          role: "tool" as const,
+          content: entry.content || "",
+          msgType: "tool_result",
+          metadata: {
+            task_id: entry.task_id,
+            tool_name: entry.tool_name || "unknown",
+          },
+          createdAt: entry.timestamp,
+          tokenCount: 0,
+        };
+      }
+      const roleMap: Record<string, ChatMessage["role"]> = {
+        human: "human",
+        ai: "ai",
+      };
+      return {
+        id: `log-${entry.task_id}-${index}`,
+        role: roleMap[entry.role || "ai"] || "ai",
+        content: entry.content || "",
+        msgType: "text",
+        metadata: { task_id: entry.task_id },
+        createdAt: entry.timestamp,
+        tokenCount: 0,
+      };
+    });
+  }, [agentLogEntries]);
+
   // ── 标题持久化：SSE 更新 title 后同步到后端 ──
   const prevTitleRef = useRef(title);
   useEffect(() => {
@@ -273,12 +370,31 @@ export default function ChatPanel({
     prevTitleRef.current = title;
   }, [title, threadId]);
 
+  // ── Agent 隔离视图 (只读, 静态日志) ──
+  const isAgentView = viewMode === "agent";
+
   return (
     <div className="flex h-full">
       {/* ── 左侧: 主聊天区 ── */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* ── Team 状态栏 ── */}
-        {propMode === "team" && projectId && (
+        {/* ── Agent 视图标题栏 ── */}
+        {isAgentView && (
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-200 bg-blue-50 flex-shrink-0">
+            <Bot className="w-3.5 h-3.5 text-blue-500" />
+            <span className="text-xs font-medium text-blue-700">
+              {viewAgentName} 的工作内容
+            </span>
+            <span className="text-xs text-blue-400">
+              (只读 — Agent 执行的对话记录)
+            </span>
+            {agentLogsLoading && (
+              <div className="w-3 h-3 border border-blue-300 border-t-blue-600 rounded-full animate-spin ml-auto" />
+            )}
+          </div>
+        )}
+
+        {/* ── Team 状态栏 (仅团队模式全视图) ── */}
+        {!isAgentView && propMode === "team" && projectId && (
           <div className="border-b border-slate-200 bg-slate-50 p-3">
             <div className="flex gap-3">
               <div className="w-1/3">
@@ -291,9 +407,33 @@ export default function ChatPanel({
           </div>
         )}
 
-        <MessageList messages={messages} isStreaming={isStreaming} />
+        {/* ── 消息列表 ── */}
+        {isAgentView && agentLogsLoading ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-5 h-5 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin mx-auto mb-2" />
+              <p className="text-xs text-slate-400">加载 agent 工作记录...</p>
+            </div>
+          </div>
+        ) : isAgentView && agentMessages.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <Bot className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm text-slate-400">暂无工作内容</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {viewAgentName} 尚未执行任何任务
+              </p>
+            </div>
+          </div>
+        ) : (
+          <MessageList
+            messages={isAgentView ? agentMessages : messages}
+            isStreaming={isAgentView ? false : isStreaming}
+          />
+        )}
 
-        {error && (
+        {/* ── 错误提示 (仅团队全视图) ── */}
+        {!isAgentView && error && (
           <div className="mx-4 mb-2 p-2 bg-destructive/10 border border-destructive/20 rounded-lg flex items-center gap-2 text-xs text-destructive">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
             <span className="flex-1 truncate">{error}</span>
@@ -301,18 +441,21 @@ export default function ChatPanel({
           </div>
         )}
 
-        <InputBar
-          onSend={sendMessage}
-          onStop={stopExecution}
-          isStreaming={isStreaming}
-          attachedFiles={attachedFiles}
-          onAttachFiles={handleAttachFiles}
-          onRemoveFile={handleRemoveFile}
-          members={projectAgents}
-          mode={propMode}
-          selectedAgent={selectedAgent}
-          onAgentChange={setSelectedAgent}
-        />
+        {/* ── 输入栏 (仅团队全视图) ── */}
+        {!isAgentView && (
+          <InputBar
+            onSend={sendMessage}
+            onStop={stopExecution}
+            isStreaming={isStreaming}
+            attachedFiles={attachedFiles}
+            onAttachFiles={handleAttachFiles}
+            onRemoveFile={handleRemoveFile}
+            members={projectAgents}
+            mode={propMode}
+            selectedAgent={selectedAgent}
+            onAgentChange={setSelectedAgent}
+          />
+        )}
 
         <ClarificationDialog threadId={threadId || ""} />
       </div>

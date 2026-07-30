@@ -192,51 +192,6 @@ def _build_working_directory_section() -> str:
 </working_directory>"""
 
 
-def _build_memory_tool_section(mem0_tool_enabled: bool) -> str:
-    """Build the memory tool guidance section for the system prompt.
-
-    Only included when mem0_tool_enabled=True. Explains to the Agent:
-    - What memory_search tool does
-    - Basic context is already injected (don't search for that)
-    - When to use the tool (specific scenarios)
-    - When not to use it
-    - Default behavior: when in doubt, search once
-    """
-    if not mem0_tool_enabled:
-        return ""
-    return """
-<memory_tool_guidance>
-You have a `memory_search` tool to look up facts and preferences the user
-shared in past conversations.
-
-**Two memory layers:**
-1. **Passive injection**: Basic context (general preferences, background) is
-   already injected into your <system-reminder> at conversation start.
-   You DON'T need to search for those.
-2. **Active query**: Use `memory_search` for specific details NOT in the
-   injected context.
-
-**When to use `memory_search`:**
-- User references past info: "continue last time", "like before", "remember when"
-- Need specific details for personalization (e.g., user's tech stack before recommending a library)
-- User asks "do you remember..." or about their own history
-- Current context is missing information the user likely shared before
-
-**When NOT to use:**
-- The injected <memory> block already has what you need
-- Current conversation has all required information
-- Brand new topic unrelated to user history
-- User uploaded files or gave complete specifications
-
-**Guidelines:**
-- When in doubt, search once — one query (~50ms) costs less than a wrong answer
-- If search returns "No relevant memories found", do NOT repeat the same query
-- Frame queries naturally: "user's preferred programming language" (good) vs "Python" (too vague)
-- Results are extracted facts, not raw conversation transcripts
-</memory_tool_guidance>
-"""
-
-
 def _build_citations_section() -> str:
     """Build the citations guidance section for web search results."""
     return """<citations>
@@ -369,8 +324,6 @@ You are {agent_name}, an AI assistant with multi-agent orchestration capabilitie
 
 {review_note}
 
-{memory_tool_section}
-
 {citations_section}
 
 {response_style_section}
@@ -445,7 +398,6 @@ def apply_prompt_template(
     agent_name: str = "Multi-Agent Orchestrator",
     max_concurrent_subagents: int = 3,
     subagent_enabled: bool = True,
-    mem0_tool_enabled: bool = False,
     *,
     agent_soul: str = "",
     skills_section: str = "",
@@ -458,7 +410,6 @@ def apply_prompt_template(
         agent_name: Display name for the agent
         max_concurrent_subagents: Max parallel task calls
         subagent_enabled: Whether subagent orchestration is available
-        mem0_tool_enabled: Whether memory_search tool is registered
         agent_soul: Agent personality / behavioral definition (SOUL.md content)
         skills_section: Pre-built ``<skill_system>`` XML block (or empty string)
     """
@@ -477,7 +428,6 @@ def apply_prompt_template(
     subagent_section = _build_subagent_section(n) if subagent_enabled else ""
     clarification_section = _build_clarification_section()
     working_directory_section = _build_working_directory_section()
-    memory_tool_section = _build_memory_tool_section(mem0_tool_enabled)
     citations_section = _build_citations_section()
     response_style_section = _build_response_style_section()
     critical_reminders_section = _build_critical_reminders_section(n, subagent_enabled)
@@ -495,7 +445,6 @@ def apply_prompt_template(
         working_directory_section=working_directory_section,
         skills_section=skills_section,
         review_note=review_note,
-        memory_tool_section=memory_tool_section,
         citations_section=citations_section,
         response_style_section=response_style_section,
         critical_reminders_section=critical_reminders_section,
@@ -619,7 +568,6 @@ class LeadAgent:
             agent_name=self.agent_name,
             max_concurrent_subagents=self.max_concurrent,
             subagent_enabled=self.subagent_manager is not None,
-            mem0_tool_enabled=mem_cfg.enabled and getattr(mem_cfg, "mem0_tool_enabled", False),
             agent_soul=self._agent_soul,
             skills_section=skills_section,
             review_note=review_note,

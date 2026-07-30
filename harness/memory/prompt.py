@@ -254,3 +254,147 @@ def format_conversation_for_update(messages: list[Any]) -> str:
             lines.append(f"Assistant: {content}")
 
     return "\n\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Task Memory extraction prompt
+# ──────────────────────────────────────────────────────────────────────────────
+
+TASK_MEMORY_UPDATE_PROMPT = """You are a task memory extraction system. Analyze the following completed task and extract structured knowledge that will help future agents working on similar tasks.
+
+Task Title:
+{task_title}
+
+Task Description:
+{task_description}
+
+Task Output (result):
+{task_output}
+
+Task Status: {task_status}
+Assigned Agent: {assigned_agent}
+
+Extract the following fields as JSON. Be concise and specific. Use the same language as the task content (Chinese or English).
+
+{{
+  "summary": "1-3 sentence summary of what was accomplished and how",
+  "decisions": ["Key decision 1", "Key decision 2"],
+  "pitfalls": ["Mistake or problem encountered and how it was resolved"],
+  "discoveries": ["Useful technique, tool quirk, or finding"],
+  "tags": ["keyword1", "keyword2"]
+}}
+
+Guidelines:
+- Summary: Focus on the approach and result, not just the title. Include key technologies used.
+- Decisions: Record architecture choices, technology selections, design trade-offs. Max 3 entries.
+- Pitfalls: Include root causes and workarounds. Omit if the task had no issues. Max 3 entries.
+- Discoveries: Include effective CLI flags, API quirks, unexpected behaviors, efficient patterns. Max 3 entries.
+- Tags: 3-6 short keywords for retrieval (technology names, domain terms, problem types).
+- If the task failed, explain why in the summary and include the failure cause in pitfalls.
+- Each string field should be concise (under 150 chars).
+- Only include genuinely useful information — omit trivial details.
+
+Return ONLY valid JSON, no explanation or markdown."""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Injection formatter
+# ──────────────────────────────────────────────────────────────────────────────
+
+def format_related_tasks_for_injection(tasks: list) -> str:
+    """Format related task memories as a compact ``<task_memory>`` XML block.
+
+    Each task entry uses ~80 tokens: short title, status icon, and at most
+    2 pitfalls + 2 discoveries (truncated to 60 chars each).
+
+    Args:
+        tasks: List of ``TaskMemory`` instances.
+
+    Returns:
+        A compact XML string for injection, or empty string if *tasks* is empty.
+    """
+    if not tasks:
+        return ""
+
+    lines = [
+        "<task_memory>",
+        "以下是你或其他成员在历史类似任务中的经验，仅供参考:",
+    ]
+    for t in tasks:
+        status_icon = "✅" if t.status in ("completed", "approved") else "❌"
+        parts = [f"- [{t.task_id}] \"{t.task_title[:40]}\""]
+        if t.assigned_agent:
+            parts.append(f"→ {t.assigned_agent}")
+        parts.append(f"| {status_icon}")
+
+        # at most 2 pitfalls and 2 discoveries, each truncated to 60 chars
+        details: list[str] = []
+        for p in t.pitfalls[:2]:
+            details.append(f"踩坑: {p[:60]}")
+        for d in t.discoveries[:2]:
+            details.append(f"发现: {d[:60]}")
+        if details:
+            parts.append("| " + " | ".join(details))
+
+        lines.append(" ".join(parts))
+
+    lines.append("(使用 memory_search(task_id=\"...\") 查询完整细节)")
+    lines.append("</task_memory>")
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Team Memory extraction prompt
+# ──────────────────────────────────────────────────────────────────────────────
+
+TEAM_MEMORY_UPDATE_PROMPT = """You are a team knowledge manager. Analyze the results of a completed team run and extract team-level insights that will help future runs.
+
+Current team memory (already known):
+<current_team_memory>
+{current_memory}
+</current_team_memory>
+
+Tasks completed in this run:
+<completed_tasks>
+{tasks_summary}
+</completed_tasks>
+
+Lead's summary of this run:
+<lead_summary>
+{lead_summary}
+</lead_summary>
+
+Extract NEW team-level insights as JSON. Only include genuinely new information not already in current_team_memory:
+
+{{
+  "new_practices": [
+    {{
+      "practice": "A team-level best practice discovered this run",
+      "importance": "critical|high|medium",
+      "discovered_by": "agent_name"
+    }}
+  ],
+  "new_pitfalls": [
+    {{
+      "pitfall": "A cross-task problem or gotcha to watch out for",
+      "affected": ["component_or_file_name"],
+      "discovered_by": "agent_name"
+    }}
+  ],
+  "run_summary": {{
+    "summary": "1-2 sentence summary of what this run accomplished",
+    "tasks_completed": 0,
+    "tasks_failed": 0
+  }}
+}}
+
+Guidelines:
+- Only include practices that apply across multiple tasks — not single-task tricks.
+- Only include pitfalls that affected more than one task or could recur.
+- Best practices should be actionable: "always X before Y" or "prefer A over B".
+- If nothing new was learned this run, return empty arrays for new_practices and new_pitfalls.
+- Max 3 new practices and 3 new pitfalls per run.
+- Keep each practice/pitfall description under 120 chars.
+- Use the same language as the task content (Chinese or English).
+
+Return ONLY valid JSON, no explanation or markdown."""

@@ -89,6 +89,14 @@ export class SSEClient {
           }
         }
       }
+
+      // Stream ended without a terminal finished/error event (e.g. team
+      // clarification pause, team_error) — notify so the caller can clean up
+      // the connection, otherwise a stale connection blocks the next send.
+      // Skipped when stop() was called (it already notified).
+      if (!this.isStopped) {
+        this.onStatus?.("disconnected");
+      }
     } catch (err: any) {
       if (err.name === "AbortError") return;
       this.onStatus?.("error");

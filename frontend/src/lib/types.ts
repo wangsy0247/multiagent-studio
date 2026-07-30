@@ -277,9 +277,10 @@ export interface ProjectTask {
 
 /** 成员运行时状态 — 对齐后端 TeammateStatus 枚举.
  *  spawning → working ↔ idle → shutting_down → shutdown / failed
+ *  ("busy" 为后端枚举外取值, 语义等同 working, 需兼容)
  */
 export type TeamMemberRuntimeStatus =
-  | "spawning" | "idle" | "working"
+  | "spawning" | "idle" | "working" | "busy"
   | "shutting_down" | "shutdown" | "failed";
 
 export interface TeamMemberRuntime {
@@ -401,6 +402,28 @@ export interface TokenUsageStats {
   total_cost_usd: number;
   by_model: Record<string, TokenUsage>;
   by_date: Array<{ date: string; tokens: number; cost: number }>;
+}
+
+// ===== Agent 对话日志 (对齐后端 agent_logs.py JSONL 格式) =====
+
+export interface AgentLogEntry {
+  type: "message" | "task_boundary";
+  role?: "human" | "ai" | "tool_call" | "tool_result";
+  content?: string;
+  tool_name?: string | null;
+  task_id: string;
+  title?: string; // task_boundary
+  status?: string; // task_boundary
+  summary?: string; // task_boundary
+  timestamp: string;
+}
+
+export interface AgentLogInfo {
+  agent_name: string;
+  task_count: number;
+  entry_count: number;
+  size_bytes: number;
+  error?: string;
 }
 
 // ===== 定时任务 (对齐后端 app/models/scheduled_task.py) =====

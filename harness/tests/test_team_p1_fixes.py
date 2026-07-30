@@ -1,11 +1,9 @@
 """P1 修复回归测试.
 
 覆盖:
-  P1-4: task_store.claim 原子认领 (CAS) — 双认领/非 pending/错误 assignee/依赖门禁;
-        orchestrator 派单与成员自认领撞车; claim_task 工具在手任务守卫
+  P1-4: task_store.claim 原子认领 (CAS) — 双认领/非 pending/错误 assignee/依赖门禁
   P1-6: 成败分开记账; 协议违规检测 (跑完未 task_update → FAILED)
   P1-7: propagate_failures 级联取消 (含链式传播与幂等)
-  P1-8: 认领候选集修正 — 分配给我的任务可自认领 (Tier1 可达), 他人任务不抢
 
 运行:  cd multiagent-studio && python -m pytest harness/tests/test_team_p1_fixes.py -v
 """

@@ -41,7 +41,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
        dynamic-context reminder (date/memory injection) is included to give the
        fact extractor temporal and existing-memory context.
     3. The queue uses debouncing to batch multiple updates together
-    4. Memory is updated asynchronously via LLM summarization (file) or mem0.add()
+    4. Memory is updated asynchronously via LLM summarization (file) via MemoryUpdater
     """
 
     name = "memory"
@@ -134,7 +134,7 @@ class MemoryMiddleware(HarnessAgentMiddleware):
         correction_detected = detect_correction(latest_exchange)
         reinforcement_detected = not correction_detected and detect_reinforcement(latest_exchange)
 
-        # 时间 metadata（mem0 backend 用）
+        # 时间 metadata（memory 用）
         current_time_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         metadata = {"event_time": current_time_iso, "thread_id": thread_id}
 

@@ -69,6 +69,12 @@ export const authAPI = {
     apiClient.put("/auth/me", data),
 };
 
+export const executeAPI = {
+  stop: (threadId: string) => apiClient.post(`/execute/${threadId}/stop`),
+  getStatus: (threadId: string) =>
+    apiClient.get<{ thread_id: string; status: string }>(`/execute/${threadId}/status`),
+};
+
 export const threadsAPI = {
   list: (page = 1) => apiClient.get(`/threads?page=${page}`),
   create: (data: {
@@ -143,6 +149,11 @@ export const projectsAPI = {
   createTask: (id: string, data: object, threadId?: string) => apiClient.post(`/v1/projects/${id}/tasks`, { ...data, user_id: getCurrentUserId(), thread_id: threadId || "" }),
   updateTask: (id: string, taskId: string, data: object, threadId?: string) => apiClient.put(`/v1/projects/${id}/tasks/${taskId}`, { ...data, user_id: getCurrentUserId(), thread_id: threadId || "" }),
   deleteTask: (id: string, taskId: string, threadId?: string) => apiClient.delete(`/v1/projects/${id}/tasks/${taskId}?user_id=${getCurrentUserId()}&thread_id=${threadId || ""}`),
+  // Agent 对话日志 (按 agent 隔离展示工作内容)
+  getAgentLogs: (projectId: string, threadId: string) =>
+    apiClient.get(`/v1/projects/${projectId}/agent-logs/${threadId}?user_id=${getCurrentUserId()}`),
+  getAgentLog: (projectId: string, threadId: string, agentName: string) =>
+    apiClient.get(`/v1/projects/${projectId}/agent-logs/${threadId}/${agentName}?user_id=${getCurrentUserId()}`),
 };
 
 export const configsAPI = {

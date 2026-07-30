@@ -1,10 +1,10 @@
 """Team 工具集 — 仅在 mode=team 时注册, 按角色分层.
 
 14 个工具, 分三层:
-  Lead 专属 (6):  delegate_to_member, list_teammates, broadcast, shutdown_teammate,
-                   approve_plan, spawn_teammate
-  共享 (5):        task_create, task_list, task_update, send_message, read_inbox
-  Member 专属 (3): request_plan_approval, claim_task, shutdown_response
+  Lead 专属 (7):  delegate_to_member, list_teammates, broadcast, shutdown_teammate,
+                   approve_plan, spawn_teammate, task_review
+  共享 (5):        task_create, task_list, send_message, read_inbox, memory_search
+  Member 专属 (3): task_update, request_plan_approval, shutdown_response
 
 工具中 agent 身份通过 ContextVar 自动注入.
 """
@@ -45,10 +45,52 @@ def get_current_agent_instance() -> Any:
     return _current_agent_instance.get()
 
 
+def _format_memory_detail(memory) -> str:
+    """Format a single task memory for full-detail display.
+
+    Used by the ``memory_search`` tool when returning results.
+    """
+    lines = [
+        f"## [{memory.task_id}] {memory.task_title}",
+        f"执行者: {memory.assigned_agent or '未知'} | 状态: {memory.status}",
+    ]
+    if memory.summary:
+        lines.append(f"摘要: {memory.summary}")
+    if memory.decisions:
+        lines.append("决策:")
+        lines.extend(f"  - {d}" for d in memory.decisions)
+    if memory.pitfalls:
+        lines.append("踩坑:")
+        lines.extend(f"  - {p}" for p in memory.pitfalls)
+    if memory.discoveries:
+        lines.append("发现:")
+        lines.extend(f"  - {d}" for d in memory.discoveries)
+    if memory.tags:
+        lines.append(f"标签: {', '.join(memory.tags)}")
+    return "\n".join(lines)
+
+
+# ── 状态流转校验 ──
+_VALID_TRANSITIONS: dict[TeamTaskStatus, set[TeamTaskStatus]] = {
+    TeamTaskStatus.PENDING: {TeamTaskStatus.IN_PROGRESS},
+    TeamTaskStatus.IN_PROGRESS: {TeamTaskStatus.IN_REVIEW, TeamTaskStatus.COMPLETED, TeamTaskStatus.FAILED},
+    TeamTaskStatus.IN_REVIEW: {TeamTaskStatus.APPROVED, TeamTaskStatus.REVISION_NEEDED},
+    TeamTaskStatus.REVISION_NEEDED: {TeamTaskStatus.IN_PROGRESS},
+}
+# 终态不可再变更
+for _terminal in (TeamTaskStatus.APPROVED, TeamTaskStatus.COMPLETED, TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED):
+    _VALID_TRANSITIONS[_terminal] = set()
+
+
+def _allowed_transitions(current: TeamTaskStatus) -> set[TeamTaskStatus]:
+    """Return the set of statuses that *current* can legally transition to."""
+    return _VALID_TRANSITIONS.get(current, set())
+
+
 # ── 角色工具集定义 ──
 LEAD_TOOLS = {"delegate_to_member", "list_teammates", "broadcast", "shutdown_teammate", "approve_plan", "spawn_teammate", "task_review"}
-SHARED_TOOLS = {"task_create", "task_list", "task_update", "send_message", "read_inbox"}
-MEMBER_TOOLS = {"request_plan_approval", "claim_task", "shutdown_response"}
+SHARED_TOOLS = {"task_create", "task_list", "send_message", "read_inbox", "memory_search"}
+MEMBER_TOOLS = {"task_update", "request_plan_approval", "shutdown_response"}
 
 
 def create_team_tools(
@@ -57,19 +99,21 @@ def create_team_tools(
     subagent_manager: Any = None,
     teammates: dict | None = None,
     role: str = "member",
-    spawn_callback: Any = None,  # async callable(agent_name: str) -> str
-    event_emitter: Any = None,   # async callable(event: dict) — SSE 事件发射器
-    lead_name: str | None = None,  # Lead 名称 — Member 的协议消息 (审批等) 定向发送给 Lead
+    spawn_callback: Any = None,   # async callable(agent_name: str) -> str
+    event_emitter: Any = None,    # async callable(event: dict) — SSE 事件发射器
+    lead_name: str | None = None, # Lead 名称 — Member 的协议消息定向发送给 Lead
+    progress_callback: Any = None,# callable() — 唤醒 dispatch 循环
 ) -> list[BaseTool]:
     """构建 Team 模式专用工具集, 按角色过滤.
 
     Args:
         role: "lead" | "member" — 决定返回哪些工具.
-              lead: LEAD_TOOLS + SHARED_TOOLS (11 个)
-              member: SHARED_TOOLS + MEMBER_TOOLS (8 个)
+              lead: LEAD_TOOLS + SHARED_TOOLS (10 个)
+              member: SHARED_TOOLS + MEMBER_TOOLS (7 个)
         spawn_callback: Lead 专属, 用于动态 spawn 新 teammate 的回调.
-        event_emitter: SSE 事件发射器, task_create/task_update 会通过它推送前端更新.
-        lead_name: Lead Agent 名称. 缺省时协议消息回退到当前 agent 实例的 _lead_name.
+        event_emitter: SSE 事件发射器.
+        lead_name: Lead Agent 名称.
+        progress_callback: 唤醒 Orchestrator dispatch 循环 (task_create 后调用).
     """
 
     # ═════════════════════════════════════════════════════════════════
@@ -108,6 +152,16 @@ def create_team_tools(
         if task.status.value not in ("pending",):
             return f"Error: Task '{task_id}' is not pending (current: {task.status.value})"
 
+        # ── 成员存在性检查 ──
+        member_warning = ""
+        if teammates is not None and agent_name not in teammates:
+            available = ", ".join(teammates.keys()) if teammates else "(无可用成员)"
+            member_warning = (
+                f"\n⚠️ 警告: 成员 '{agent_name}' 不在当前团队中。"
+                f"可用成员: {available}"
+                f"\n任务仍会创建, 但需要手动调整分配或等成员加入。"
+            )
+
         # 追加委派指令到任务描述 (引导成员走 Review 流程)
         full_desc = task.description or ""
         if context:
@@ -125,21 +179,35 @@ def create_team_tools(
             description=full_desc,
             status="pending",
         )
+        # ── 唤醒 dispatch 循环 ──
+        if progress_callback is not None:
+            try:
+                progress_callback()
+            except Exception:
+                pass
         return (
             f"已委派任务 [{task_id}] 给 '{agent_name}'。\n"
             f"任务标题: {task.title}\n"
             f"委派指令: {instruction[:200]}"
+            + (member_warning if member_warning else "")
         )
 
     @tool
     async def list_teammates() -> str:
-        """查看 Team 中所有 teammate 的当前状态 (Lead 专属)."""
+        """查看 Team 中所有 Member 的当前状态 (Lead 专属).
+
+        只列出 Member Agent, 不包含 Lead 自身。
+        """
         if teammates is None:
             return "Teammate 列表不可用."
-        if not teammates:
-            return "当前 Team 中没有 teammate."
-        lines = [f"共 {len(teammates)} 个 teammate:\n"]
-        for name, tm in teammates.items():
+        members = {
+            name: tm for name, tm in teammates.items()
+            if getattr(tm, "_role", "") != "lead"
+        }
+        if not members:
+            return "当前 Team 中没有 Member (仅 Lead)。"
+        lines = [f"共 {len(members)} 个 Member:\n"]
+        for name, tm in members.items():
             icon = {"idle": "🟢", "working": "🔵", "failed": "❌"}.get(
                 tm.status.value if hasattr(tm.status, 'value') else str(tm.status), "❓")
             task_info = f" (任务: {tm.current_task_id})" if tm.current_task_id else ""
@@ -262,6 +330,26 @@ def create_team_tools(
                         })
                 except Exception:
                     pass
+            # ── 唤醒 dispatch 循环 (依赖此任务的下游任务可能已解锁) ──
+            if progress_callback is not None:
+                try:
+                    progress_callback()
+                except Exception:
+                    pass
+            # ── 通知成员审批通过 ──
+            if message_bus is not None and task.assigned_agent:
+                from harness.team.models import TeamMessage, TeamMessageType
+                msg = TeamMessage(
+                    from_agent=get_current_agent(),
+                    to_agent=task.assigned_agent,
+                    msg_type=TeamMessageType.TEXT,
+                    content=(
+                        f"任务 [{task_id}] '{task.title}' 审查通过 ✅"
+                        + (f" — {feedback}" if feedback else "")
+                    ),
+                    task_id=task_id,
+                )
+                await message_bus.send(msg)
             return (
                 f"已通过任务 [{task_id}] '{task.title}'。"
                 + (f" 评价: {feedback}" if feedback else "")
@@ -327,10 +415,27 @@ def create_team_tools(
         """
         if task_store is None:
             return "Error: Task store not available"
+
+        # ── 依赖校验 ──
+        dep_list = dependencies or []
+        dep_warnings: list[str] = []
+        if dep_list:
+            all_tasks = await task_store.load_tasks()
+            task_map = {t.id: t for t in all_tasks}
+            for dep_id in dep_list:
+                dep_task = task_map.get(dep_id)
+                if dep_task is None:
+                    dep_warnings.append(f"⚠️ 依赖 '{dep_id}' 不存在")
+                elif dep_task.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED):
+                    dep_warnings.append(
+                        f"⚠️ 依赖 '{dep_id}' ({dep_task.title}) 已处于终态 "
+                        f"'{dep_task.status.value}', 当前任务将永远被阻塞"
+                    )
+
         task = await task_store.create_task(
             title=title, description=description,
             assigned_agent=assigned_agent if assigned_agent else None,
-            dependencies=dependencies or [], priority=priority,
+            dependencies=dep_list, priority=priority,
         )
         # ── SSE: 推送任务创建事件到前端 ──
         if event_emitter is not None:
@@ -341,47 +446,188 @@ def create_team_tools(
                 })
             except Exception:
                 pass
-        return (f"任务已创建:\n- ID: {task.id}\n- 标题: {task.title}\n"
-                f"- 状态: {task.status}\n- 分配: {task.assigned_agent or '待分配'}")
+        # ── 唤醒 dispatch 循环 ──
+        if progress_callback is not None:
+            try:
+                progress_callback()
+            except Exception:
+                pass
+
+        result = (f"任务已创建:\n- ID: {task.id}\n- 标题: {task.title}\n"
+                  f"- 状态: {task.status}\n- 分配: {task.assigned_agent or '待分配'}")
+        if dep_list:
+            result += f"\n- 依赖: {', '.join(dep_list)}"
+        if dep_warnings:
+            result += "\n\n" + "\n".join(dep_warnings)
+        return result
 
     @tool
     async def task_list(status: str = "", assigned_agent: str = "") -> str:
-        """查询 Team 任务板. status 过滤: pending|in_progress|completed|failed|cancelled."""
+        """查询 Team 任务板，含依赖阻塞状态。
+
+        默认只显示活跃任务 (pending/in_progress/in_review/revision_needed),
+        隐藏已完成/失败/取消的任务。
+        使用 status="all" 查看全部任务。
+        使用 status="completed" 只查看已完成的任务。
+
+        每个任务会显示:
+        - 状态图标 + [ID] 标题 → 分配对象
+        - 依赖状态: 🔒 阻塞中 (依赖未完成) 或 ✅ 依赖已满足
+        - 阻塞详情: 每个依赖任务的当前状态
+
+        status 过滤: pending|in_progress|in_review|completed|failed|cancelled|all
+        """
         if task_store is None:
             return "Error: Task store not available"
-        status_filter = TeamTaskStatus(status) if status else None
-        agent_filter = assigned_agent if assigned_agent else None
-        tasks = await task_store.list_tasks(status=status_filter, assigned_agent=agent_filter)
+
+        # 加载全部任务
+        all_tasks = await task_store.load_tasks()
+
+        # ── 过滤 ──
+        if status == "all":
+            tasks = all_tasks
+        elif status:
+            status_filter = TeamTaskStatus(status)
+            tasks = [t for t in all_tasks if t.status == status_filter]
+        else:
+            # 默认: 只显示活跃任务 (非终态)
+            tasks = [t for t in all_tasks if not t.status.is_terminal]
+
+        if assigned_agent:
+            tasks = [t for t in tasks if t.assigned_agent == assigned_agent]
+
         if not tasks:
-            return "任务板为空."
-        icons = {"pending": "⏳", "in_progress": "🔄", "completed": "✅", "failed": "❌", "cancelled": "🚫"}
+            terminal_count = sum(1 for t in all_tasks if t.status.is_terminal)
+            msg = "任务板无活跃任务。"
+            if terminal_count > 0:
+                msg += f" ({terminal_count} 个已完成/失败的任务已隐藏, 用 status=\"all\" 查看)"
+            return msg
+
+        # ── 解析依赖状态 ──
+        task_map: dict[str, Any] = {t.id: t for t in all_tasks}
+        success_ids = {t.id for t in all_tasks if t.status.is_success}
+
+        icons = {
+            "pending": "⏳", "in_progress": "🔄", "in_review": "👁️",
+            "revision_needed": "↩️", "approved": "✅", "completed": "✅",
+            "failed": "❌", "cancelled": "🚫",
+        }
+
         lines = [f"共 {len(tasks)} 个任务:\n"]
         for t in tasks:
-            lines.append(f"- {icons.get(t.status.value, '❓')} [{t.id}] {t.title} (分配: {t.assigned_agent or '无'})")
+            # ── 依赖解析 ──
+            blocked = False
+            dep_statuses: list[str] = []
             if t.dependencies:
-                lines.append(f"  依赖: {', '.join(t.dependencies)}")
+                for dep_id in t.dependencies:
+                    dep_task = task_map.get(dep_id)
+                    if dep_task is None:
+                        dep_statuses.append(f"{dep_id}=不存在")
+                        blocked = True
+                    elif not dep_task.status.is_success:
+                        dep_statuses.append(f"{dep_id}={dep_task.status.value}")
+                        blocked = True
+                    else:
+                        dep_statuses.append(f"{dep_id}=✅")
+
+            # ── 阻塞状态标记 ──
+            if t.status == TeamTaskStatus.PENDING and blocked:
+                blocker = "🔒 阻塞中"
+            elif t.status == TeamTaskStatus.PENDING and t.dependencies:
+                blocker = "✅ 依赖就绪"
+            elif t.status == TeamTaskStatus.IN_PROGRESS:
+                blocker = "🔄 执行中"
+            elif t.status == TeamTaskStatus.IN_REVIEW:
+                blocker = "👁️ 审查中"
+            elif t.status == TeamTaskStatus.REVISION_NEEDED:
+                blocker = "↩️ 需修改"
+            elif t.status.is_success:
+                blocker = "✅ 已完成"
+            elif t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED):
+                blocker = "❌ 已终止"
+            else:
+                blocker = ""
+
+            line = (
+                f"- {icons.get(t.status.value, '❓')} [{t.id}] {t.title}"
+                f" → {t.assigned_agent or '未分配'} | {blocker}"
+            )
+            lines.append(line)
+
+            if dep_statuses:
+                lines.append(f"  依赖: {', '.join(dep_statuses)}")
+
+        # ── 汇总 ──
+        pending = sum(1 for t in tasks if t.status == TeamTaskStatus.PENDING)
+        blocked_count = 0
+        for t in tasks:
+            if t.status == TeamTaskStatus.PENDING and t.dependencies:
+                if not all(dep in success_ids for dep in t.dependencies):
+                    blocked_count += 1
+
+        if blocked_count > 0:
+            lines.append(
+                f"\n⚠️ {blocked_count} 个任务正在等待依赖完成 (🔒 阻塞中)"
+            )
+        ready = pending - blocked_count
+        if ready > 0:
+            lines.append(f"   {ready} 个任务依赖已就绪, 等待分配/执行")
+
         return "\n".join(lines)
 
     @tool
     async def task_update(task_id: str, status: str = "", output: str = "", assigned_agent: str = "") -> str:
-        """更新任务状态. status: pending|in_progress|completed|failed|cancelled."""
+        """更新你当前执行的任务状态 (Member 专属).
+
+        只能更新你正在执行的任务 (assigned_agent == 你)。
+        状态流转: in_progress → in_review (推荐, 提交审查) 或 completed (直接完成).
+        失败时使用 status="failed" 并说明原因 (output 中).
+
+        注意: 这是 Member 工具, Lead 不能使用。Lead 请用 task_review 审查任务。
+        """
         if task_store is None:
             return "Error: Task store not available"
+
+        caller = get_current_agent()
         task = await task_store.get_task(task_id)
         if task is None:
-            return f"Error: Task '{task_id}' not found"
+            return (
+                f"Error: 任务 '{task_id}' 不存在。"
+                f"请用 task_list 查看当前任务板上的任务 ID。"
+            )
+
+        # ── 守卫: 只有被分配的 Member 可以更新 ──
+        if task.assigned_agent and task.assigned_agent != caller:
+            return (
+                f"Error: 任务 '{task_id}' 分配给了 '{task.assigned_agent}', "
+                f"不是你 ({caller})。你只能更新分配给你自己的任务。"
+            )
+
         updates: dict[str, Any] = {}
         if status:
             try:
-                updates["status"] = TeamTaskStatus(status)
+                new_status = TeamTaskStatus(status)
             except ValueError:
-                return f"Error: Invalid status '{status}'"
+                return (
+                    f"Error: 无效的状态 '{status}'。"
+                    f"有效值: in_progress, in_review, completed, failed"
+                )
+            # ── 守卫: 状态流转校验 ──
+            allowed = _allowed_transitions(task.status)
+            if new_status not in allowed:
+                allowed_str = ", ".join(s.value for s in allowed)
+                return (
+                    f"Error: 不能从 '{task.status.value}' 直接转到 '{status}'。"
+                    f"允许的状态: {allowed_str}"
+                )
+            updates["status"] = new_status
         if output:
             updates["output"] = output
         if assigned_agent:
-            updates["assigned_agent"] = assigned_agent
+            return "Error: 不允许通过 task_update 修改 assigned_agent。请使用 delegate_to_member。"
         if not updates:
-            return "未提供任何更新字段."
+            return "未提供任何更新字段。请至少提供 status 或 output。"
+
         updated = await task_store.update_task(task_id, **updates)
         if updated is None:
             return f"Error: Failed to update task '{task_id}'"
@@ -392,6 +638,12 @@ def create_team_tools(
                     "type": "team_task_update",
                     "task": updated.model_dump(),
                 })
+            except Exception:
+                pass
+        # ── 唤醒 dispatch 循环 ──
+        if progress_callback is not None:
+            try:
+                progress_callback()
             except Exception:
                 pass
         return f"任务 [{task_id}] 已更新: {updated.title} → {updated.status.value}"
@@ -458,7 +710,7 @@ def create_team_tools(
 
     @tool
     async def request_plan_approval(plan_description: str) -> str:
-        """ 向 Lead 请求审批高风险操作计划 (Member 专属)."""
+        """ 向 Lead 请求审批高风险操作计划."""
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import TeamMessage, TeamMessageType
@@ -476,22 +728,8 @@ def create_team_tools(
         return f"审批请求已发送给 Lead '{target}' (req_id={req_id})。等待 Lead 审批中..."
 
     @tool
-    async def claim_task(task_id: str) -> str:
-        """ 自主认领任务板上未分配的任务 (Member 专属)."""
-        if task_store is None:
-            return "Error: Task store not available"
-        # 守卫: 已有在手任务时不许再认领 — 否则完成计数和结果上报会记到旧任务头上
-        instance = get_current_agent_instance()
-        if instance is not None and getattr(instance, "current_task_id", None):
-            return "Error: 你当前有正在执行的任务, 请先完成并用 task_update 上报后再认领新任务。"
-        claimed = await task_store.claim(task_id, get_current_agent())
-        if claimed is None:
-            return f"Error: 任务 '{task_id}' 不可认领 (不存在/已被认领/依赖未就绪/状态非 pending)。"
-        return f"已认领任务 [{task_id}]: {claimed.title}"
-
-    @tool
     async def shutdown_response(request_id: str, requester: str, approve: bool, reason: str = "") -> str:
-        """响应关机请求 —  结构化握手 (Member 专属).
+        """响应关机请求 —  结构化握手.
 
         收到 shutdown_request 后, 由 LLM 决策是否批准关机:
         - approve=True: 批准关机, Agent 将在当前轮次结束后优雅退出
@@ -533,6 +771,95 @@ def create_team_tools(
         return f"已拒绝关机请求 (req_id={request_id})。继续执行当前任务。"
 
     # ═════════════════════════════════════════════════════════════════
+    # memory_search — 按需查询任务记忆详情
+    # ═════════════════════════════════════════════════════════════════
+
+    @tool
+    async def memory_search(
+        query: str = "",
+        task_id: str = "",
+        max_results: int = 5,
+    ) -> str:
+        """搜索已完成任务的记忆（决策、踩坑、发现），使用关键词或任务ID查询。
+
+        当注入到 prompt 的 `<task_memory>` 压缩摘要不足以理解完整背景时，
+        使用此工具获取详细内容。每个任务记忆包含:摘要、决策、踩坑、发现、标签。
+
+        —— WHEN TO USE ——
+        - 压缩摘要中提到了一个相关任务，但需要看具体决策/踩坑的细节
+        - 当前任务遇到一个错误，想查历史任务是否也遇到过
+        - 想了解某个技术方案在历史任务中是怎么决策的
+
+        Args:
+            query: 搜索关键词（匹配摘要、标签、标题）。为空时返回最近完成的任务。
+            task_id: 指定任务ID精确查询。与query同时提供时，task_id优先。
+            max_results: 最多返回几条结果 (1-10, 默认5)
+        """
+        # 获取当前 agent 实例以访问 project_id / user_id
+        agent = get_current_agent_instance()
+        if agent is None:
+            return "Error: 无法获取当前 Agent 上下文"
+
+        project_id = agent._project_id if hasattr(agent, "_project_id") else ""
+        user_id = agent._user_id if hasattr(agent, "_user_id") else "default"
+
+        if not project_id:
+            return "Error: 未设置 project_id，无法访问任务记忆"
+
+        from harness.memory.task_memory import TaskMemoryStore
+
+        store = TaskMemoryStore(project_id=project_id, user_id=user_id)
+
+        # 精确查询
+        if task_id:
+            memory = await store.load(task_id)
+            if memory is None:
+                return f"未找到任务 '{task_id}' 的记忆。该任务可能尚未提取记忆，或任务ID不存在。"
+            return _format_memory_detail(memory)
+
+        max_results = max(1, min(max_results, 10))
+
+        # 关键词搜索
+        all_memories = await store.list_all()
+        if not all_memories:
+            return "暂无已提取的任务记忆。当任务完成后，系统会自动提取记忆。"
+
+        results: list = []
+        if query:
+            query_lower = query.lower()
+            keywords: set[str] = set()
+            for kw in query_lower.split():
+                kw = kw.strip()
+                if len(kw) >= 2:
+                    keywords.add(kw)
+
+            if keywords:
+                scored: list[tuple[int, any]] = []
+                for m in all_memories:
+                    text = (
+                        f"{m.summary} {m.task_title} {' '.join(m.tags)}"
+                    ).lower()
+                    score = sum(1 for kw in keywords if kw in text)
+                    if score > 0:
+                        scored.append((score, m))
+                scored.sort(key=lambda x: -x[0])
+                results = [m for _, m in scored[:max_results]]
+        else:
+            results = all_memories[:max_results]
+
+        if not results:
+            return (
+                f"未找到与 '{query}' 相关的任务记忆。"
+                f"可尝试不同关键词，或等更多任务完成后系统自动提取记忆。"
+            )
+
+        parts = [f"找到 {len(results)} 条相关任务记忆:\n"]
+        for m in results:
+            parts.append(_format_memory_detail(m))
+            parts.append("")
+        return "\n---\n\n".join(parts)
+
+    # ═════════════════════════════════════════════════════════════════
     # 按角色组装
     # ═════════════════════════════════════════════════════════════════
 
@@ -547,13 +874,13 @@ def create_team_tools(
         # 共享
         "task_create": task_create,
         "task_list": task_list,
-        "task_update": task_update,
         "send_message": send_message,
         "read_inbox": read_inbox,
         "broadcast": broadcast,
+        "memory_search": memory_search,
         # Member 专属
+        "task_update": task_update,
         "request_plan_approval": request_plan_approval,
-        "claim_task": claim_task,
         "shutdown_response": shutdown_response,
     }
 

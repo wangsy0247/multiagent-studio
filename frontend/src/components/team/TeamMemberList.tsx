@@ -12,6 +12,7 @@ const statusLabels: Record<string, string> = {
   spawning: "启动中",
   idle: "空闲",
   working: "执行中",
+  busy: "执行中", // 后端枚举外取值, 语义等同 working
   shutting_down: "关闭中",
   shutdown: "已关闭",
   failed: "失败",
@@ -48,7 +49,7 @@ export function TeamMemberList({ agents }: TeamMemberListProps) {
                       ? "bg-slate-300 animate-pulse"
                       : status === "idle"
                         ? "bg-slate-300"
-                        : status === "working"
+                        : status === "working" || status === "busy"
                           ? "bg-hermes-500 animate-pulse"
                           : status === "shutting_down"
                             ? "bg-amber-400 animate-pulse"

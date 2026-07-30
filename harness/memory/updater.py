@@ -247,18 +247,7 @@ class MemoryUpdater:
                              user_id=None, metadata=None, *,
                              api_key: str = "", base_url: str = "",
                              model_name: str = "") -> bool:
-        """Async entry point — may write to file, mem0, or both (dual-write).
-
-        Routing logic:
-        - backend=file + mem0_tool_enabled=false → only file (original behavior)
-        - backend=file + mem0_tool_enabled=true  → BOTH file and mem0 (dual-write)
-        - backend=mem0 + mem0_tool_enabled=false → only mem0 (original behavior)
-        - backend=mem0 + mem0_tool_enabled=true  → only mem0 (no need for file)
-        """
-        from harness.config.memory_config import get_memory_config
-
-        cfg = get_memory_config()
-        mem0_tool_enabled = getattr(cfg, "mem0_tool_enabled", False)
+        """Async entry point — writes memory to file storage."""
 
         # Store per-user credentials for _get_model()
         self._api_key = api_key
@@ -266,80 +255,15 @@ class MemoryUpdater:
         if model_name:
             self._model_name = model_name
 
-        results: list[bool] = []
-
-        # ── file 写入（当 backend=file 时）──
-        if cfg.backend == "file":
-            try:
-                file_result = await self._do_update_memory(
-                    messages=messages, thread_id=thread_id, agent_name=agent_name,
-                    correction_detected=correction_detected,
-                    reinforcement_detected=reinforcement_detected,
-                    user_id=user_id,
-                )
-                results.append(file_result)
-            except Exception as e:
-                logger.error("file memory update failed: %s", e)
-                results.append(False)
-
-        # ── mem0 写入（当 backend=mem0 或 mem0_tool_enabled=true 时）──
-        if cfg.backend == "mem0" or mem0_tool_enabled:
-            try:
-                mem0_result = await self._update_mem0(
-                    messages, user_id, agent_name, thread_id,
-                    correction_detected, reinforcement_detected, metadata,
-                )
-                results.append(mem0_result)
-            except Exception as e:
-                logger.error("mem0 update failed: %s", e)
-                results.append(False)
-
-        # 至少一个成功就算成功
-        return any(results) if results else False
-
-    async def _update_mem0(self, messages, user_id, agent_name, thread_id,
-                           correction_detected, reinforcement_detected, metadata) -> bool:
-        """mem0 backend：直接调 mem0.add()，内部含 LLM 提取+冲突检测。"""
-        import asyncio
-
-        from harness.memory.mem0_client import get_mem0
-
-        mem0 = get_mem0()
-        if mem0 is None:
-            logger.error("mem0 backend enabled but client not initialized")
-            return False
-
-        # 转换消息格式为 mem0 期望的 [{"role":..., "content":...}]
-        mem0_messages = []
-        for m in messages:
-            role = "user" if getattr(m, "type", None) == "human" else "assistant"
-            content = m.content if isinstance(m.content, str) else str(m.content)
-            if content.strip():
-                mem0_messages.append({"role": role, "content": content})
-
-        if not mem0_messages:
-            return False
-
-        # 构建 metadata
-        mem_metadata: dict = {"thread_id": thread_id or ""}
-        if metadata:
-            mem_metadata.update(metadata)
-
         try:
-            await asyncio.to_thread(
-                mem0.add,
-                mem0_messages,
-                user_id=user_id or "default",
-                agent_id=agent_name,
-                metadata=mem_metadata,
+            return await self._do_update_memory(
+                messages=messages, thread_id=thread_id, agent_name=agent_name,
+                correction_detected=correction_detected,
+                reinforcement_detected=reinforcement_detected,
+                user_id=user_id,
             )
-            logger.info(
-                "mem0 add succeeded for user=%s agent=%s thread=%s",
-                user_id, agent_name, thread_id,
-            )
-            return True
         except Exception as e:
-            logger.error("mem0 add failed: %s", e)
+            logger.error("file memory update failed: %s", e)
             return False
 
     async def _do_update_memory(self, messages, thread_id=None, agent_name=None,

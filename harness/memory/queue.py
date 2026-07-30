@@ -31,7 +31,7 @@ class ConversationContext:
     user_id: str | None = None
     correction_detected: bool = False
     reinforcement_detected: bool = False
-    metadata: dict | None = None  # mem0 backend: event_time, thread_id, etc.
+    metadata: dict | None = None  # event_time, thread_id, etc.
     # Per-user credentials — carried from middleware config through queue to updater
     api_key: str = ""
     base_url: str = ""

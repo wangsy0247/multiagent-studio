@@ -61,12 +61,9 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db)):
         tool_groups=body.get("tool_groups", []),
         skills=body.get("skills", []),
         memory=AgentMemoryFields(
-            backend=mem_data.get("backend", "file"),
             max_facts=mem_data.get("max_facts", 10),
             injection_enabled=mem_data.get("injection_enabled", True),
             max_injection_tokens=mem_data.get("max_injection_tokens", 500),
-            mem0_tool_enabled=mem_data.get("mem0_tool_enabled", False),
-            mem0_search_top_k=mem_data.get("mem0_search_top_k", 5),
         ),
         features=AgentFeaturesFields(
             summarization=feat_data.get("summarization", True),
@@ -149,12 +146,9 @@ async def update_agent(name: str, request: Request, db: AsyncSession = Depends(g
         tool_groups=body.get("tool_groups", existing.tool_groups),
         skills=body.get("skills", existing.skills),
         memory=AgentMemoryFields(
-            backend=mem_data.get("backend", existing.memory.backend),
             max_facts=mem_data.get("max_facts", existing.memory.max_facts),
             injection_enabled=mem_data.get("injection_enabled", existing.memory.injection_enabled),
             max_injection_tokens=mem_data.get("max_injection_tokens", existing.memory.max_injection_tokens),
-            mem0_tool_enabled=mem_data.get("mem0_tool_enabled", existing.memory.mem0_tool_enabled),
-            mem0_search_top_k=mem_data.get("mem0_search_top_k", existing.memory.mem0_search_top_k),
         ),
         features=AgentFeaturesFields(
             summarization=feat_data.get("summarization", existing.features.summarization),

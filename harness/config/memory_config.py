@@ -1,8 +1,6 @@
 """Configuration for memory mechanism — adapted from DeerFlow.
 
-Supports two backends:
-- ``file`` — legacy JSON-based FileMemoryStorage (default)
-- ``mem0`` — mem0 + Chroma vector store with per-turn search + injection
+Uses JSON-based file storage for memory persistence.
 """
 
 from pydantic import BaseModel, Field
@@ -55,44 +53,6 @@ class MemoryConfig(BaseModel):
     max_injection_tokens: int = Field(
         default=2000, ge=100, le=8000,
         description="Maximum tokens to use for memory injection",
-    )
-
-    # ── mem0 配置（新增）──────────────────────────────────────────────
-    backend: str = Field(
-        default="file",
-        description="Memory backend: 'file' (legacy JSON) or 'mem0' (mem0+vector store)",
-    )
-    mem0_config: dict = Field(
-        default_factory=dict,
-        description="mem0 configuration dict, see mem0 docs. Only used when backend='mem0'",
-    )
-    mem0_search_top_k: int = Field(
-        default=5, ge=1, le=20,
-        description="Number of memories to retrieve per search",
-    )
-    mem0_general_query: str = Field(
-        default="用户的偏好、习惯、背景和重要信息",
-        description="Fixed query for retrieving general user memories on first turn",
-    )
-    mem0_enable_time_filter: bool = Field(
-        default=False,
-        description="Whether to filter memories by created_at recency",
-    )
-    mem0_recent_days: int = Field(
-        default=90, ge=1, le=365,
-        description="Only retrieve memories created within this many days (when time filter enabled)",
-    )
-    mem0_general_token_budget: int = Field(
-        default=400, ge=100, le=4000,
-        description="Token budget for fixed general query results on first turn. Remainder of max_injection_tokens goes to specific query.",
-    )
-    mem0_tool_enabled: bool = Field(
-        default=False,
-        description=(
-            "Whether to register memory_search tool for Agent to proactively query mem0. "
-            "Independent of backend — can be True even when backend='file', "
-            "enabling dual-track: file for passive injection + mem0 for active query."
-        ),
     )
 
     # ── 项目记忆 (仅 Team 模式) ──

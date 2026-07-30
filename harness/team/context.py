@@ -39,6 +39,9 @@ class TeamContext:
     _team_capabilities: dict[str, Any] = field(default_factory=dict, repr=False)
     _team_capabilities_xml: str = ""  # 预格式化的 XML 片段
 
+    # ── 团队记忆缓存 ──
+    _team_memory_xml: str = ""  # 预格式化的 <team_memory> XML
+
     # ------------------------------------------------------------------
     # 成员摘要 (运行时状态)
     # ------------------------------------------------------------------
@@ -133,3 +136,21 @@ class TeamContext:
 3. 依赖未完成的任务不会被分配给 Member
 4. 单个任务最多重试 3 次，仍失败则标记为 failed 等待 Lead 决策
 </team_collaboration_rules>"""
+
+    # ------------------------------------------------------------------
+    # 团队记忆 (L3)
+    # ------------------------------------------------------------------
+
+    def set_team_memory_xml(self, xml: str) -> None:
+        """Set the pre-formatted team memory XML for prompt injection.
+
+        Called by Orchestrator after loading team memory from storage.
+        """
+        self._team_memory_xml = xml
+
+    def get_team_memory_xml(self) -> str:
+        """Return the pre-formatted ``<team_memory>`` XML block.
+
+        Returns an empty string if no team memory has been loaded.
+        """
+        return self._team_memory_xml

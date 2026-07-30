@@ -288,6 +288,90 @@ async def update_task(project_id: str, task_id: str, request: Request, db: Async
     raise HTTPException(404, "Task not found")
 
 
+# ── Agent 对话日志 (前端按 agent 隔离展示工作内容) ──
+
+
+@router.get("/{project_id}/agent-logs/{thread_id}")
+async def list_agent_logs(
+    project_id: str,
+    thread_id: str,
+    user_id: str = "default",
+    authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出某个 team thread 下所有 agent 的对话日志摘要."""
+    uid = await resolve_fs_user_id(user_id, authorization, db)
+    logs_dir = get_paths().agent_logs_dir(thread_id, project_id, user_id=uid)
+    if not logs_dir.exists():
+        return {"thread_id": thread_id, "agents": [], "count": 0}
+
+    agents: list[dict] = []
+    for f in sorted(logs_dir.glob("*.jsonl")):
+        try:
+            lines = [
+                _json.loads(line)
+                for line in f.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            task_ids = list({
+                entry["task_id"]
+                for entry in lines
+                if entry.get("task_id")
+            })
+            agents.append({
+                "agent_name": f.stem,
+                "task_count": len(task_ids),
+                "entry_count": len(lines),
+                "size_bytes": f.stat().st_size,
+            })
+        except Exception:
+            logger.exception("Failed to read agent log: %s", f)
+            agents.append({
+                "agent_name": f.stem,
+                "task_count": 0,
+                "entry_count": 0,
+                "size_bytes": 0,
+                "error": "读取失败",
+            })
+    return {"thread_id": thread_id, "agents": agents, "count": len(agents)}
+
+
+@router.get("/{project_id}/agent-logs/{thread_id}/{agent_name}")
+async def get_agent_log(
+    project_id: str,
+    thread_id: str,
+    agent_name: str,
+    user_id: str = "default",
+    authorization: str | None = Header(None, include_in_schema=False),
+    db: AsyncSession = Depends(get_db),
+):
+    """读取某个 agent 在指定 thread 中的完整对话日志 (JSONL → JSON array)."""
+    uid = await resolve_fs_user_id(user_id, authorization, db)
+    log_file = (
+        get_paths().agent_logs_dir(thread_id, project_id, user_id=uid)
+        / f"{agent_name}.jsonl"
+    )
+    if not log_file.exists():
+        return {"agent_name": agent_name, "thread_id": thread_id, "entries": [], "count": 0}
+
+    try:
+        entries = [
+            _json.loads(line)
+            for line in log_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except Exception:
+        logger.exception("Failed to parse agent log: %s", log_file)
+        raise HTTPException(500, "Failed to read agent log")
+
+    return {
+        "agent_name": agent_name,
+        "thread_id": thread_id,
+        "entries": entries,
+        "count": len(entries),
+    }
+
+
 # ── Agent Cards ──
 
 @router.get("/{project_id}/agent-cards")

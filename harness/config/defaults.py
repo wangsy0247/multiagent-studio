@@ -24,15 +24,12 @@ SYSTEM_DEFAULTS: dict = {
 
     # ── 记忆 ──
     "memory": {
-        "backend": "file",
         "max_facts": 10,
         "ttl_days": 90,
         "injection_enabled": True,
         "max_injection_tokens": 500,
         "debounce_seconds": 120,
         "fact_confidence_threshold": 0.7,
-        "mem0_tool_enabled": False,
-        "mem0_search_top_k": 5,
     },
 
     # ── 功能开关 ──
@@ -46,6 +43,21 @@ SYSTEM_DEFAULTS: dict = {
 
     # ── Team ──
     "team": {"can_delegate": True, "memory_scope": "agent"},
+
+    # ── 任务记忆 ──
+    "task_memory": {
+        "enabled": True,
+        "max_related_tasks": 3,
+        "max_tokens_per_task": 80,
+    },
+
+    # ── 团队记忆 ──
+    "team_memory": {
+        "enabled": True,
+        "max_best_practices": 20,
+        "max_pitfalls": 20,
+        "max_recent_runs": 5,
+    },
 
     # ── 沙箱 (基础设施, L1 覆盖) ──
     "sandbox": {

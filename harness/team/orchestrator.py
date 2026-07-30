@@ -20,6 +20,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from langchain_core.messages import HumanMessage
+
 from harness.config.paths import get_paths
 from harness.team.context import TeamContext
 from harness.team.message_bus import TeamMessageBus
@@ -31,6 +33,8 @@ from harness.team.models import (
     TeamTaskStatus,
     TeammateStatus,
 )
+from harness.memory.task_memory import TaskMemoryStore
+from harness.memory.team_memory import TeamMemoryStore
 from harness.observability.team_tracer import TeamTracer
 from harness.team.task_store import TeamTaskStore
 from harness.team.teammate_agent import TeammateAgent
@@ -40,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # ── 常量 ──
 OVERALL_TIMEOUT = 1800         # Team 整体超时 30 分钟
-DEADLOCK_TIMEOUT = 120         # 死锁 2 分钟无进展
+DEADLOCK_TIMEOUT = 300         # 死锁 5 分钟无进展
 
 # 平台内置 Lead Agent 的保留名称 (双下划线前缀防止与用户 agent 冲突)
 TEAM_LEAD_NAME = "__team_lead__"
@@ -118,12 +122,15 @@ class TeamOrchestrator:
         # ── 核心组件 ──
         self.task_store = TeamTaskStore(project_id, user_id, thread_id)
         self.message_bus = TeamMessageBus(project_id, user_id, thread_id)
+        self._task_memory_store = TaskMemoryStore(project_id, user_id)
+        self._team_memory_store = TeamMemoryStore(project_id, user_id)
         self.team_context: TeamContext | None = None
         self.teammates: dict[str, TeammateAgent] = {}  # agent_name → TeammateAgent
 
         # ── 调度状态 ──
         self._round: int = 0
         self._cancelled: bool = False
+        self._clarification_pending: bool = False
         self._started_at: str = ""
         self._last_progress_at: str = ""
         self._progress_event = asyncio.Event()
@@ -298,9 +305,18 @@ class TeamOrchestrator:
         self._refresh_team_context()
 
         # ── 6. 回收无主 IN_PROGRESS 任务 (上一个 run crash 后的遗留) ──
-        orphaned = await self.task_store.recover_orphaned_tasks(set(self.teammates.keys()))
+        orphaned = await self.task_store.recover_orphaned_tasks()
         if orphaned:
             logger.info("Recovered %d orphaned tasks from previous crashed run", len(orphaned))
+
+        # ── 7. 加载团队记忆 (L3) ──
+        try:
+            team_memory_xml = await self._team_memory_store.get_context_xml()
+            if team_memory_xml:
+                self.team_context.set_team_memory_xml(team_memory_xml)
+                logger.info("Team memory loaded for project %s", self._project_id)
+        except Exception as exc:
+            logger.warning("Failed to load team memory: %s", exc)
 
     async def _create_teammate(self, name: str) -> TeammateAgent | None:
         """创建并 spawn 一个 TeammateAgent — 使用 ConfigLoader 加载 per-agent 配置."""
@@ -341,6 +357,7 @@ class TeamOrchestrator:
                 spawn_callback=None,
                 event_emitter=self._event_queue.put,
                 lead_name=lead_name,
+                progress_callback=self._progress_event.set,
             )
             tools.extend(team_tools)
 
@@ -363,6 +380,7 @@ class TeamOrchestrator:
                 team_context=self.team_context,
                 message_bus=self.message_bus,
                 task_store=self.task_store,
+                task_memory_store=self._task_memory_store,
                 skill_storage=self._skill_storage,
                 event_queue=self._event_queue,
                 role=role,
@@ -453,9 +471,8 @@ class TeamOrchestrator:
             async def _on_spawn(agent_name: str) -> str:
                 tm = await _self._create_teammate(agent_name)
                 if tm:
-                    tm.enable_auto_claim()
                     _self._refresh_team_context()
-                    return f"Teammate '{agent_name}' spawned successfully (已开启自主认领)。"
+                    return f"Teammate '{agent_name}' spawned successfully."
                 return f"Failed to spawn '{agent_name}': agent config not found or LLM unavailable."
 
             from harness.team.tools import create_team_tools
@@ -468,6 +485,7 @@ class TeamOrchestrator:
                 spawn_callback=_on_spawn,
                 event_emitter=self._event_queue.put,
                 lead_name=lead_name,
+                progress_callback=self._progress_event.set,
             )
             tools.extend(team_tools)
 
@@ -484,6 +502,7 @@ class TeamOrchestrator:
                 team_context=self.team_context,
                 message_bus=self.message_bus,
                 task_store=self.task_store,
+                task_memory_store=self._task_memory_store,
                 skill_storage=self._skill_storage,
                 event_queue=self._event_queue,
                 role="lead",
@@ -535,11 +554,15 @@ class TeamOrchestrator:
             self.tracer.trace_phase("triage")
             yield await self._emit_team_status("triage", "Lead Agent 正在分析目标...")
 
-            # 加载已有任务，让 Lead 感知任务板全貌 (不再自动 cancel_stale_tasks)
+            # 加载已有任务和团队记忆，让 Lead 感知任务板和团队知识积累
             existing_tasks = await self.task_store.load_tasks()
             triage_message = message
+
+            team_memory_xml = self.team_context.get_team_memory_xml() if self.team_context else ""
+            if team_memory_xml:
+                triage_message += "\n\n" + team_memory_xml
             if existing_tasks:
-                triage_message = message + self._format_existing_tasks(existing_tasks)
+                triage_message += self._format_existing_tasks(existing_tasks)
 
             lead = self._get_lead()
             plan_summary = ""
@@ -571,6 +594,21 @@ class TeamOrchestrator:
 
                     if lead.last_error:
                         logger.warning("Lead '%s' triage error: %s", lead.name, lead.last_error)
+
+                    # ── s32: 检测 pending clarification (Lead 调用了 ask_clarification) ──
+                    if lead and lead.pending_clarification:
+                        yield {
+                            "type": "clarification",
+                            "request": lead.pending_clarification,
+                            "thread_id": self._thread_id,
+                        }
+                        self._clarification_pending = True
+                        logger.info(
+                            "Team run paused for clarification: %s",
+                            lead.pending_clarification.get("question", "")[:80],
+                        )
+                        return  # 暂停执行, 等待用户回答
+
                 except Exception as exc:
                     logger.warning("Lead triage failed: %s, continuing", exc)
 
@@ -581,12 +619,19 @@ class TeamOrchestrator:
             has_sub_tasks = len(sub_tasks) > 0
 
             if not has_sub_tasks:
-                if lead and lead.last_error:
-                    # Lead 失败 → 降级为自动分配
-                    logger.warning("Lead triage failed — using fallback plan")
+                # Lead 分析超时仍在 WORKING → 同样走降级拆分, 不误判为自处理
+                lead_timed_out = lead is not None and lead.status == TeammateStatus.WORKING
+                if lead and (lead.last_error or lead_timed_out):
+                    # Lead 失败/超时 → 降级为自动分配
+                    logger.warning(
+                        "Lead triage %s — using fallback plan",
+                        "failed" if lead.last_error else "timed out",
+                    )
                     yield await self._emit_team_status(
                         "triage",
-                        "Lead 分析失败 (LLM 可能不可用)，自动降级为简单任务拆分。")
+                        "Lead 分析失败 (LLM 可能不可用)，自动降级为简单任务拆分。"
+                        if lead.last_error else
+                        "Lead 分析超时，降级为自动任务拆分。")
                     workers = [name for name in self.teammates
                               if name != (lead.name if lead else "")]
                     assigned = workers[0] if workers else next(iter(self.teammates), None)
@@ -621,142 +666,292 @@ class TeamOrchestrator:
             )
             await self.task_store.update_task(root_task.id, status=TeamTaskStatus.COMPLETED)
 
-            # ── 开启 Member 自主认领 (仅拆解模式) ──
-            if has_sub_tasks:
-                for name, tm in self.teammates.items():
-                    if tm._role != "lead":
-                        tm.enable_auto_claim()
-                logger.info("Auto-claim enabled for all members after triage")
-
-            # ── Phase 2: Event-Driven Dispatch Loop (仅拆解模式) ──
-            if has_sub_tasks:
-                self.tracer.trace_phase("dispatching")
-                yield await self._emit_team_status("dispatching", "开始事件驱动的任务调度...")
-
-                watchdog_task = asyncio.create_task(self._watchdog())
-
-                try:
-                    while not await self._is_complete() and not self._cancelled:
-                        self._round += 1
-
-                        # ── 团队成员状态保鲜 (prompt 中的 <team_members> 每轮可见最新状态) ──
-                        self._refresh_team_context()
-
-                        # ── 依赖失败传播: 级联取消下游任务 ──
-                        propagated = await self.task_store.propagate_failures()
-                        for ct in propagated:
-                            await self._event_queue.put(await self._emit_task_update(ct))
-                            lead_notify = self._get_lead()
-                            if lead_notify:
-                                await self.message_bus.send(TeamMessage(
-                                    from_agent="orchestrator", to_agent=lead_notify.name,
-                                    msg_type=TeamMessageType.LIFECYCLE,
-                                    content=(f"任务 [{ct.id}] {ct.title} "
-                                             f"因依赖失败被取消: {ct.error}"),
-                                    task_id=ct.id,
-                                ))
-                        if propagated:
-                            self._last_progress_at = _now_iso()
-
-                        # ── 恢复中断任务: crash 后原成员恢复 → IN_PROGRESS ──
-                        resumed = await self._resume_interrupted_tasks()
-                        if resumed > 0:
-                            self._last_progress_at = _now_iso()
-
-                        # ── 事件驱动: 等待进展, 不再 sleep() ──
-                        dispatched = await self._dispatch_ready_tasks()
-
-                        # ── 处理 event queue (SSE 输出) ──
-                        while not self._event_queue.empty():
-                            yield self._event_queue.get_nowait()
-
-                        # ── Teammate 完成通知: 让 Lead 知道进展 (去重) ──
-                        for name, tm in self.teammates.items():
-                            if (tm.status == TeammateStatus.IDLE and tm.current_task_id is None
-                                    and name not in self._notified_idle):
-                                self._notified_idle.add(name)
-                                # ── SSE: 成员状态变更 → 前端 Members 标签 ──
-                                await self._event_queue.put(await self._emit_member_status(
-                                    name, "idle"))
-                                lead_notify = self._get_lead()
-                                if lead_notify and lead_notify.name != name:
-                                    msg = TeamMessage(
-                                        from_agent=name, to_agent=lead_notify.name,
-                                        msg_type=TeamMessageType.LIFECYCLE,
-                                        content=f"已完成 {tm.completed_tasks} 个任务, 等待新任务",
-                                    )
-                                    await self.message_bus.send(msg)
-                                    # ── SSE: 推送消息事件到前端 ──
-                                    await self._event_queue.put({
-                                        "type": "team_message",
-                                        "thread_id": self._thread_id,
-                                        "project_id": self._project_id,
-                                        "message": msg.model_dump(),
-                                    })
-                            elif tm.status == TeammateStatus.WORKING:
-                                # 重新进入 WORKING → 清除标记, 下次完成时可再通知
-                                self._notified_idle.discard(name)
-
-                        # ── Tracing: Lead 持续监控 (trace LIFECYCLE messages) ──
-                        self.tracer.trace_message(
-                            from_agent="orchestrator", to_agent=lead.name if lead else None,
-                            msg_type="lifecycle",
-                            content=f"Round {self._round}: dispatched={dispatched}",
-                        )
-
-                        if dispatched > 0:
-                            self._last_progress_at = _now_iso()
-                        else:
-                            # 无任务可分配时, 等待进展事件 (最多 5s)
-                            self._progress_event.clear()
-                            try:
-                                await asyncio.wait_for(self._progress_event.wait(), timeout=5.0)
-                            except asyncio.TimeoutError:
-                                pass
-
-                finally:
-                    watchdog_task.cancel()
-                    try:
-                        await watchdog_task
-                    except asyncio.CancelledError:
-                        pass
-
-                # ── Phase 3: Lead LLM Synthesis ──
-                self.tracer.trace_phase("synthesizing")
-                yield await self._emit_team_status("synthesizing", "Lead Agent 正在汇总结果...")
-                async for event in self._llm_synthesize(lead, plan_summary):
-                    yield event
+            # ── Phase 2+3: Dispatch Loop + Lead Synthesis ──
+            async for event in self._dispatch_and_synthesize(lead, plan_summary, has_sub_tasks):
+                yield event
 
         except Exception as exc:
             logger.exception("Team execution failed")
             yield await self._emit_team_error(f"Team 执行失败: {exc}")
 
         finally:
-            # ── Tracing: 记录结束状态 ──
-            final_status = "completed" if await self._is_complete() else ("cancelled" if self._cancelled else "error")
-            self.tracer.trace_team_end(status=final_status, total_rounds=self._round)
-            self.tracer.shutdown()
+            async for event in self._finalize_run():
+                yield event
 
-            # 清理: shutdown 所有 teammate (带超时, 防止文件 I/O 阻塞)
-            _shutdown_timeout = 10  # 每个 teammate 最多等待 10 秒
-            for tm in self.teammates.values():
-                if tm.status not in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
-                    try:
-                        await asyncio.wait_for(tm.shutdown(), timeout=_shutdown_timeout)
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Teammate '%s' shutdown timed out after %ds — forcing exit",
-                            tm.name, _shutdown_timeout,
+    async def resume(self, answer: str) -> AsyncIterator[dict[str, Any]]:
+        """澄清回答后的恢复入口 — 异步生成器 yield SSE 事件.
+
+        与 run() 的差异:
+        - 不重复 yield team_start / 创建 triage 任务 / 创建 "用户目标:" 根任务
+        - 澄清回答只投递一次 (append 进 Lead 消息缓冲), 不再作为 triage 任务文本
+        - 复用 run() triage 之后的 dispatch + synthesis 逻辑, 支持再次暂停
+        """
+        # 刷新进度时间戳, 避免看门狗把澄清暂停时长计入死锁/整体超时
+        self._started_at = _now_iso()
+        self._last_progress_at = self._started_at
+        self._cancelled = False
+
+        try:
+            lead = self._get_lead()
+            if lead is None:
+                yield await self._emit_team_error("Lead Agent 不可用，无法恢复团队运行")
+                return
+
+            question = (lead.pending_clarification or {}).get("question", "")
+            logger.info("Resuming team run after clarification: %s", question[:80])
+            resume_msg = (
+                f"[用户澄清回答]\n"
+                f"之前的问题: {question}\n"
+                f"用户的回答: {answer}\n\n"
+                f"请根据用户的回答继续执行。如果需要更多信息，"
+                f"可以再次使用 ask_clarification。"
+            )
+            self._clarification_pending = False
+            lead.pending_clarification = None
+            # 投递回答到 Lead 消息缓冲 — 全链路唯一投递点
+            lead._messages.append(HumanMessage(content=resume_msg))
+
+            # Lead 非 IDLE 或 agent loop 已死 → respawn 重启 loop
+            if lead.status != TeammateStatus.IDLE or lead._task is None or lead._task.done():
+                logger.info(
+                    "Lead not resumable (status=%s), respawning for resume", lead.status,
+                )
+                await lead.respawn()
+            # 唤醒 Lead 消化回答 (与 inbox 消息路径一致: IDLE → WORKING)
+            if lead.status == TeammateStatus.IDLE:
+                lead.status = TeammateStatus.WORKING
+                lead._wake_event.set()
+
+            # 等待 Lead 根据回答完成重新规划 (最多 120s), 期间持续发布进度
+            self.tracer.trace_phase("triage")
+            yield await self._emit_team_status("triage", "Lead Agent 正在根据澄清回答继续分析...")
+            for i in range(240):  # 240 * 0.5s = 120s
+                if lead.status == TeammateStatus.IDLE:
+                    break
+                if lead.status == TeammateStatus.FAILED or lead.last_error:
+                    yield await self._emit_team_error(
+                        f"Lead Agent 分析失败: {lead.last_error or '未知错误'}")
+                    break
+                # drain event queue
+                while not self._event_queue.empty():
+                    yield self._event_queue.get_nowait()
+                await asyncio.sleep(0.5)
+
+            # ── s32: 再次暂停检测 — Lead 可能根据回答继续追问 ──
+            if lead.pending_clarification:
+                yield {
+                    "type": "clarification",
+                    "request": lead.pending_clarification,
+                    "thread_id": self._thread_id,
+                }
+                self._clarification_pending = True
+                logger.info(
+                    "Team run paused for clarification again: %s",
+                    lead.pending_clarification.get("question", "")[:80],
+                )
+                return  # 暂停执行, 等待用户回答
+
+            # ── 判断子任务 (沿用 run() 的规则: 非 "用户目标:" 标题) ──
+            all_tasks = await self.task_store.load_tasks()
+            sub_tasks = [t for t in all_tasks if not t.title.startswith("用户目标:")]
+            has_sub_tasks = len(sub_tasks) > 0
+            plan_summary = (
+                f"[澄清回答后继续执行, 共 {len(sub_tasks)} 个子任务]"
+                if has_sub_tasks else "[Lead 独立完成]"
+            )
+
+            # ── Phase 2+3: Dispatch Loop + Lead Synthesis (与 run() 共用) ──
+            async for event in self._dispatch_and_synthesize(lead, plan_summary, has_sub_tasks):
+                yield event
+
+        except Exception as exc:
+            logger.exception("Team resume failed")
+            yield await self._emit_team_error(f"Team 执行失败: {exc}")
+
+        finally:
+            async for event in self._finalize_run():
+                yield event
+
+    async def _dispatch_and_synthesize(
+        self, lead: TeammateAgent | None, plan_summary: str, has_sub_tasks: bool,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """triage 之后的共用执行段: 事件驱动 dispatch 循环 + Lead 汇总.
+
+        run() 和 resume() 共用; 期间检测到 lead.pending_clarification 则
+        yield clarification 事件并暂停 (置 _clarification_pending).
+        """
+        # ── Phase 2: Event-Driven Dispatch Loop (仅拆解模式) ──
+        if has_sub_tasks:
+            self.tracer.trace_phase("dispatching")
+            yield await self._emit_team_status("dispatching", "开始事件驱动的任务调度...")
+
+            watchdog_task = asyncio.create_task(self._watchdog())
+
+            try:
+                while not await self._is_complete() and not self._cancelled:
+                    self._round += 1
+
+                    # ── 团队成员状态保鲜 (prompt 中的 <team_members> 每轮可见最新状态) ──
+                    self._refresh_team_context()
+
+                    # ── 依赖失败传播: 级联取消下游任务 ──
+                    propagated = await self.task_store.propagate_failures()
+                    for ct in propagated:
+                        await self._event_queue.put(await self._emit_task_update(ct))
+                        lead_notify = self._get_lead()
+                        if lead_notify:
+                            await self.message_bus.send(TeamMessage(
+                                from_agent="orchestrator", to_agent=lead_notify.name,
+                                msg_type=TeamMessageType.LIFECYCLE,
+                                content=(f"任务 [{ct.id}] {ct.title} "
+                                         f"因依赖失败被取消: {ct.error}"),
+                                task_id=ct.id,
+                            ))
+                    if propagated:
+                        self._last_progress_at = _now_iso()
+
+                    # ── 恢复中断任务: crash 后原成员恢复 → IN_PROGRESS ──
+                    resumed = await self._resume_interrupted_tasks()
+                    if resumed > 0:
+                        self._last_progress_at = _now_iso()
+
+                    # ── 事件驱动: 等待进展, 不再 sleep() ──
+                    dispatched = await self._dispatch_ready_tasks()
+
+                    # ── 处理 event queue (SSE 输出) ──
+                    while not self._event_queue.empty():
+                        yield self._event_queue.get_nowait()
+
+                    # ── s32: Lead 在 dispatch 期间也可能要求澄清 ──
+                    if lead and lead.pending_clarification:
+                        yield {
+                            "type": "clarification",
+                            "request": lead.pending_clarification,
+                            "thread_id": self._thread_id,
+                        }
+                        self._clarification_pending = True
+                        logger.info(
+                            "Team run paused for clarification (dispatch): %s",
+                            lead.pending_clarification.get("question", "")[:80],
                         )
+                        return  # 暂停执行, 等待用户回答
 
-            status = "completed" if await self._is_complete() else "cancelled" if self._cancelled else "error"
-            yield {
-                "type": "team_end",
-                "thread_id": self._thread_id,
-                "project_id": self._project_id,
-                "status": status,
-                "total_rounds": self._round,
-            }
+                    # ── Teammate 完成通知: 让 Lead 知道进展 (去重) ──
+                    for name, tm in list(self.teammates.items()):
+                        if (tm.status == TeammateStatus.IDLE and tm.current_task_id is None
+                                and name not in self._notified_idle):
+                            self._notified_idle.add(name)
+                            # ── SSE: 成员状态变更 → 前端 Members 标签 ──
+                            await self._event_queue.put(await self._emit_member_status(
+                                name, "idle"))
+                            lead_notify = self._get_lead()
+                            if lead_notify and lead_notify.name != name:
+                                msg = TeamMessage(
+                                    from_agent=name, to_agent=lead_notify.name,
+                                    msg_type=TeamMessageType.LIFECYCLE,
+                                    content=f"已完成 {tm.completed_tasks} 个任务, 等待新任务",
+                                )
+                                await self.message_bus.send(msg)
+                                # ── SSE: 推送消息事件到前端 ──
+                                await self._event_queue.put({
+                                    "type": "team_message",
+                                    "thread_id": self._thread_id,
+                                    "project_id": self._project_id,
+                                    "message": msg.model_dump(),
+                                })
+                        elif tm.status == TeammateStatus.WORKING:
+                            # 重新进入 WORKING → 清除标记, 下次完成时可再通知
+                            self._notified_idle.discard(name)
+
+                    # ── Tracing: Lead 持续监控 (trace LIFECYCLE messages) ──
+                    self.tracer.trace_message(
+                        from_agent="orchestrator", to_agent=lead.name if lead else None,
+                        msg_type="lifecycle",
+                        content=f"Round {self._round}: dispatched={dispatched}",
+                    )
+
+                    if dispatched > 0:
+                        self._last_progress_at = _now_iso()
+                    else:
+                        # 无任务可分配时, 等待进展事件 (最多 5s)
+                        self._progress_event.clear()
+                        try:
+                            await asyncio.wait_for(self._progress_event.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            pass
+
+            finally:
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    # 看门狗异常不应从 finally 抛出毁掉正常 run
+                    logger.exception("Watchdog raised during shutdown")
+
+        # ── Phase 3: Lead LLM Synthesis (自处理 + 拆解模式均执行) ──
+        self.tracer.trace_phase("synthesizing")
+        yield await self._emit_team_status("synthesizing", "Lead Agent 正在汇总结果...")
+        async for event in self._llm_synthesize(lead, plan_summary):
+            yield event
+
+        # ── Team Memory 提取 (fire-and-forget, 不阻塞主流程) ──
+        all_tasks_final = await self.task_store.load_tasks()
+        if all_tasks_final and self._team_memory_store is not None:
+            asyncio.create_task(self._extract_team_memory(all_tasks_final))
+
+    async def _finalize_run(self) -> AsyncIterator[dict[str, Any]]:
+        """run()/resume() 共用的收尾逻辑 (在各自的 finally 中调用).
+
+        暂停等待 clarification 时跳过清理, 保留 teammate 供下次 resume.
+        """
+        # ── s32: 暂停等待 clarification 时跳过清理 ──
+        if self._clarification_pending:
+            logger.info("Team run paused for clarification — keeping teammates alive")
+            return
+
+        # ── 结算残留 IN_PROGRESS (取消/超时/异常路径) — 与 recover 语义一致,
+        # 避免任务板残留 IN_PROGRESS 卡死下次 run 的 _is_complete() ──
+        stale_tasks = await self.task_store.list_tasks(status=TeamTaskStatus.IN_PROGRESS)
+        for t in stale_tasks:
+            retry_count = t.retry_count + 1
+            if retry_count < t.max_retries:
+                await self.task_store.update_task(
+                    t.id, status=TeamTaskStatus.INTERRUPTED, retry_count=retry_count,
+                    error="团队运行结束 (取消/超时/异常), 任务中断待恢复",
+                )
+            else:
+                await self.task_store.update_task(
+                    t.id, status=TeamTaskStatus.CANCELLED, retry_count=retry_count,
+                    error=f"团队运行中断且已达最大重试次数 ({t.max_retries})",
+                )
+
+        # ── Tracing: 记录结束状态 ──
+        final_status = "completed" if await self._is_complete() else ("cancelled" if self._cancelled else "error")
+        self.tracer.trace_team_end(status=final_status, total_rounds=self._round)
+        self.tracer.shutdown()
+
+        # 清理: shutdown 所有 teammate (带超时, 防止文件 I/O 阻塞)
+        _shutdown_timeout = 10  # 每个 teammate 最多等待 10 秒
+        for tm in list(self.teammates.values()):
+            if tm.status not in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
+                try:
+                    await asyncio.wait_for(tm.shutdown(), timeout=_shutdown_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Teammate '%s' shutdown timed out after %ds — forcing exit",
+                        tm.name, _shutdown_timeout,
+                    )
+
+        status = "completed" if await self._is_complete() else "cancelled" if self._cancelled else "error"
+        yield {
+            "type": "team_end",
+            "thread_id": self._thread_id,
+            "project_id": self._project_id,
+            "status": status,
+            "total_rounds": self._round,
+        }
 
     # ------------------------------------------------------------------
     # Interrupted task recovery
@@ -1058,7 +1253,7 @@ class TeamOrchestrator:
             project_id=self._project_id,
             title=f"汇总: 团队执行结果",
             description=(
-                f"你是一个 Team 的 Lead Agent。请汇总以下团队执行结果, 生成最终报告。\n\n"
+                f"你是一个 Team 的 Lead Agent。请汇总以下团队执行结果, 生成最终报告，用以回答用户问题\n\n"
                 f"【原始目标】\n{plan_summary or '见上文'}\n\n"
                 f"【已完成任务 ({len(completed)} 个)】\n{completed_summaries}\n\n"
                 f"【失败任务 ({len(failed)} 个)】\n{failed_summaries}\n\n"
@@ -1070,6 +1265,8 @@ class TeamOrchestrator:
             ),
             priority="high",
         )
+        # 清掉陈旧错误, 下面的 break 条件只认本轮新错误
+        lead.last_error = None
         accepted = await lead.assign_task(synthesis_task)
         if not accepted:
             # Lead 不可受理 (竞态/异常状态) → 静态汇总兜底, 保证用户一定拿得到结果
@@ -1091,6 +1288,28 @@ class TeamOrchestrator:
         # drain 最后的 event queue
         while not self._event_queue.empty():
             yield self._event_queue.get_nowait()
+
+        # ── s32: Lead 在汇总阶段也可能要求澄清 → 暂停等待用户回答 ──
+        if lead.pending_clarification:
+            yield {
+                "type": "clarification",
+                "request": lead.pending_clarification,
+                "thread_id": self._thread_id,
+            }
+            self._clarification_pending = True
+            logger.info(
+                "Team run paused for clarification (synthesis): %s",
+                lead.pending_clarification.get("question", "")[:80],
+            )
+            return
+
+        # ── 汇总超时仍在 WORKING → 警告 + 静态汇总兜底, 不静默 return ──
+        if lead.status == TeammateStatus.WORKING:
+            logger.warning("Lead synthesis timed out — 静态汇总兜底")
+            yield await self._emit_team_status(
+                "synthesizing", "Lead 汇总超时，改用静态汇总输出结果。")
+            async for event in self._synthesize_results():
+                yield event
 
     async def _synthesize_results(self) -> AsyncIterator[dict[str, Any]]:
         """静态汇总 (保留作为 fallback, _llm_synthesize 内部已包含)."""
@@ -1121,10 +1340,15 @@ class TeamOrchestrator:
     # ------------------------------------------------------------------
 
     async def cancel(self) -> None:
-        """取消所有运行中的 teammate."""
+        """取消所有 teammate 并终止澄清暂停状态.
+
+        澄清暂停时全员 IDLE, 只杀 WORKING 会一个都不杀 — 因此 shutdown
+        所有非 SHUTDOWN/FAILED 的 teammate, 保证 cancel 后 run 能彻底结束.
+        """
         self._cancelled = True
-        for tm in self.teammates.values():
-            if tm.status == TeammateStatus.WORKING:
+        self._clarification_pending = False
+        for tm in list(self.teammates.values()):
+            if tm.status not in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
                 await tm.shutdown()
 
     async def _reap_crashed_teammates(self) -> None:
@@ -1133,7 +1357,7 @@ class TeamOrchestrator:
         将其标记为 FAILED 并从总线注销; 其手上的 IN_PROGRESS 任务回收为未分配
         PENDING (retry_count+1), 交给其他成员有界重试; 超过 max_retries 则置 FAILED.
         """
-        for tm in self.teammates.values():
+        for tm in list(self.teammates.values()):
             if (tm.status == TeammateStatus.WORKING and tm._task is not None
                     and tm._task.done()):
                 logger.error(
@@ -1240,6 +1464,105 @@ class TeamOrchestrator:
             "- task_review(task_id, ...) 审查已提交 in_review 的任务\n"
             + "</existing_tasks>"
         )
+
+    # ------------------------------------------------------------------
+    # Team Memory 提取
+    # ------------------------------------------------------------------
+
+    async def _extract_team_memory(self, all_tasks: list[TeamTask]) -> None:
+        """Extract team-level insights after a run completes (fire-and-forget).
+
+        Summarizes completed/failed tasks and calls a lightweight LLM to
+        extract best practices and pitfalls at the team level.  Results are
+        incrementally merged into ``team_memory.json``.
+        """
+        try:
+            from harness.memory.prompt import TEAM_MEMORY_UPDATE_PROMPT
+            from harness.memory.updater import _create_memory_model, _extract_text
+
+            # ── build tasks summary ──
+            completed = [t for t in all_tasks if t.status.is_success
+                         and not t.title.startswith("规划:") and not t.title.startswith("用户目标:")]
+            failed = [t for t in all_tasks if t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED)]
+
+            if not completed and not failed:
+                return
+
+            tasks_text = "\n".join(
+                f"- [{t.id}] {t.title} → {t.assigned_agent or '未知'} ({t.status.value})"
+                for t in (completed + failed)
+            )
+
+            # ── lead summary (best effort) ──
+            lead_summary = ""
+            lead = self._get_lead()
+            if lead is not None and not lead.last_error:
+                # Use the last task output from the lead as a high-level summary
+                lead_tasks = [t for t in all_tasks
+                              if t.title.startswith("用户目标:") and t.status.is_success]
+                if lead_tasks and lead_tasks[0].output:
+                    lead_summary = lead_tasks[0].output[:500]
+            if not lead_summary:
+                lead_summary = f"完成 {len(completed)} 个任务, 失败 {len(failed)} 个任务"
+
+            # ── current team memory ──
+            import json as _json
+            current_memory = _json.dumps(
+                (await self._team_memory_store.load()).to_dict(),
+                ensure_ascii=False, indent=2,
+            )
+
+            # ── build prompt and call LLM ──
+            prompt = TEAM_MEMORY_UPDATE_PROMPT.format(
+                current_memory=current_memory,
+                tasks_summary=tasks_text,
+                lead_summary=lead_summary,
+            )
+
+            # ── lightweight LLM ──
+            eff = self._effective_config
+            api_key = eff.api_key if eff else ""
+            base_url = eff.base_url if eff else ""
+            model_name = (
+                eff.memory_model
+                or eff.model
+                or "gpt-4o-mini"
+            ) if eff else "gpt-4o-mini"
+            import os as _os
+            api_key = api_key or _os.environ.get("OPENAI_API_KEY", "")
+            base_url = base_url or _os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+            model = _create_memory_model(model_name, api_key=api_key, base_url=base_url)
+            if model is None:
+                return
+
+            response = await model.ainvoke(prompt)
+            text = _extract_text(response.content).strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            updates = _json.loads(text)
+
+            # ── merge ──
+            result = await self._team_memory_store.merge_updates(
+                new_practices=updates.get("new_practices"),
+                new_pitfalls=updates.get("new_pitfalls"),
+                run_summary={
+                    "thread_id": self._thread_id,
+                    "summary": (updates.get("run_summary") or {}).get("summary", lead_summary[:200]),
+                    "tasks_completed": len(completed),
+                    "tasks_failed": len(failed),
+                },
+            )
+            logger.info(
+                "Team memory updated: %d practices, %d pitfalls, %d runs",
+                len(result.best_practices), len(result.known_pitfalls),
+                len(result.recent_runs),
+            )
+        except _json.JSONDecodeError:
+            logger.warning("Failed to parse team memory LLM response")
+        except Exception as exc:
+            logger.warning("Team memory extraction failed: %s", exc)
 
     async def _emit_team_status(self, phase: str, message: str) -> dict[str, Any]:
         return {"type": "team_status", "thread_id": self._thread_id,

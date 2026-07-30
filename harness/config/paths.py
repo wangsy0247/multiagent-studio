@@ -224,6 +224,18 @@ class Paths:
         effective_user_id = user_id if user_id is not None else "default"
         return self.user_dir(effective_user_id) / "threads" / _validate_thread_id(thread_id)
 
+    def agent_logs_dir(
+        self, thread_id: str, project_id: str, *, user_id: str | None = None
+    ) -> Path:
+        """Agent 对话日志目录: ``{base}/users/{uid}/projects/{pid}/threads/{tid}/agent_logs/``."""
+        effective_user_id = user_id if user_id is not None else "default"
+        return (
+            self.user_dir(effective_user_id)
+            / "projects" / project_id
+            / "threads" / _validate_thread_id(thread_id)
+            / "agent_logs"
+        )
+
     def sandbox_user_data_dir(self, thread_id: str, *, user_id: str | None = None) -> Path:
         """Host path for the user-data root."""
         effective_user_id = user_id if user_id is not None else "default"

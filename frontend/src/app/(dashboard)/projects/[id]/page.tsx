@@ -4,11 +4,11 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { ArrowLeft, MessageCircle, CheckSquare, Users, Plus, X, Wrench, Brain, Bot } from "lucide-react";
 import { projectsAPI, agentsAPI, threadsAPI } from "@/lib/api-client";
-import type { ThreadSummary } from "@/lib/types";
+import type { ThreadSummary, AgentLogEntry, AgentCard } from "@/lib/types";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
 import ChatPanel from "@/components/chat/ChatPanel";
-import type { ProjectTaskStatus, AgentCard } from "@/lib/types";
+import type { ProjectTaskStatus } from "@/lib/types";
 
 interface Project { id: string; name: string; description: string; members: string[]; thread_count: number; task_count: number; }
 interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; revision_count?: number; review_feedback?: string; output?: string; }
@@ -135,6 +135,10 @@ function ChatTab({ projectId }: { projectId: string }) {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
   const [mode, setMode] = useState<"single" | "team">("team");
+  // ── Agent 隔离视图状态 ──
+  const [viewAgent, setViewAgent] = useState<string | null>(null); // null = "全部" (团队视图)
+  const [agentLogEntries, setAgentLogEntries] = useState<AgentLogEntry[]>([]);
+  const [agentLogsLoading, setAgentLogsLoading] = useState(false);
   const { projectThreads, projectAgents, fetchProjectThreads } = useProjectStore();
 
   useEffect(() => {
@@ -143,6 +147,72 @@ function ChatTab({ projectId }: { projectId: string }) {
     );
     fetchProjectThreads(projectId);
   }, [projectId]);
+
+  const teamMembers = useTeamStore((s) => s.members);
+  // 当前正在查看的 agent 的运行时状态
+  const viewedAgentStatus = viewAgent
+    ? teamMembers.find((m) => m.agent_name === viewAgent)?.status
+    : null;
+  const isViewedAgentWorking = viewedAgentStatus === "working";
+
+  // 选中 team thread 时加载 agent 日志列表 (用于 agent 标签栏)
+  useEffect(() => {
+    if (!selectedThreadId || mode !== "team") return;
+    // 重置 agent 视图
+    setViewAgent(null);
+    setAgentLogEntries([]);
+  }, [selectedThreadId, mode]);
+
+  // 切换到具体 agent 时加载该 agent 的日志 + 运行时轮询
+  useEffect(() => {
+    if (!viewAgent || !selectedThreadId) return;
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const loadLog = async () => {
+      if (cancelled) return;
+      try {
+        const { data } = await projectsAPI.getAgentLog(projectId, selectedThreadId, viewAgent);
+        if (!cancelled) {
+          setAgentLogEntries(data.entries || []);
+          setAgentLogsLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("加载 agent 日志失败", err);
+          setAgentLogEntries([]);
+          setAgentLogsLoading(false);
+        }
+      }
+    };
+
+    // 首次加载
+    setAgentLogsLoading(true);
+    loadLog();
+
+    // 轮询: agent 正在执行时每 3 秒刷新
+    const startPolling = () => {
+      // 用闭包捕获的 isViewedAgentWorking (由 useEffect 依赖控制更新)
+      if (isViewedAgentWorking) {
+        pollTimer = setTimeout(() => {
+          loadLog().then(() => {
+            if (!cancelled) startPolling();
+          });
+        }, 3000);
+      }
+    };
+    // 延迟启动轮询 (等首次加载完成)
+    const initialPollTimer = setTimeout(() => {
+      if (!cancelled) startPolling();
+    }, 3500);
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      clearTimeout(initialPollTimer);
+    };
+  }, [viewAgent, selectedThreadId, projectId, isViewedAgentWorking]);
 
   const handleCreateThread = async (agentName?: string, threadMode?: "single" | "team") => {
     const created = await useProjectStore
@@ -156,6 +226,9 @@ function ChatTab({ projectId }: { projectId: string }) {
     setSelectedAgentName(agentName || null);
     setMode(threadMode || (agentName ? "single" : "team"));
   };
+
+  // 当前项目的成员列表 (用于 agent 标签栏)
+  const memberNames = useProjectStore.getState().currentProject?.members || [];
 
   return (
     <div className="flex h-full">
@@ -221,28 +294,65 @@ function ChatTab({ projectId }: { projectId: string }) {
         )}
       </div>
 
-      {/* 右侧聊天面板 */}
-      <div className="flex-1 min-w-0">
-        {selectedThreadId || selectedAgentName ? (
-          <ChatPanel
-            threadId={selectedThreadId || undefined}
-            projectId={projectId}
-            agentName={selectedAgentName || undefined}
-            mode={mode}
-            onThreadCreated={(id) => {
-              setSelectedThreadId(id);
-              fetchProjectThreads(projectId);
-            }}
-          />
-        ) : (
-          <div className="flex items-center justify-center h-full text-slate-400 text-sm">
-            <div className="text-center">
-              <MessageCircle className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-              <p>选择一个线程或点击左侧按钮创建新对话</p>
-              <p className="text-xs mt-1">支持 Team 协作和单 Agent 对话两种模式</p>
-            </div>
+      {/* 右侧聊天面板 + agent 标签栏 */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* ── Agent 视角切换标签栏 (仅 team thread 时显示) ── */}
+        {mode === "team" && selectedThreadId && memberNames.length > 0 && (
+          <div className="flex items-center gap-0.5 px-3 py-1.5 border-b border-slate-200 bg-white flex-shrink-0 overflow-x-auto">
+            <button
+              onClick={() => { setViewAgent(null); setAgentLogEntries([]); }}
+              className={`px-3 py-1 text-xs rounded-md whitespace-nowrap transition-colors ${
+                viewAgent === null
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              全部
+            </button>
+            <span className="w-px h-3 bg-slate-200 mx-0.5" />
+            {memberNames.map((name) => (
+              <button
+                key={name}
+                onClick={() => setViewAgent(viewAgent === name ? null : name)}
+                className={`px-3 py-1 text-xs rounded-md whitespace-nowrap transition-colors flex items-center gap-1 ${
+                  viewAgent === name
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-100"
+                }`}
+              >
+                {projectAgents.find((a: Agent) => a.name === name)?.display_name || name}
+              </button>
+            ))}
           </div>
         )}
+
+        {/* ChatPanel */}
+        <div className="flex-1 min-h-0">
+          {selectedThreadId || selectedAgentName ? (
+            <ChatPanel
+              threadId={selectedThreadId || undefined}
+              projectId={projectId}
+              agentName={selectedAgentName || undefined}
+              mode={mode}
+              viewMode={viewAgent ? "agent" : "team"}
+              viewAgentName={viewAgent || undefined}
+              agentLogEntries={viewAgent ? agentLogEntries : undefined}
+              agentLogsLoading={viewAgent ? agentLogsLoading : false}
+              onThreadCreated={(id) => {
+                setSelectedThreadId(id);
+                fetchProjectThreads(projectId);
+              }}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-slate-400 text-sm">
+              <div className="text-center">
+                <MessageCircle className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                <p>选择一个线程或点击左侧按钮创建新对话</p>
+                <p className="text-xs mt-1">支持 Team 协作和单 Agent 对话两种模式</p>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

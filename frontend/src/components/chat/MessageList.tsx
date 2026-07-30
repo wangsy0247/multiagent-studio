@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect } from "react";
-import { Bot, MessageSquare, GitBranch } from "lucide-react";
+import { Bot, MessageSquare, GitBranch, CheckCircle2, XCircle } from "lucide-react";
 import { ChatMessage } from "@/lib/types";
 import MessageItem from "./MessageItem";
 
@@ -47,9 +47,49 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-      {messages.map((msg) => (
-        <MessageItem key={msg.id} message={msg} />
-      ))}
+      {messages.map((msg) => {
+        // ── 任务边界: 渲染为分隔条, 显示任务名 + 状态 ──
+        if (msg.msgType === "task_boundary") {
+          const meta = msg.metadata as Record<string, unknown> | undefined;
+          const taskTitle = String(meta?.title || meta?.task_id || "");
+          const taskStatus = String(meta?.status || "");
+          const isSuccess = taskStatus === "completed" || taskStatus === "approved";
+          const isFailed = taskStatus === "failed";
+          return (
+            <div key={msg.id} className="flex items-center gap-2 py-2">
+              <div className="flex-1 h-px bg-slate-200" />
+              <div
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${
+                  isSuccess
+                    ? "bg-green-50 text-green-700"
+                    : isFailed
+                    ? "bg-red-50 text-red-600"
+                    : "bg-slate-100 text-slate-500"
+                }`}
+              >
+                {isSuccess ? (
+                  <CheckCircle2 className="w-3 h-3" />
+                ) : isFailed ? (
+                  <XCircle className="w-3 h-3" />
+                ) : null}
+                <span className="max-w-[200px] truncate">{taskTitle}</span>
+                <span className="opacity-60">
+                  {taskStatus === "completed"
+                    ? "已完成"
+                    : taskStatus === "approved"
+                    ? "已审查"
+                    : taskStatus === "failed"
+                    ? "失败"
+                    : taskStatus}
+                </span>
+              </div>
+              <div className="flex-1 h-px bg-slate-200" />
+            </div>
+          );
+        }
+        // ── 普通消息 ──
+        return <MessageItem key={msg.id} message={msg} />;
+      })}
 
       {isStreaming && (
         <div className="flex items-center gap-3 pl-11 py-2 animate-fade-in">
