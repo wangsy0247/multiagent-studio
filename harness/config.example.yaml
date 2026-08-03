@@ -72,6 +72,13 @@ loop_detection:
   hard_limit: 5
   window_size: 20
 
+# --- Tool Search (MCP 工具延迟加载, DeerFlow-aligned) ---
+# 启用后 MCP 工具只暴露名字, 完整 schema 由模型通过 tool_search 工具按需加载
+tool_search:
+  enabled: false
+  defer_threshold: 10      # MCP 工具总数 ≥ 此值才启用延迟加载
+  max_results: 5           # tool_search 单次最多返回的完整 schema 数
+
 # --- Subagents ---
 subagents:
   timeout_seconds: 900

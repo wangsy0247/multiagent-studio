@@ -456,6 +456,13 @@ class TeamOrchestrator:
                 for group in member_eff.tool_groups:
                     tools.extend(self._tool_registry.get_tools_by_category(group))
 
+            # tool_search 延迟加载: MCP 工具被 defer 时, 注入搜索工具
+            # (member 的 MCP schema 由 DeferredToolFilterMiddleware 按需隐藏)
+            from harness.tools.tool_search import get_tool_search_tool
+            _ts_tool = get_tool_search_tool()
+            if _ts_tool is not None:
+                tools.append(_ts_tool)
+
             # 注入 team 工具 (按角色过滤)
             role = "member"  # _create_teammate 只创建 member
             lead_name = self.team_context.lead_name if self.team_context else None

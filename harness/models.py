@@ -309,6 +309,37 @@ def merge_artifacts(left: list[str], right: list[str]) -> list[str]:
     return list(dict.fromkeys(combined))
 
 
+def merge_promoted_tools(
+    left: dict[str, Any] | None, right: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge deferred-tool promotion records (DeerFlow-aligned).
+
+    Record shape: ``{"catalog_hash": str, "names": list[str]}``.
+
+    - Catalog drift: if the incoming record carries a different
+      ``catalog_hash`` (MCP servers reloaded → tool schemas may have
+      changed), the new record *replaces* the old one so stale promotions
+      can never expose removed/changed tools.
+    - Same catalog: union of names, deduplicated, order preserved —
+      promotions are monotonically growing within a thread, which keeps
+      the bound tool list append-only and prompt-cache friendly.
+    """
+    if not right:
+        return left or {"catalog_hash": "", "names": []}
+    left = left or {"catalog_hash": "", "names": []}
+    if left.get("catalog_hash") != right.get("catalog_hash"):
+        return {
+            "catalog_hash": right.get("catalog_hash", ""),
+            "names": list(right.get("names", [])),
+        }
+    return {
+        "catalog_hash": left["catalog_hash"],
+        "names": list(
+            dict.fromkeys(list(left.get("names", [])) + list(right.get("names", [])))
+        ),
+    }
+
+
 class HarnessState(TypedDict):
     """LangGraph state definition — compatible with create_agent() as state_schema.
 
@@ -350,6 +381,7 @@ class HarnessState(TypedDict):
     loop_history: NotRequired[Annotated[list[str], append_loop_history]]
     context_lost: NotRequired[bool]
     artifacts: NotRequired[Annotated[list[str], merge_artifacts]]
+    promoted_tools: NotRequired[Annotated[dict[str, Any], merge_promoted_tools]]
     plan_mode_exit: NotRequired[bool]
     suggested_title: NotRequired[str]
     title_generated: NotRequired[bool]

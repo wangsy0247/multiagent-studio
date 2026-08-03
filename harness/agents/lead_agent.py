@@ -492,6 +492,8 @@ class LeadAgent:
         self.agent_config = agent_config
         self._user_id = user_id
         self._agent_soul = agent_soul
+        # build_tools() 时置位: 本 agent 是否持有 deferred MCP 工具 (tool_search)
+        self._has_deferred_tools = False
 
     # ------------------------------------------------------------------
     # system prompt
@@ -564,7 +566,7 @@ class LeadAgent:
         except Exception:
             pass
 
-        return apply_prompt_template(
+        prompt = apply_prompt_template(
             agent_name=self.agent_name,
             max_concurrent_subagents=self.max_concurrent,
             subagent_enabled=self.subagent_manager is not None,
@@ -572,6 +574,19 @@ class LeadAgent:
             skills_section=skills_section,
             review_note=review_note,
         )
+
+        # tool_search 延迟加载: 持有 deferred MCP 工具时追加工具名清单
+        if self._has_deferred_tools:
+            try:
+                from harness.tools.tool_search import get_deferred_prompt_section
+
+                deferred_section = get_deferred_prompt_section()
+                if deferred_section:
+                    prompt = prompt + "\n\n" + deferred_section
+            except Exception:
+                logger.debug("Failed to append deferred tools section", exc_info=True)
+
+        return prompt
 
     # ------------------------------------------------------------------
     # public API
@@ -654,6 +669,19 @@ class LeadAgent:
                     )
             except Exception:
                 logger.exception("Failed to apply skill tool-policy")
+
+        # ── tool_search 延迟加载: 本 agent 持有 deferred MCP 工具时注入搜索工具 ──
+        from harness.tools.tool_search import get_deferred_setup, get_tool_search_tool
+
+        _ts_setup = get_deferred_setup()
+        self._has_deferred_tools = bool(
+            _ts_setup is not None
+            and any(t.name in _ts_setup.deferred_names for t in tools)
+        )
+        if self._has_deferred_tools:
+            ts_tool = get_tool_search_tool()
+            if ts_tool is not None and ts_tool.name not in seen:
+                tools.append(ts_tool)
 
         return tools
 

@@ -82,6 +82,15 @@ async def initialize_mcp_tools(config_path: str = "") -> list[BaseTool]:
             _config_mtime,
         )
 
+        # tool_search 延迟加载: 按 config.yaml 的 tool_search 段决定是否
+        # 将 MCP 工具注册为 deferred (目录重建 → hash 变更 → 旧 promoted 失效)
+        try:
+            from harness.tools.tool_search import configure_deferred_tools
+
+            configure_deferred_tools(_mcp_tools_cache)
+        except Exception:
+            logger.warning("Failed to configure deferred tools", exc_info=True)
+
         return _mcp_tools_cache
 
 
@@ -148,4 +157,13 @@ def reset_mcp_tools_cache() -> None:
     from harness.mcp_integration.session_pool import reset_session_pool
 
     reset_session_pool()
+
+    # 同步清空 tool_search 的 deferred 设置, 避免重建前用到过期目录
+    try:
+        from harness.tools.tool_search import configure_deferred_tools
+
+        configure_deferred_tools([])
+    except Exception:
+        logger.debug("Could not clear deferred tool setup on cache reset", exc_info=True)
+
     logger.info("MCP tools cache reset")

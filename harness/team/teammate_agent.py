@@ -293,6 +293,19 @@ class TeammateAgent:
             if skills_section:
                 parts.append(skills_section)
 
+        # 8. 延迟加载工具清单 (仅当本 agent 持有 deferred MCP 工具时)
+        from harness.tools.tool_search import (
+            get_deferred_prompt_section,
+            get_deferred_setup,
+        )
+        _ts_setup = get_deferred_setup()
+        if _ts_setup is not None and any(
+            t.name in _ts_setup.deferred_names for t in self._tools
+        ):
+            deferred_section = get_deferred_prompt_section()
+            if deferred_section:
+                parts.append(deferred_section)
+
         return "\n\n".join(parts)
 
     def _get_skill_whitelist(self) -> set[str] | None:
@@ -653,6 +666,14 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         memory_enabled = eff.memory_injection_enabled if eff else True
         guardrail_enabled = eff.guardrail_enabled if eff else False
 
+        # ── tool_search 延迟加载: 仅当本 agent 的工具里确有 deferred MCP 工具时启用 ──
+        from harness.tools.tool_search import get_deferred_setup
+        _ts_setup = get_deferred_setup()
+        tool_search_enabled = bool(
+            _ts_setup is not None
+            and any(t.name in _ts_setup.deferred_names for t in self._tools)
+        )
+
         # ── Title 回调: 生成标题后推送到 SSE 事件队列 ──
         _event_queue = self._event_queue
         _thread_id = self._thread_id
@@ -674,6 +695,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             summarization_enabled=summarization_enabled,
             guardrail_enabled=guardrail_enabled,
             vision_enabled=False,
+            tool_search_enabled=tool_search_enabled,
             tool_max_retries=3,
             keep_clarification=is_lead,
             keep_title=is_lead,
