@@ -8,10 +8,10 @@ import type { ThreadSummary, AgentLogEntry, AgentCard } from "@/lib/types";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
 import ChatPanel from "@/components/chat/ChatPanel";
-import type { ProjectTaskStatus } from "@/lib/types";
+import type { ProjectTaskStatus, TaskSpec, TaskResult } from "@/lib/types";
 
 interface Project { id: string; name: string; description: string; members: string[]; thread_count: number; task_count: number; }
-interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; revision_count?: number; review_feedback?: string; output?: string; }
+interface Task { id: string; title: string; description: string; status: string; assigned_agent: string | null; priority: string; revision_count?: number; review_feedback?: string; output?: string; spec?: TaskSpec | null; result?: TaskResult | null; risk?: "low" | "high" | null; }
 interface Agent { name: string; display_name: string; description: string; }
 
 function ElapsedTimer({ startedAt }: { startedAt: string }) {
@@ -437,7 +437,8 @@ function TasksTab({ projectId }: { projectId: string }) {
   // 合并持久化任务和 team-store 运行时任务
   const allTasks = [...tasks];
   teamTasks.forEach((rt) => {
-    if (!allTasks.some((t) => t.id === rt.id)) {
+    const existing = allTasks.find((t) => t.id === rt.id);
+    if (!existing) {
       allTasks.push({
         id: rt.id,
         title: rt.title,
@@ -445,7 +446,15 @@ function TasksTab({ projectId }: { projectId: string }) {
         status: rt.status,
         assigned_agent: rt.assigned_agent || null,
         priority: rt.priority,
+        spec: rt.spec ?? null,
+        result: rt.result ?? null,
+        risk: rt.risk ?? null,
       });
+    } else {
+      // SSE 实时事件带 spec/result 时补到持久化任务上 (有就展示, 无则按现状)
+      if (!existing.spec && rt.spec) existing.spec = rt.spec;
+      if (!existing.result && rt.result) existing.result = rt.result;
+      if (!existing.risk && rt.risk) existing.risk = rt.risk;
     }
   });
 
@@ -510,6 +519,15 @@ function TasksTab({ projectId }: { projectId: string }) {
               {allTasks.filter((t) => t.status === col.key || (col.aliases?.includes(t.status) ?? false)).map((task) => (
                 <div key={task.id} className="border border-slate-200 rounded-lg p-2 bg-white text-xs group">
                   <p className="text-slate-800 font-medium truncate">{task.title}</p>
+                  {/* 风险徽章 (Phase 3; 未分级的历史任务不显示) */}
+                  {task.risk && (
+                    <span
+                      className={`inline-block mt-0.5 text-[10px] px-1 py-0 rounded ${task.risk === "high" ? "bg-red-50 text-red-600" : "bg-slate-50 text-slate-500"}`}
+                      title={task.risk === "high" ? "高风险: 强制独立验收 (Verifier/Lead)" : "低风险: 证据校验通过即直通"}
+                    >
+                      {task.risk === "high" ? "⚠️ 高危" : "低危"}
+                    </span>
+                  )}
                   {task.assigned_agent && (
                     <p className="text-slate-400 mt-0.5 flex items-center gap-1">
                       @{task.assigned_agent}
@@ -533,6 +551,46 @@ function TasksTab({ projectId }: { projectId: string }) {
                         <p className="text-[10px] text-slate-400 mt-0.5 truncate" title={task.review_feedback}>
                           {task.review_feedback.slice(0, 40)}
                         </p>
+                      )}
+                    </div>
+                  )}
+                  {/* 结构化 spec 展示 (Phase 2; 无 spec 按现状不显示) */}
+                  {task.spec && (task.spec.goal || (task.spec.constraints?.length ?? 0) > 0 || (task.spec.acceptance_criteria?.length ?? 0) > 0) && (
+                    <div className="mt-1 space-y-0.5">
+                      {task.spec.goal && (
+                        <p className="text-[10px] text-slate-500 truncate" title={task.spec.goal}>
+                          🎯 {task.spec.goal}
+                        </p>
+                      )}
+                      {(task.spec.constraints?.length ?? 0) > 0 && (
+                        <p className="text-[10px] text-slate-400 truncate" title={task.spec.constraints!.join("\n")}>
+                          ⛔ {task.spec.constraints!.join("; ")}
+                        </p>
+                      )}
+                      {(task.spec.acceptance_criteria?.length ?? 0) > 0 && (
+                        <p className="text-[10px] text-slate-400 truncate" title={task.spec.acceptance_criteria!.join("\n")}>
+                          ✔️ 验收: {task.spec.acceptance_criteria!.join("; ")}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {/* 结构化 result 展示 (Phase 2; 无 result 按现状不显示) */}
+                  {task.result && (
+                    <div className="mt-1 space-y-0.5">
+                      {task.result.failure_reason && (
+                        <p className="text-[10px] text-red-500 truncate" title={task.result.failure_reason}>
+                          ❌ {task.result.failure_reason}
+                        </p>
+                      )}
+                      {(task.result.evidence?.length ?? 0) > 0 && (
+                        <p className="text-[10px] text-slate-400 truncate" title={task.result.evidence!.join("\n")}>
+                          🔗 {task.result.evidence!.join("; ")}
+                        </p>
+                      )}
+                      {task.result.uncertainty && task.result.uncertainty !== "low" && (
+                        <span className={`text-[10px] px-1 py-0 rounded ${task.result.uncertainty === "high" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"}`}>
+                          不确定性: {task.result.uncertainty}
+                        </span>
                       )}
                     </div>
                   )}

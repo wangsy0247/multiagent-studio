@@ -8,7 +8,9 @@
 Reminder format:
 
     <system-reminder>
-    <project_memory>...</project_memory>
+    <project_memory>...</project_memory>   (仅 Team 模式)
+
+    <projects>...</projects>               (仅单 agent 模式, 项目索引, 只读)
 
     <memory>
     User Context: ...
@@ -83,10 +85,13 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
 
     def __init__(self, config: dict | None = None, *,
                  agent_name: str | None = None,
-                 project_context: str | None = None):
+                 project_context: str | None = None,
+                 inject_projects_index: bool = False):
         super().__init__(config)
         self._agent_name = agent_name
         self._project_context = project_context  # Team 模式下的项目上下文
+        # 单 agent 模式下注入 <projects> 项目索引 (Team 模式 teammate 不注入)
+        self._inject_projects_index = inject_projects_index
 
     # ── Reminder builders ────────────────────────────────────────────────
 
@@ -125,9 +130,27 @@ class DynamicContextMiddleware(HarnessAgentMiddleware):
             project_block = (
                 f"<project_memory>\n{self._project_context}\n</project_memory>\n\n"
             )
+        # ── 单 agent 模式: 注入项目索引 (只读; 失败静默降级) ──
+        projects_block = ""
+        if self._inject_projects_index and user_id:
+            try:
+                from harness.memory.project_index import (
+                    format_projects_index,
+                    list_projects,
+                )
+                projects_block = format_projects_index(
+                    list_projects(user_id),
+                    max_entries=mem_cfg.projects_index_max,
+                )
+                if projects_block:
+                    projects_block += "\n\n"
+            except Exception as exc:
+                logger.warning("Failed to load projects index for injection: %s", exc)
+                projects_block = ""
         reminder = (
             f"<system-reminder>\n"
             f"{project_block}"
+            f"{projects_block}"
             f"{memory_block}"
             f"<current_date>{current_date}</current_date>\n"
             f"</system-reminder>"

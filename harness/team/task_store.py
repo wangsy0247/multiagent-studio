@@ -20,10 +20,10 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from harness.config.paths import get_paths
-from harness.team.models import TeamTask, TeamTaskStatus
+from harness.team.models import TeamTask, TaskSpec, TeamTaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,10 @@ class TeamTaskStore:
         dependencies: list[str] | None = None,
         priority: str = "medium",
         origin: str = "team",
+        spec: TaskSpec | None = None,
+        risk: Literal["low", "high"] | None = None,
+        risk_locked: bool = False,
+        verifies_task_id: str | None = None,
     ) -> TeamTask:
         """创建新任务. origin: "team"=团队运行产生 | "user"=用户手工创建."""
         task = TeamTask(
@@ -167,6 +171,10 @@ class TeamTaskStore:
             dependencies=dependencies or [],
             priority=priority,
             origin=origin,
+            spec=spec,
+            risk=risk,
+            risk_locked=risk_locked,
+            verifies_task_id=verifies_task_id,
         )
         task.created_at = _now_iso()
         task.updated_at = _now_iso()
@@ -350,27 +358,6 @@ class TeamTaskStore:
                 ready.append(t)
         return ready
 
-    async def get_unclaimed_tasks(self) -> list[TeamTask]:
-        """ 返回所有未被认领且依赖已满足的任务.
-
-        认领条件:
-        - status == PENDING (不包含 REVISION_NEEDED, 它有 assigned_agent)
-        - assigned_agent is None (无 owner)
-        - 所有 dependencies 均为 is_success
-        """
-        tasks = await self.load_tasks()
-        success_ids = {t.id for t in tasks if t.status.is_success}
-        unclaimed: list[TeamTask] = []
-        for t in tasks:
-            if t.status != TeamTaskStatus.PENDING:
-                continue
-            if t.assigned_agent is not None:
-                continue
-            if not all(dep in success_ids for dep in t.dependencies):
-                continue
-            unclaimed.append(t)
-        return unclaimed
-
     async def check_circular_dependency(self) -> list[list[str]]:
         """检测依赖图中的环。返回所有检测到的环."""
         tasks = await self.load_tasks()
@@ -446,32 +433,3 @@ class TeamTaskStore:
             logger.info("Orphaned task recovered: id=%s status=%s retry=%d/%d",
                         t.id, t.status.value, t.retry_count, t.max_retries)
         return recovered
-
-    async def clear_all(self) -> int:
-        """清空所有任务（每次新 Team 运行时调用，避免旧结果混入新对话）。返回清除的任务数。"""
-        count = 0
-        with open(self._file, "a+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                tasks = self._load_locked()
-                count = len(tasks)
-                self._save_locked([])
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-        if count:
-            logger.info("Cleared all %d tasks from %s", count, self._file)
-        return count
-
-    async def delete_task(self, task_id: str) -> bool:
-        """删除任务."""
-        with open(self._file, "a+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                tasks = self._load_locked()
-                new_tasks = [t for t in tasks if t.id != task_id]
-                if len(new_tasks) == len(tasks):
-                    return False
-                self._save_locked(new_tasks)
-                return True
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)

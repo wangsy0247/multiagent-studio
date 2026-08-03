@@ -170,6 +170,17 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
 ):
     uid = await resolve_fs_user_id(user_id, authorization, db)
+    # ── Phase 6: 回收该项目登记的 team worktree (仅 team- 前缀, 容错不阻断删除) ──
+    try:
+        from harness.team.worktree import cleanup_project_worktrees
+        removed = await cleanup_project_worktrees(project_id, uid)
+        if removed:
+            logger.info("回收项目 '%s' 的 %d 个 team worktree", project_id, removed)
+    except Exception:
+        logger.warning(
+            "项目 '%s' 的 worktree 回收失败 — 继续删除项目", project_id,
+            exc_info=True,
+        )
     # 删除新格式目录 (如果存在)
     d = _project_dir(project_id, uid)
     if d.exists():

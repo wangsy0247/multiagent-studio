@@ -123,6 +123,8 @@ tool_groups:
     description: 文件操作工具组
   - name: data
     description: 数据分析工具组
+  - name: projects
+    description: 项目只读工具组 (单 agent 项目感知 — project_info / project_memory_search)
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
@@ -168,6 +170,15 @@ tools:
   - name: str_replace
     group: files
     use: harness.tools.sandbox_tools:str_replace
+
+  # ── 项目只读工具 (单 agent 项目感知, 严格只读) ──
+  - name: project_info
+    group: projects
+    use: harness.tools.builtins.project_tools:project_info
+
+  - name: project_memory_search
+    group: projects
+    use: harness.tools.builtins.project_tools:project_memory_search
 
 # --- Tool Plugins (legacy) ---
 # Register additional tools from arbitrary Python modules without modifying

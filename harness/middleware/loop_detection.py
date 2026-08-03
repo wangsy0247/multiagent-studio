@@ -169,9 +169,17 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         Default: 50.
     window_size : int
         Size of the sliding window for tracking calls. Default: 20.
+    exempt_tools : set[str] | None
+        Tool names exempt from loop detection (e.g. ``read_inbox`` — a member
+        polling its inbox while waiting for plan approval is a natural wait
+        pattern, not a loop). Exempt calls are excluded from both the
+        hash-based and frequency-based counts; all other tools are still
+        detected normally. Default: {"read_inbox"}.
     """
 
     name = "loop_detection"
+
+    _DEFAULT_EXEMPT_TOOLS: frozenset[str] = frozenset({"read_inbox"})
 
     def __init__(
         self,
@@ -183,6 +191,7 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
         window_size: int = _DEFAULT_WINDOW_SIZE,
         max_tracked_threads: int = _DEFAULT_MAX_TRACKED_THREADS,
+        exempt_tools: set[str] | frozenset[str] | list[str] | None = None,
     ):
         super().__init__(config)
         self.warn_threshold = warn_threshold
@@ -191,6 +200,11 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         self.tool_freq_hard_limit = tool_freq_hard_limit
         self.window_size = window_size
         self.max_tracked_threads = max_tracked_threads
+        # 豁免集合: 轮询等待类工具 (如 member 等 Lead 审批时反复 read_inbox)
+        # 不计入循环检测; None → 用默认集合, 显式传空集合 → 不豁免任何工具
+        self.exempt_tools: frozenset[str] = (
+            self._DEFAULT_EXEMPT_TOOLS if exempt_tools is None else frozenset(exempt_tools)
+        )
         self._lock = threading.Lock()
         # (thread_id, run_id) → list of call hashes (sliding window, 按 run 隔离)
         self._history: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
@@ -256,6 +270,13 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
         tool_calls = getattr(last_msg, "tool_calls", None)
         if not tool_calls:
             return None, False
+
+        # ── 豁免集合: 轮询等待类工具 (如 member 等审批时反复 read_inbox)
+        # 不计入 hash/frequency 循环计数; 整轮都是豁免调用时直接跳过检测 ──
+        if self.exempt_tools:
+            tool_calls = [tc for tc in tool_calls if tc.get("name", "") not in self.exempt_tools]
+            if not tool_calls:
+                return None, False
 
         key = self._pending_key(runtime)  # (thread_id, run_id)
         call_hash = _hash_tool_calls(tool_calls)

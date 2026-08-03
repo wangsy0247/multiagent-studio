@@ -831,6 +831,15 @@ class HarnessService(_BaseService):
 
         # ── 运行时消息注入: 同一 thread 已有活跃 team run → 注入 Lead inbox ──
         existing = self._active_runs.get(thread_id)
+        # ── 用户隔离: active_run 属于其他用户 → 不注入/resume, 按无活跃 run 处理 ──
+        if (existing and existing.get("user_id")
+                and existing.get("user_id") != user_id):
+            logger.warning(
+                "thread=%s has an active team run owned by another user (%s != %s) — "
+                "refusing injection/resume",
+                thread_id, existing.get("user_id"), user_id,
+            )
+            existing = None
         if existing and existing.get("mode") == "team":
             orch = existing.get("orchestrator")
             if orch is not None:
@@ -951,11 +960,12 @@ class HarnessService(_BaseService):
                 )
                 self._active_runs.pop(thread_id, None)
 
-        # ── 并发守卫: 同一项目同时只允许一个 team run ──
+        # ── 并发守卫: 同一项目同时只允许一个 team run (按用户隔离) ──
         # 任务板/信箱是项目级共享文件, 并发 run 会互相取消任务、抢占认领
         for other_tid, info in self._active_runs.items():
             if (other_tid != thread_id and info.get("mode") == "team"
-                    and info.get("project_id") == project_id):
+                    and info.get("project_id") == project_id
+                    and info.get("user_id") == user_id):
                 yield {
                     "type": "team_error",
                     "thread_id": thread_id,
@@ -968,6 +978,7 @@ class HarnessService(_BaseService):
         # 注册运行期取消标记
         self._active_runs[thread_id] = {
             "cancelled": False, "mode": "team", "project_id": project_id,
+            "user_id": user_id,
         }
 
         orchestrator: TeamOrchestrator | None = None

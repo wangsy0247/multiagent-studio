@@ -389,6 +389,7 @@ Extract NEW team-level insights as JSON. Only include genuinely new information 
 }}
 
 Guidelines:
+- Only extract TEAM COLLABORATION lessons: who is good at what, coordination/handoff pitfalls, workflow practices. Do NOT extract individual members' domain/technical experience (API usage, coding tricks, project-specific know-how) — those are handled by a separate member-memory channel.
 - Only include practices that apply across multiple tasks — not single-task tricks.
 - Only include pitfalls that affected more than one task or could recur.
 - Best practices should be actionable: "always X before Y" or "prefer A over B".

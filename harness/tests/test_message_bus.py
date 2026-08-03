@@ -104,29 +104,3 @@ def test_message_persistence(bus, tmp_path):
         assert received[0].content == "持久化测试"
 
     asyncio.run(_test())
-
-
-def test_message_loop_detection(bus):
-    """检测消息循环."""
-    async def _test():
-        for _ in range(4):
-            await bus.send(TeamMessage(from_agent="A", to_agent="B", content="loop"))
-            await bus.send(TeamMessage(from_agent="B", to_agent="A", content="loop"))
-
-        is_loop = await bus.check_message_loop("A", "B", window=10)
-        assert is_loop is True
-
-    asyncio.run(_test())
-
-
-def test_no_loop_when_normal(bus):
-    """正常消息不应被误判为循环."""
-    async def _test():
-        await bus.send(TeamMessage(from_agent="A", to_agent="B", content="hi"))
-        await bus.send(TeamMessage(from_agent="B", to_agent="C", content="ack"))
-        await bus.send(TeamMessage(from_agent="C", to_agent="A", content="done"))
-
-        is_loop = await bus.check_message_loop("A", "B", window=10)
-        assert is_loop is False
-
-    asyncio.run(_test())

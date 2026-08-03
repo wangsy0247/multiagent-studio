@@ -15,7 +15,6 @@ JSON 结构:
 
 生命周期:
 - 创建: Orchestrator.initialize() 时全量生成
-- 增/删/改: 后续由项目管理 API 调用 (添加/移除成员时更新)
 - 读取: 注入到 TeammateAgent system prompt 中
 """
 
@@ -23,6 +22,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,15 +55,11 @@ class AgentCard(BaseModel):
     model: str = ""                                    # 使用的模型
     role: str = "member"                               # "lead" | "member"
     # ── 元数据 ──
-    created_at: str = ""
     updated_at: str = ""
 
     def model_post_init(self, __context: Any) -> None:
-        now = _now_iso()
-        if not self.created_at:
-            self.created_at = now
         if not self.updated_at:
-            self.updated_at = now
+            self.updated_at = _now_iso()
 
 
 # ---------------------------------------------------------------------------
@@ -128,63 +125,14 @@ def save_project_cards(project_id: str, cards: dict[str, AgentCard], *, user_id:
 
 
 # ---------------------------------------------------------------------------
-# CRUD 操作
+# 读取
 # ---------------------------------------------------------------------------
-
-
-def add_card(project_id: str, card: AgentCard, *, user_id: str) -> None:
-    """添加一个 agent card 到项目 (已存在则覆盖)."""
-    cards = load_project_cards(project_id, user_id=user_id)
-    card.updated_at = _now_iso()
-    if not card.created_at:
-        card.created_at = _now_iso()
-    cards[card.name] = card
-    save_project_cards(project_id, cards, user_id=user_id)
-    logger.info("AgentCard added: project=%s agent=%s", project_id, card.name)
-
-
-def remove_card(project_id: str, agent_name: str, *, user_id: str) -> bool:
-    """从项目中删除一个 agent card. 返回是否成功删除."""
-    cards = load_project_cards(project_id, user_id=user_id)
-    if agent_name not in cards:
-        return False
-    del cards[agent_name]
-    save_project_cards(project_id, cards, user_id=user_id)
-    logger.info("AgentCard removed: project=%s agent=%s", project_id, agent_name)
-    return True
-
-
-def update_card(project_id: str, card: AgentCard, *, user_id: str) -> bool:
-    """更新项目中的一个 agent card. 返回是否成功 (card 不存在则返回 False)."""
-    cards = load_project_cards(project_id, user_id=user_id)
-    if card.name not in cards:
-        return False
-    card.updated_at = _now_iso()
-    cards[card.name] = card
-    save_project_cards(project_id, cards, user_id=user_id)
-    logger.info("AgentCard updated: project=%s agent=%s", project_id, card.name)
-    return True
 
 
 def get_card(project_id: str, agent_name: str, *, user_id: str) -> AgentCard | None:
     """获取单个 agent card."""
     cards = load_project_cards(project_id, user_id=user_id)
     return cards.get(agent_name)
-
-
-def delete_project_cards(project_id: str, *, user_id: str) -> bool:
-    """删除项目的 agent_card.json 文件. 返回是否成功."""
-    file_path = _card_file_path(project_id, user_id)
-    if not file_path.exists():
-        return False
-    file_path.unlink()
-    # 尝试删除空目录
-    try:
-        file_path.parent.rmdir()
-    except OSError:
-        pass
-    logger.info("Agent cards deleted: project=%s", project_id)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +147,7 @@ def _get_config_mtime(agent_name: str, user_id: str) -> float:
     - {base}/users/{uid}/config.yaml          (L1 全局配置, 影响 model/api_key)
     - {base}/users/{uid}/agents/{name}/config.yaml (L2 单 agent 配置)
     - {base}/users/{uid}/agents/{name}/SOUL.md     (影响 description)
+    - extensions_config.json                  (MCP/skill 开关, 影响 card.tools)
     """
     paths = get_paths()
     config_files = [
@@ -206,6 +155,15 @@ def _get_config_mtime(agent_name: str, user_id: str) -> float:
         paths.base_dir / "users" / user_id / "agents" / agent_name / "config.yaml",
         paths.base_dir / "users" / user_id / "agents" / agent_name / "SOUL.md",
     ]
+    # ── MCP/工具注册表配置: 按其配置的路径解析 (支持 EXTENSIONS_CONFIG_PATH) ──
+    try:
+        from harness.config.extensions_config import ExtensionsConfig
+        ext_path = ExtensionsConfig.resolve_config_path()
+        if ext_path is not None:
+            config_files.append(ext_path)
+    except Exception:
+        # 路径解析失败 (如 env 指向的文件缺失) 不影响主流程, 跳过即可
+        pass
     max_mtime = 0.0
     for f in config_files:
         if f.exists():
@@ -316,9 +274,43 @@ def generate_agent_card(
 
 
 # ---------------------------------------------------------------------------
-# 领域匹配 — 计算 AgentCard 与任务的匹配分
+# Phase 5: spawn 自检 — AgentCard.skills 收敛到实际可用集合
 # ---------------------------------------------------------------------------
 
+
+def sync_agent_card_skills(
+    project_id: str,
+    agent_name: str,
+    *,
+    user_id: str,
+    available_skills: Iterable[str],
+) -> bool:
+    """将成员的 AgentCard.skills 收敛到实际可用的技能集合.
+
+    spawn 自检发现 skill 加载失败/白名单全过滤时调用, 剔除该成员实际
+    不可用的 skills, 保证 Lead 的 <team_capabilities> 反映真实能力。
+    无卡片或无变化时返回 False (未写盘)。
+    """
+    cards = load_project_cards(project_id, user_id=user_id)
+    card = cards.get(agent_name)
+    if card is None:
+        return False
+    available = set(available_skills)
+    new_skills = [s for s in card.skills if s in available]
+    if new_skills == list(card.skills):
+        return False
+    card.skills = new_skills
+    save_project_cards(project_id, cards, user_id=user_id)
+    logger.info(
+        "AgentCard skills synced for '%s': kept %d/%d (project=%s)",
+        agent_name, len(new_skills), len(available), project_id,
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 领域匹配 — 计算 AgentCard 与任务的匹配分
+# ---------------------------------------------------------------------------
 
 def compute_card_task_match(card: AgentCard, task_title: str, task_description: str) -> float:
     """计算 AgentCard 与任务的领域匹配分.
@@ -327,6 +319,9 @@ def compute_card_task_match(card: AgentCard, task_title: str, task_description: 
     - 工具匹配: 任务描述中提到卡片的工具 → +25/个
     - 技能匹配: 任务描述中提到卡片的技能 → +30/个
     - 关键词重叠: 卡片描述词与任务词的 Jaccard 重叠 → +2/个
+    - 中文关键词兜底: 卡片描述与任务文本的 CJK bigram 重叠 → +3/个
+      (中文任务描述不含英文工具名, 工具/技能匹配几乎不命中,
+      靠此处避免匹配分恒为 0 退化为纯负载均衡)
 
     返回值 ≥ 50 表示强匹配 (≥2 个工具命中 或 1 技能+1 工具).
     """
@@ -347,7 +342,27 @@ def compute_card_task_match(card: AgentCard, task_title: str, task_description: 
     task_words = set(task_text.split()) - stop_words
     score += len(card_words & task_words) * 2
 
+    # ── 中文关键词兜底: 中文无空格分词, 用 CJK bigram 重叠计分 (双向:
+    # 卡片 description 中的领域词命中任务文本即计分) ──
+    card_grams = _cjk_bigrams(card.description)
+    task_grams = _cjk_bigrams(f"{task_title} {task_description}")
+    score += len(card_grams & task_grams) * 3
+
     return score
+
+
+_CJK_RUN_RE = re.compile(r"[一-鿿]+")
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    """提取文本中连续 CJK 片段的 bigram 集合 (单字片段保留单字)."""
+    grams: set[str] = set()
+    for run in _CJK_RUN_RE.findall(text or ""):
+        if len(run) == 1:
+            grams.add(run)
+        else:
+            grams.update(run[i:i + 2] for i in range(len(run) - 1))
+    return grams
 
 
 # ---------------------------------------------------------------------------

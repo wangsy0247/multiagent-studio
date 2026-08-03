@@ -75,7 +75,6 @@ def deps(tmp_path):
         project_id="test_proj",
         project_name="Test Project",
         project_description="A test project",
-        thread_id="thread-1",
         user_id="default",
         members=[
             TeamMemberRuntime(agent_name="lead", role="lead", status=TeammateStatus.IDLE),

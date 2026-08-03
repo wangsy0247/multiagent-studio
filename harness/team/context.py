@@ -28,7 +28,6 @@ class TeamContext:
     project_id: str
     project_name: str = ""
     project_description: str = ""
-    thread_id: str = ""
     user_id: str = "default"
     lead_name: str = ""  # Lead Agent 的名称 (用于消息路由)
 
@@ -36,7 +35,6 @@ class TeamContext:
     members: list[TeamMemberRuntime] = field(default_factory=list)
 
     # ── 团队能力缓存 (由 Orchestrator 注入) ──
-    _team_capabilities: dict[str, Any] = field(default_factory=dict, repr=False)
     _team_capabilities_xml: str = ""  # 预格式化的 XML 片段
 
     # ── 团队记忆缓存 ──
@@ -88,7 +86,6 @@ class TeamContext:
         由 Orchestrator.initialize() 在生成 agent cards 后调用.
         """
         from harness.team.agent_card import format_cards_for_prompt
-        self._team_capabilities = cards
         if cards:
             self._team_capabilities_xml = (
                 "<team_capabilities>\n"

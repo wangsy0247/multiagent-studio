@@ -754,7 +754,8 @@ def _build_middlewares(
     if guardrail_enabled: middlewares.append(GuardrailMiddleware())
     middlewares.append(SandboxAuditMiddleware())
     middlewares.append(ToolErrorHandlingMiddleware({"max_retries": tool_max_retries}))
-    middlewares.append(DynamicContextMiddleware(agent_name=agent_name))
+    # 单 agent 链路: 注入 <projects> 项目索引 (Team 模式走 teammate_middleware, 不受影响)
+    middlewares.append(DynamicContextMiddleware(agent_name=agent_name, inject_projects_index=True))
     if summarization_enabled:
         # 不再挂 memory_flush_hook: MemoryMiddleware 每轮已增量提交最新交换,
         # 被压缩的旧消息在其所属轮次就已入队, 无需压缩前抢救.

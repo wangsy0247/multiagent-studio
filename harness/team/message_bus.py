@@ -5,7 +5,6 @@
 - send: 追加写入收件人 inbox
 - read_inbox: 读完即清空 (drain-on-read), 无需游标追踪
 - 实时通知: asyncio.Event 驱动唤醒
-- 消息循环检测: 检测 A↔B 乒乓消息
 
 目录结构:
     {data_root}/users/{user_id}/projects/{project_id}/threads/{thread_id}/messages/inbox/
@@ -162,22 +161,6 @@ class TeamMessageBus:
             self._events[agent_name] = asyncio.Event()
         return self._events[agent_name]
 
-    async def wait_for_message(
-        self, agent_name: str, timeout: float = 30.0,
-    ) -> list[TeamMessage]:
-        """事件驱动等待新消息 — 替代 sleep() 轮询.
-
-        有新消息时立即返回, 超时返回空列表.
-        """
-        event = self.get_event(agent_name)
-        event.clear()
-        try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return []
-
-        return await self.read_inbox(agent_name)
-
     # ------------------------------------------------------------------
     # Agent 注册 (用于广播)
     # ------------------------------------------------------------------
@@ -194,32 +177,6 @@ class TeamMessageBus:
         self._events.pop(agent_name, None)
 
     # ------------------------------------------------------------------
-    # 消息循环检测
-    # ------------------------------------------------------------------
-
-    async def check_message_loop(
-        self, agent_a: str, agent_b: str, window: int = 10,
-    ) -> bool:
-        """检测两个 Agent 之间是否存在消息循环 (A→B→A→B...).
-
-        通过扫描两个 agent 的 inbox 文件检测乒乓模式.
-        """
-        msgs_a = await self._read_all(agent_a)
-        msgs_b = await self._read_all(agent_b)
-        all_msgs = sorted(msgs_a + msgs_b, key=lambda m: m.created_at)
-
-        ab_msgs = [
-            m for m in all_msgs
-            if {m.from_agent, m.to_agent} == {agent_a, agent_b}
-        ]
-        if len(ab_msgs) < 4:
-            return False
-
-        recent = ab_msgs[-4:]
-        senders = [m.from_agent for m in recent]
-        return senders == [agent_a, agent_b, agent_a, agent_b]
-
-    # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------
 
@@ -229,19 +186,3 @@ class TeamMessageBus:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line)
 
-    async def _read_all(self, agent_name: str) -> list[TeamMessage]:
-        """读取 agent 的全部消息 (不清空, 用于循环检测)."""
-        path = self._inbox_path(agent_name)
-        if not path.exists():
-            return []
-        messages: list[TeamMessage] = []
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    messages.append(TeamMessage.model_validate_json(line))
-                except Exception:
-                    pass
-        return messages

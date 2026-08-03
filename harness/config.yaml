@@ -23,6 +23,8 @@ tool_groups:
     description: 文件只读工具组
   - name: mcp
     description: MCP 外部工具 (动态加载)
+  - name: projects
+    description: 项目只读工具组 (单 agent 项目感知 — project_info / project_memory_search)
 
 # --- Lead Agent ---
 lead_agent:
@@ -32,6 +34,7 @@ lead_agent:
     - files_readonly
     - skills
     - mcp
+    - projects
 
 # --- Tools Configuration ---
 # Tools are loaded dynamically from the specified module path.
@@ -89,6 +92,15 @@ tools:
   - name: str_replace
     group: files
     use: harness.tools.sandbox_tools:str_replace
+
+  # ── 项目只读工具 (单 agent 项目感知, 严格只读; 不影响 Team 模式工具白名单) ──
+  - name: project_info
+    group: projects
+    use: harness.tools.builtins.project_tools:project_info
+
+  - name: project_memory_search
+    group: projects
+    use: harness.tools.builtins.project_tools:project_memory_search
 
 
 # --- Sandbox ---

@@ -69,6 +69,34 @@ class MemoryConfig(BaseModel):
         ),
     )
 
+    # ── 成员记忆 L1/L3 (Phase 4 记忆分层, 仅 Team 模式) ──
+    member_memory_l1_max_items: int = Field(
+        default=20, ge=1, le=200,
+        description="L1 成员全局记忆每类容量上限 (超出淘汰最少复用/最旧)",
+    )
+    member_memory_l3_max_items: int = Field(
+        default=20, ge=1, le=200,
+        description="L3 项目×成员记忆每类容量上限 (超出淘汰最少复用/最旧)",
+    )
+    member_memory_promote_projects: int = Field(
+        default=2, ge=1, le=10,
+        description="L3→L1 晋升: 同指纹经验需出现的项目数",
+    )
+    member_memory_promote_reuse: int = Field(
+        default=3, ge=1, le=50,
+        description="L3→L1 晋升: 单项目复用次数阈值",
+    )
+    member_memory_l3_top_k: int = Field(
+        default=5, ge=1, le=20,
+        description="L3 按任务相关性检索注入的 top-K 条数",
+    )
+
+    # ── 单 agent 项目感知 (只读) ──
+    projects_index_max: int = Field(
+        default=20, ge=1, le=200,
+        description="单 agent 模式 <projects> 索引块最多列出的项目数 (超出截断并提示总数)",
+    )
+
 
 # Global configuration instance
 _memory_config: MemoryConfig = MemoryConfig()

@@ -255,6 +255,25 @@ export type ProjectTaskStatus =
   | "in_review" | "approved" | "revision_needed"
   | "completed" | "failed" | "cancelled";
 
+/** 结构化任务规格 — 对齐后端 TaskSpec (Phase 2 任务协议 JSON 化). */
+export interface TaskSpec {
+  background?: string;
+  goal?: string;
+  description?: string;
+  constraints?: string[];
+  format?: string;
+  acceptance_criteria?: string[];
+}
+
+/** 成员完成输出的结构化结果 — 对齐后端 TaskResult. */
+export interface TaskResult {
+  status?: string;
+  output?: string;
+  evidence?: string[];
+  uncertainty?: "low" | "medium" | "high";
+  failure_reason?: string;
+}
+
 export interface ProjectTask {
   id: string;
   project_id: string;
@@ -265,8 +284,11 @@ export interface ProjectTask {
   dependencies: string[];
   priority: "low" | "medium" | "high" | "critical";
   output?: string;               // 成员执行结果文本
-  review_feedback?: string;      // Lead 审查反馈 (REVISION_NEEDED 时)
+  spec?: TaskSpec | null;        // 结构化任务规格 (可选)
+  result?: TaskResult | null;    // 结构化完成结果 (可选)
+  review_feedback?: string;      // Lead/Verifier 审查反馈 (REVISION_NEEDED 时)
   revision_count?: number;       // 修改轮次
+  risk?: "low" | "high" | null;  // 风险分级 (Phase 3; null=未分级/历史任务)
   error?: string;                // 失败原因
   retry_count?: number;          // crash 恢复重试次数
   result_summary?: string;

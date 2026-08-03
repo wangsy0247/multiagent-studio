@@ -78,11 +78,9 @@ async def execute(
         db.add(human_msg)
         await db.commit()
 
-        # 批量累积中间事件的 Message，在 finished 时一次性 commit
-        _pending_messages: list[Message] = []
-        # 累积流式 AI 回复文本 + 待回填的 token 数据
-        _accumulated_ai_text: str = ""
-        _pending_token_total: int = 0
+        # 流式事件持久化器 — 中间事件即时 db.add, 终态统一 commit;
+        # AI 文本/thinking 按 tool_call 边界切段 (与前端气泡形态一致)
+        persister = _StreamPersister(db, thread_uuid)
         try:
             async for event_json in harness.stream_execute(
                 thread_id=req.thread_id,
@@ -102,66 +100,35 @@ async def execute(
 
                 event_type = event.get("type", "")
 
-                # ── 累积流式 AI 回复文本 ──
-                if event_type == "message" and event.get("content"):
-                    _accumulated_ai_text += event["content"]
-
-                # ── 中间事件: 只 db.add(), 不 commit ──
-                if event_type in ("tool_call", "tool_result", "subagent_start", "subagent_end", "error"):
-                    msg = Message(
-                        thread_id=thread_uuid,
-                        role=_map_event_role(event_type, event),
-                        content=event.get("content", "") or event.get("tool_result", "") or event.get("instruction", ""),
-                        msg_type=event_type,
-                        extra_metadata=event,
-                        token_count=0,
-                    )
-                    db.add(msg)
-                    _pending_messages.append(msg)
-                elif event_type in ("team_start", "team_task_update", "member_status", "team_message", "team_end"):
-                    msg = _build_team_message(thread_uuid, event_type, event)
-                    db.add(msg)
-                    _pending_messages.append(msg)
-                elif event_type == "message" and event.get("msg_type"):
-                    msg = Message(
-                        thread_id=thread_uuid,
-                        role=_map_event_role(event_type, event),
-                        content=event.get("content", ""),
-                        msg_type=event.get("msg_type", "message"),
-                        extra_metadata=event,
-                        token_count=event.get("tokens", {}).get("total_tokens", 0) if isinstance(event.get("tokens"), dict) else 0,
-                    )
-                    db.add(msg)
-                    _pending_messages.append(msg)
-                elif event_type == "token_usage":
-                    tokens = event.get("tokens", {})
-                    _pending_token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
-                elif event_type == "clarification":
+                if event_type == "clarification":
                     # 澄清暂停: 后端会正常结束流但不发 finished, 必须立即落库,
                     # 否则 session 关闭回滚导致本轮事件全部丢失
                     await _persist_clarification(db, thread, thread_uuid, event)
+                else:
+                    persister.handle(event_type, event)
 
                 # 转发 SSE 到前端
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
                 # ── 终态事件: 一次性 commit 所有累积数据 ──
                 if event_type == "finished":
-                    if _accumulated_ai_text.strip():
-                        msg = Message(
-                            thread_id=thread_uuid,
-                            role="ai",
-                            content=_accumulated_ai_text,
-                            msg_type="message",
-                            extra_metadata={},
-                            token_count=_pending_token_total,
-                        )
-                        db.add(msg)
-                        _pending_messages.append(msg)
+                    persister.finalize()
                     thread.status = "finished"
                     db.add(thread)
                     await db.commit()
                 elif event_type == "error":
                     thread.status = "error"
+                    db.add(thread)
+                    await db.commit()
+                elif event_type == "team_error":
+                    # team 失败走 team_error 而非 error, 同样要落库终态,
+                    # 否则会话列表永远显示 running
+                    thread.status = "error"
+                    db.add(thread)
+                    await db.commit()
+                elif event_type == "team_end" and event.get("status") == "cancelled":
+                    # 团队任务被取消时不会发 finished, 恢复 idle
+                    thread.status = "idle"
                     db.add(thread)
                     await db.commit()
                 elif event_type == "title_update":
@@ -213,6 +180,9 @@ async def respond_to_clarification(
     thread = thread_result.scalar_one_or_none()
     if thread is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    if thread.mode == "team" and not thread.project_id:
+        # 数据异常: team 会话缺 project_id 无法走团队恢复路径, 明确报错而非静默降级
+        raise HTTPException(status_code=400, detail="团队会话缺少 project_id，无法恢复")
     thread.status = "running"
     db.add(thread)
     await db.commit()
@@ -230,8 +200,7 @@ async def respond_to_clarification(
         db.add(answer_msg)
         await db.commit()
 
-        _accumulated_ai_text: str = ""
-        _pending_token_total: int = 0
+        persister = _StreamPersister(db, thread_uuid)
         try:
             # ── s32: team 模式澄清恢复走 _execute_team() 路径 ──
             if thread.mode == "team" and thread.project_id:
@@ -259,48 +228,32 @@ async def respond_to_clarification(
 
                 event_type = event.get("type", "")
 
-                # 累积流式 AI 回复文本
-                if event_type == "message" and event.get("content"):
-                    _accumulated_ai_text += event["content"]
-
-                # 中间事件: 只 add, finished 时一起 commit
-                if event_type in ("tool_call", "tool_result", "subagent_start", "subagent_end", "error"):
-                    msg = Message(
-                        thread_id=thread_uuid,
-                        role=_map_event_role(event_type, event),
-                        content=event.get("content", "") or event.get("tool_result", "") or event.get("instruction", ""),
-                        msg_type=event_type,
-                        extra_metadata=event,
-                        token_count=0,
-                    )
-                    db.add(msg)
-                elif event_type in ("team_start", "team_task_update", "member_status", "team_message", "team_end"):
-                    db.add(_build_team_message(thread_uuid, event_type, event))
-                elif event_type == "token_usage":
-                    tokens = event.get("tokens", {})
-                    _pending_token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
-                elif event_type == "clarification":
+                if event_type == "clarification":
                     # 恢复执行中再次澄清: 同样立即落库, 避免流结束无 finished 时回滚
                     await _persist_clarification(db, thread, thread_uuid, event)
+                else:
+                    persister.handle(event_type, event)
 
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
                 if event_type == "finished":
-                    if _accumulated_ai_text.strip():
-                        msg = Message(
-                            thread_id=thread_uuid,
-                            role="ai",
-                            content=_accumulated_ai_text,
-                            msg_type="message",
-                            extra_metadata={},
-                            token_count=_pending_token_total,
-                        )
-                        db.add(msg)
+                    persister.finalize()
                     thread.status = "finished"
                     db.add(thread)
                     await db.commit()
                 elif event_type == "error":
                     thread.status = "error"
+                    db.add(thread)
+                    await db.commit()
+                elif event_type == "team_error":
+                    # team 失败走 team_error 而非 error, 同样要落库终态,
+                    # 否则会话列表永远显示 running
+                    thread.status = "error"
+                    db.add(thread)
+                    await db.commit()
+                elif event_type == "team_end" and event.get("status") == "cancelled":
+                    # 团队任务被取消时不会发 finished, 恢复 idle
+                    thread.status = "idle"
                     db.add(thread)
                     await db.commit()
 
@@ -400,6 +353,12 @@ def _build_team_message(thread_uuid, event_type: str, event: dict) -> Message:
         content = f"成员 {event.get('agent_name', '')} → {event.get('status', '')} {event.get('task_title', '')}"
     elif event_type == "team_start":
         content = f"团队启动, 成员: {', '.join(event.get('members', []))}"
+    elif event_type == "team_status":
+        content = event.get("content", "") or event.get("phase", "")
+    elif event_type == "message_injected":
+        content = event.get("content", "")
+    elif event_type == "team_degrade":
+        content = f"Team 模式降级为单 Agent: {event.get('reason', '')}"
     else:
         content = f"团队结束 (status={event.get('status', '')}, rounds={event.get('total_rounds', '')})"
     return Message(
@@ -410,6 +369,93 @@ def _build_team_message(thread_uuid, event_type: str, event: dict) -> Message:
         extra_metadata=event,
         token_count=0,
     )
+
+
+# 持久化覆盖的 team/状态类事件 (含此前缺失导致刷新后消失的三种)
+_PERSIST_TEAM_EVENTS = (
+    "team_start", "team_task_update", "member_status", "team_message",
+    "team_end", "team_status", "message_injected", "team_degrade",
+)
+
+
+class _StreamPersister:
+    """流式 SSE 事件 → DB Message 的累积器 (execute 与 respond generator 共用).
+
+    - 中间事件立即 db.add(), 由调用方在终态统一 commit
+    - AI 流式文本 / thinking 按 tool_call 边界切段落库 — 与前端流式
+      气泡形态一致 (前端遇 tool_call 即重置流式消息 ID 开新气泡),
+      避免刷新/切换会话后多个气泡合并成一条长消息
+    """
+
+    def __init__(self, db: AsyncSession, thread_uuid) -> None:
+        self._db = db
+        self._thread_uuid = thread_uuid
+        self._ai_segment = ""
+        self._thinking_segment = ""
+        self.token_total = 0
+
+    def _flush_segments(self, token_count: int = 0) -> None:
+        if self._ai_segment.strip():
+            self._db.add(Message(
+                thread_id=self._thread_uuid, role="ai",
+                content=self._ai_segment, msg_type="message",
+                extra_metadata={}, token_count=token_count,
+            ))
+        self._ai_segment = ""
+        if self._thinking_segment.strip():
+            self._db.add(Message(
+                thread_id=self._thread_uuid, role="ai",
+                content=self._thinking_segment, msg_type="thinking",
+                extra_metadata={}, token_count=0,
+            ))
+        self._thinking_segment = ""
+
+    def handle(self, event_type: str, event: dict) -> None:
+        """累积/落库一个中间事件 (clarification 与终态事件由调用方处理)."""
+        if event_type == "message" and event.get("content"):
+            if event.get("msg_type"):
+                # 完整消息事件 (静态兜底汇总等) — 独立成行, 不进流式段落
+                self._db.add(Message(
+                    thread_id=self._thread_uuid,
+                    role=_map_event_role(event_type, event),
+                    content=event.get("content", ""),
+                    msg_type=event.get("msg_type", "message"),
+                    extra_metadata=event,
+                    token_count=event.get("tokens", {}).get("total_tokens", 0)
+                    if isinstance(event.get("tokens"), dict) else 0,
+                ))
+            else:
+                # 流式文本 chunk — 累积到当前段落
+                self._ai_segment += event["content"]
+        elif event_type == "thinking" and event.get("content"):
+            self._thinking_segment += event["content"]
+        elif event_type == "tool_call":
+            # tool_call 是前端气泡边界 → 先把已累积的段落落库
+            self._flush_segments()
+            self._db.add(Message(
+                thread_id=self._thread_uuid,
+                role=_map_event_role(event_type, event),
+                content=event.get("content", "") or event.get("tool_result", "")
+                or event.get("instruction", ""),
+                msg_type=event_type, extra_metadata=event, token_count=0,
+            ))
+        elif event_type in ("tool_result", "subagent_start", "subagent_end", "error"):
+            self._db.add(Message(
+                thread_id=self._thread_uuid,
+                role=_map_event_role(event_type, event),
+                content=event.get("content", "") or event.get("tool_result", "")
+                or event.get("instruction", ""),
+                msg_type=event_type, extra_metadata=event, token_count=0,
+            ))
+        elif event_type in _PERSIST_TEAM_EVENTS:
+            self._db.add(_build_team_message(self._thread_uuid, event_type, event))
+        elif event_type == "token_usage":
+            tokens = event.get("tokens", {})
+            self.token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
+
+    def finalize(self) -> None:
+        """终态 (finished) — 冲刷最后一个段落并回填 token 数."""
+        self._flush_segments(token_count=self.token_total)
 
 
 async def _persist_clarification(db: AsyncSession, thread: Thread, thread_uuid, event: dict) -> None:

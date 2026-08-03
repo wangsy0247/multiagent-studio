@@ -1,13 +1,48 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useMemo } from "react";
 import { Bot, MessageSquare, GitBranch, CheckCircle2, XCircle } from "lucide-react";
 import { ChatMessage } from "@/lib/types";
 import MessageItem from "./MessageItem";
+import ProcessGroup from "./ProcessGroup";
 
 interface MessageListProps {
   messages: ChatMessage[];
   isStreaming: boolean;
+}
+
+type MsgGroup =
+  | { kind: "single"; msg: ChatMessage }
+  | { kind: "process"; msgs: ChatMessage[] };
+
+/** 是否为"过程消息" (折叠进执行过程组) — 正文/里程碑/错误保持可见 */
+function isProcessMessage(msg: ChatMessage): boolean {
+  if (msg.msgType === "task_boundary") return false; // 任务分隔条
+  if (msg.role === "human") return false;
+  if (msg.msgType === "error") return false; // 错误必须可见, 不能藏进折叠组
+  if (msg.role === "tool" || msg.role === "subagent") return true;
+  if (msg.msgType === "thinking") return true;
+  if (msg.role === "system") {
+    // 降级警告保持可见 (模式切换必须感知), 其余系统消息全部折叠
+    const et = (msg.metadata as Record<string, unknown> | undefined)?.event_type;
+    return et !== "team_degrade";
+  }
+  return false; // ai 正文 (text/message/clarification 等)
+}
+
+/** 把连续的过程消息聚合成折叠组 (Hermes 式"执行过程"分组) */
+function groupMessages(messages: ChatMessage[]): MsgGroup[] {
+  const groups: MsgGroup[] = [];
+  for (const msg of messages) {
+    if (isProcessMessage(msg)) {
+      const last = groups[groups.length - 1];
+      if (last && last.kind === "process") last.msgs.push(msg);
+      else groups.push({ kind: "process", msgs: [msg] });
+    } else {
+      groups.push({ kind: "single", msg });
+    }
+  }
+  return groups;
 }
 
 export default function MessageList({ messages, isStreaming }: MessageListProps) {
@@ -16,6 +51,9 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // hooks 必须位于提前返回之前 — 空消息 → 有消息时 hook 数量不能变化
+  const groups = useMemo(() => groupMessages(messages), [messages]);
 
   if (messages.length === 0) {
     return (
@@ -47,7 +85,19 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-      {messages.map((msg) => {
+      {groups.map((group, gi) => {
+        // ── 过程消息组: Hermes 式折叠 ("执行过程 · N 步") ──
+        if (group.kind === "process") {
+          const isLive = isStreaming && gi === groups.length - 1;
+          return (
+            <ProcessGroup
+              key={`pg-${group.msgs[0].id}`}
+              messages={group.msgs}
+              isLive={isLive}
+            />
+          );
+        }
+        const msg = group.msg;
         // ── 任务边界: 渲染为分隔条, 显示任务名 + 状态 ──
         if (msg.msgType === "task_boundary") {
           const meta = msg.metadata as Record<string, unknown> | undefined;

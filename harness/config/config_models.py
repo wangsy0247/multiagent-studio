@@ -89,6 +89,9 @@ class AgentLimitsConfig(BaseModel):
 class AgentTeamConfig(BaseModel):
     can_delegate: bool = True
     memory_scope: str = "agent"
+    # 成员工作区隔离 (Phase 6): worktree=独立 git worktree, 与其他成员隔离;
+    # shared=共享 thread 工作区 (默认, 协作产物互见)
+    isolation: str = "shared"
 
 
 class AgentSubagentsConfig(BaseModel):

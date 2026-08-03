@@ -60,6 +60,9 @@ export default function ChatPanel({
   } = useChatStore();
   const prevThreadIdRef = useRef<string>("");
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  // ── 后台运行轮询 (team 断线重挂: 刷新后无本地 SSE 连接但任务仍在跑) ──
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [bgRunning, setBgRunning] = useState(false);
 
   // ── Agent 选择状态 ──
   const [selectedAgent, setSelectedAgent] = useState<string>(agentName || "default");
@@ -261,20 +264,37 @@ export default function ChatPanel({
         const current = useChatStore.getState().threadMessages[threadId];
         if (current && current.length > 0) return;
       }
+      await fetchHistory(threadId);
+      // DB 状态 running 但无本地 SSE 连接 → 后台任务可能在跑 (如刷新页面), 启动状态轮询
       try {
-        const { data } = await threadsAPI.getMessages(threadId);
+        const { data: info } = await threadsAPI.get(threadId);
+        if (info?.status === "running") startPolling(threadId);
+      } catch {
+        // 状态查询失败静默忽略, 不影响历史展示
+      }
+    };
+
+    // 拉取 DB 消息并替换显示 (加载历史与轮询结束后刷新共用)
+    const fetchHistory = async (tid: string) => {
+      try {
+        const { data } = await threadsAPI.getMessages(tid);
         if (data?.messages && data.messages.length > 0) {
           const dbMsgs: ChatMessage[] = data.messages.map((m: any) => ({
             id: m.id,
             role: m.role,
             content: m.content,
             msgType: m.msg_type,
-            metadata: m.extra_metadata || {},
+            // 历史消息补 event_type 回退 — 与实时消息的分组规则对齐
+            // (如 team_degrade 实时可见, 落库后 metadata 无 event_type 会被误折叠)
+            metadata: {
+              ...(m.extra_metadata || {}),
+              event_type: m.extra_metadata?.event_type ?? m.msg_type,
+            },
             createdAt: m.created_at,
             tokenCount: m.token_count || 0,
           }));
           // 切回时 DB 有 agent 后台执行产生的完整记录, 替换内存残留
-          setThreadMessages(threadId, dbMsgs);
+          setThreadMessages(tid, dbMsgs);
           // 最后一条是未回答的澄清请求 (刷新前 agent 暂停) → 恢复弹出确认框.
           // 已回答时其后会有人类消息, 不会误恢复
           const last = dbMsgs[dbMsgs.length - 1];
@@ -287,11 +307,42 @@ export default function ChatPanel({
         console.error("加载历史消息失败", err);
       }
     };
+
+    const stopPolling = () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+      setBgRunning(false);
+    };
+
+    // 每 5s 轮询执行状态 (只读幂等); 结束后停止并拉取最终消息历史
+    const startPolling = (tid: string) => {
+      if (pollTimerRef.current) return;
+      setBgRunning(true);
+      let failures = 0;
+      pollTimerRef.current = setInterval(async () => {
+        try {
+          const { data } = await executeAPI.getStatus(tid);
+          failures = 0;
+          const s = data?.status;
+          if (s !== "running" && s !== "cancelling") {
+            stopPolling();
+            fetchHistory(tid);
+          }
+        } catch {
+          // 网络错误静默重试, 连续多次失败停止轮询
+          if (++failures >= 5) stopPolling();
+        }
+      }, 5000);
+    };
+
     loadHistory();
 
     return () => {
       // 组件卸载时只取消订阅，不关闭连接 (agent 继续后台执行)
       unsubscribe();
+      stopPolling();
     };
   }, [threadId]);
 
@@ -430,6 +481,14 @@ export default function ChatPanel({
             messages={isAgentView ? agentMessages : messages}
             isStreaming={isAgentView ? false : isStreaming}
           />
+        )}
+
+        {/* ── 后台运行提示 (断线重挂轮询期间) ── */}
+        {!isAgentView && bgRunning && (
+          <div className="mx-4 mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-xs text-blue-600">
+            <div className="w-3 h-3 border border-blue-300 border-t-blue-600 rounded-full animate-spin flex-shrink-0" />
+            <span>⏳ 团队任务后台运行中…</span>
+          </div>
         )}
 
         {/* ── 错误提示 (仅团队全视图) ── */}

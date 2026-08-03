@@ -239,27 +239,6 @@ class TestTaskStore:
 
         asyncio.run(_test())
 
-    def test_get_unclaimed_tasks(self, store):
-        async def _test():
-            a = await store.create_task(title="A")  # no assigned_agent
-            b = await store.create_task(title="B", assigned_agent="alice")
-            unclaimed = await store.get_unclaimed_tasks()
-            ids = {t.id for t in unclaimed}
-            assert a.id in ids
-            assert b.id not in ids  # 已分配
-
-        asyncio.run(_test())
-
-    def test_clear_all(self, store):
-        async def _test():
-            await store.create_task(title="A")
-            await store.create_task(title="B")
-            await store.clear_all()
-            tasks = await store.load_tasks()
-            assert len(tasks) == 0
-
-        asyncio.run(_test())
-
     def test_list_by_status(self, store):
         async def _test():
             from harness.team.models import TeamTaskStatus
@@ -356,7 +335,6 @@ class TestTeammateAgent:
             project_id="test_proj",
             project_name="Test Project",
             project_description="A test project",
-            thread_id="thread-1",
             user_id="default",
             members=[
                 TeamMemberRuntime(agent_name="lead", role="lead", status=TeammateStatus.IDLE),
@@ -592,7 +570,6 @@ class TestOrchestrator:
             project_id="test_proj",
             project_name="Test",
             project_description="Test project",
-            thread_id="thread-1",
             user_id="default",
             members=[
                 TeamMemberRuntime(agent_name="lead", role="lead", status=TeammateStatus.SPAWNING),
@@ -796,7 +773,6 @@ class TestFullFlow:
             project_id="flow_proj",
             project_name="Flow Test",
             project_description="Testing full flow",
-            thread_id="thread-flow",
             user_id="default",
             members=[
                 TeamMemberRuntime(agent_name="lead", role="lead", status=TeammateStatus.SPAWNING),

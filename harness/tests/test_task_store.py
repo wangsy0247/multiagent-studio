@@ -144,14 +144,3 @@ def test_circular_dependency_detection(store):
         assert len(cycles) > 0
 
     _run(_test())
-
-
-def test_delete_task(store):
-    """删除任务."""
-    async def _test():
-        task = await store.create_task(title="要删除的任务")
-        assert await store.delete_task(task.id) is True
-        assert await store.get_task(task.id) is None
-        assert await store.delete_task("nonexistent") is False
-
-    _run(_test())

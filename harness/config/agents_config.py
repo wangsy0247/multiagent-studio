@@ -74,6 +74,9 @@ class AgentTeamFields(BaseModel):
     """Per-Agent Team 配置 (L2)."""
     can_delegate: bool = True
     memory_scope: str = "agent"
+    # 成员工作区隔离 (Phase 6): worktree=独立 git worktree, 与其他成员隔离;
+    # shared=共享 thread 工作区 (默认, 协作产物互见)
+    isolation: str = "shared"
 
 
 class AgentSubagentsFields(BaseModel):
@@ -348,6 +351,8 @@ def _format_agent_config_yaml(cfg: AgentConfig) -> str:
 
     # ── Team ──
     sections.append(f"# ── Team ──")
+    sections.append(f"# isolation: worktree=该成员在独立 git worktree 工作, 产物与其他成员隔离;")
+    sections.append(f"#            shared=共享 thread 工作区 (默认, 协作产物互见)")
     team = cfg.team.model_dump()
     sections.append(_yaml.dump({"team": team}, default_flow_style=False, allow_unicode=True).strip())
     sections.append("")

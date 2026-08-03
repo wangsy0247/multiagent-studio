@@ -173,6 +173,8 @@ def build_teammate_middlewares(
         tool_freq_warn=loop_cfg.get("tool_freq_warn", 30),
         tool_freq_hard_limit=loop_cfg.get("tool_freq_hard_limit", 50),
         window_size=loop_cfg.get("window_size", 20),
+        # 豁免轮询等待类工具 (member 等 Lead 审批时会自然反复 read_inbox)
+        exempt_tools=loop_cfg.get("exempt_tools", {"read_inbox"}),
     ))
 
     # [16] SafetyFinishReason
