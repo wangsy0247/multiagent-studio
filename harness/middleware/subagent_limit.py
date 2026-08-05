@@ -1,6 +1,6 @@
 """SubagentLimitMiddleware — cap the number of task calls per assistant turn.
 
-Matches DeerFlow's design: runs at ``aafter_model``, inspects the last
+Matches the harness design: runs at ``aafter_model``, inspects the last
 AIMessage's tool_calls immediately after the model emits them, and truncates
 any ``task`` calls beyond ``max_concurrent``.  Because ``create_agent``
 executes all tool calls in a single batch, per-turn limiting is equivalent

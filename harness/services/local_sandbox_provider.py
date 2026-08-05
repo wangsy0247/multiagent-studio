@@ -1,4 +1,4 @@
-"""Local filesystem sandbox provider with DeerFlow-style virtual paths.
+"""Local filesystem sandbox provider with harness-style virtual paths.
 
 This provider maps the virtual path namespace used by agents
 (``/mnt/user-data/...`` and ``/mnt/acp-workspace/...``) to host filesystem

@@ -1,4 +1,4 @@
-"""Sandbox-backed file and shell tools (DeerFlow-style).
+"""Sandbox-backed file and shell tools (harness-style).
 
 Agents address files through virtual paths such as
 ``/mnt/user-data/workspace/foo.txt``. The configured ``SandboxProvider``

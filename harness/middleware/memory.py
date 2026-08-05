@@ -1,6 +1,6 @@
 """MemoryMiddleware — queue conversation for memory update after agent execution.
 
-Adapted from DeerFlow: only ``aafter_agent`` (no ``abefore_agent``).
+Adapted from the reference implementation: only ``aafter_agent`` (no ``abefore_agent``).
 Memory reading/injection is handled by DynamicContextMiddleware.
 """
 

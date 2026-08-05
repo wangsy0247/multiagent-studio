@@ -80,7 +80,9 @@ export type SSEEventType =
   | "team_start" | "team_end" | "team_status"
   | "team_task_update" | "team_message" | "member_status"
   | "team_error" | "team_degrade"
-  | "message_injected";
+  | "message_injected"
+  // ── 断线续传 (Phase 3): resume 不可续传时的一次性通知, 前端回退轮询 ──
+  | "resync";
 
 export interface SSEEvent {
   type: SSEEventType;
@@ -165,6 +167,10 @@ export interface ChatMessage {
   metadata: Record<string, unknown>;
   createdAt: string;
   tokenCount: number;
+  /** thinking 气泡首个 thinking chunk 的时间 (Date.now(), ms) — 仅流式期间记录, 不落库 */
+  thinkingStartAt?: number;
+  /** thinking 气泡结束时间 (正文开始 / tool_call / finished 等) — 用于 "思考了 N 秒" 与自动收起 */
+  thinkingEndAt?: number;
 }
 
 // ===== 会话 =====

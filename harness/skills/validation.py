@@ -1,4 +1,4 @@
-"""SKILL.md frontmatter validation — portable from DeerFlow.
+"""SKILL.md frontmatter validation — portable from harness.
 
 Pure validation logic with no HTTP/FastAPI dependencies.
 """

@@ -1,6 +1,6 @@
 """LoopDetectionMiddleware — detect and break repetitive tool-call loops.
 
-Matches DeerFlow's design:
+Matches the harness design:
 
   - ``abefore_agent``: clear stale pending warnings from the same thread's
     other runs.

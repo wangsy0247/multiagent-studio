@@ -1,6 +1,6 @@
 """SandboxMiddleware — bind runtime context to sandbox-backed tools.
 
-With the DeerFlow-style sandbox provider layer, this middleware no longer
+With the harness-style sandbox provider layer, this middleware no longer
 creates Docker containers directly. Instead it injects the current thread and
 workspace into the sandbox tool context so those tools can acquire the
 configured sandbox provider on demand.

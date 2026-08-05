@@ -1,4 +1,4 @@
-"""OpenSandbox provider with DeerFlow-style multi-point bind mounts.
+"""OpenSandbox provider with harness-style multi-point bind mounts.
 
 Wraps the OpenSandbox Python SDK and exposes the same virtual path namespace as
 LocalSandboxProvider so that agents can use ``/mnt/user-data/...`` regardless of
@@ -222,7 +222,7 @@ class OpenSandboxProvider(SandboxProvider):
     def _build_volumes(
         self, thread_id: str, *, user_id: str | None = None
     ) -> list[Volume]:
-        """Build DeerFlow-style bind mounts for a thread."""
+        """Build harness-style bind mounts for a thread."""
         paths = get_paths()
         paths.ensure_thread_dirs(thread_id, user_id=user_id)
 

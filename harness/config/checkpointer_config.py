@@ -1,4 +1,4 @@
-"""Checkpointer configuration — DeerFlow-aligned singleton pattern.
+"""Checkpointer configuration — harness-aligned singleton pattern.
 
 Supports three backends:
 
@@ -36,7 +36,7 @@ class CheckpointerConfig:
 
 
 # ---------------------------------------------------------------------------
-# module-level singleton (mirrors DeerFlow's global config pattern)
+# module-level singleton (mirrors the standard's global config pattern)
 # ---------------------------------------------------------------------------
 
 _checkpointer_config: CheckpointerConfig | None = None

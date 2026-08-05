@@ -37,6 +37,8 @@ function summarize(msg: ChatMessage | undefined): string {
 
 const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: ProcessGroupProps) {
   const [expanded, setExpanded] = React.useState(isLive);
+  // 历史步骤区 (除最后一步外) 默认折叠, 用户手动展开后保持 (组件内状态)
+  const [showHistory, setShowHistory] = React.useState(false);
   const userToggledRef = React.useRef(false);
   const contentRef = React.useRef<HTMLDivElement>(null);
 
@@ -59,6 +61,10 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
     userToggledRef.current = true;
     setExpanded((e) => !e);
   };
+
+  // 两段式 (对齐 DeerFlow "只展示最新"): 历史步骤默认折叠为 "还有 N 步", 最后一步常驻展示
+  const latest = messages[messages.length - 1];
+  const history = messages.slice(0, -1);
 
   return (
     <div className="pl-11 animate-fade-in">
@@ -88,9 +94,24 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
         </button>
         {expanded && (
           <div ref={contentRef} className="px-3 py-2 space-y-3 border-t border-slate-200 bg-white/60 max-h-[480px] overflow-y-auto">
-            {messages.map((m) => (
-              <GroupItem key={m.id} msg={m} />
-            ))}
+            {/* 历史步骤区: 默认折叠为 "还有 N 步", 点击展开/收起 (DeerFlow "只展示最新" 模式) */}
+            {history.length > 0 && (
+              <button
+                onClick={() => setShowHistory((v) => !v)}
+                className="flex items-center gap-1.5 py-0.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                {showHistory ? (
+                  <ChevronDown className="w-3 h-3" />
+                ) : (
+                  <ChevronRight className="w-3 h-3" />
+                )}
+                <span>{showHistory ? "收起" : `还有 ${history.length} 步`}</span>
+              </button>
+            )}
+            {showHistory &&
+              history.map((m) => <GroupItem key={m.id} msg={m} />)}
+            {/* 最新步骤区: 常驻展示, 流式期间始终可见当前在做什么 */}
+            {latest && <GroupItem msg={latest} />}
           </div>
         )}
       </div>

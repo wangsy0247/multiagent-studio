@@ -1,6 +1,6 @@
 """SubAgent middleware builder — stripped-down chain (7-9 middlewares).
 
-Aligns with DeerFlow's ``build_subagent_runtime_middlewares()``.  SubAgents
+Aligns with the harness's ``build_subagent_runtime_middlewares()``.  SubAgents
 do NOT need Uploads, Summarization, Todo, Title, Memory, DeferredToolFilter,
 SubagentLimit, LoopDetection, Clarification, or DynamicContext middlewares.
 

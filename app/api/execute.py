@@ -1,27 +1,46 @@
 """
-执行 API 路由: 代理 Harness 的 SSE 执行、停止、状态查询
+执行 API 路由: 代理 Harness 的 SSE 执行、停止、状态查询、断线续传
+
+断线续传 (Phase 3):
+- execute / respond 的 Harness 事件流由后台泵任务 (_pump_run) 消费,
+  独立于客户端 HTTP 连接 — 页面刷新/断网不影响事件生产与落库;
+- 每条事件经 StreamHub 分配单调递增序号 (每次运行从 1 重置),
+  SSE 输出帧为标准格式 "id: <seq>\\ndata: {...}\\n\\n";
+- resume 端点从事件环形缓冲补发缺失事件后挂接实时流,
+  不可续传 (not_running / gap) 时下发一次性 resync 事件,
+  由前端回退到状态轮询。
 """
 
+import asyncio
 import json
 import logging
 import uuid as uuid_mod
-from typing import Optional
+from typing import AsyncGenerator, AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update as sa_update
+from sqlalchemy import select
 
-from app.db.engine import get_db
-from app.api.deps import get_current_user, resolve_fs_user_id
+from app.db.engine import get_db, async_session as _default_session_factory
+from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.thread import Thread
 from app.models.message import Message
 from app.services.harness_client import get_harness_client, HarnessUnavailableError
+from app.services.stream_hub import (
+    get_stream_hub, RunStream, Subscription, SUB_OK,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 class ExecuteRequest(BaseModel):
@@ -38,6 +57,119 @@ class ExecuteRequest(BaseModel):
 
 class ClarificationResponse(BaseModel):
     answer: str
+
+
+async def _sse_frames(sub: Subscription) -> AsyncGenerator[str, None]:
+    """把订阅内容编码为标准 SSE 帧 (id + data 行)。
+
+    订阅失败 (not_running / gap) 时下发一次性 resync 事件并结束,
+    前端据此回退到状态轮询。
+    """
+    if sub.status != SUB_OK:
+        yield f"data: {json.dumps({'type': 'resync', 'reason': sub.status})}\n\n"
+        return
+    hub = get_stream_hub()
+    try:
+        for seq, payload in sub.missed:
+            yield f"id: {seq}\ndata: {payload}\n\n"
+        while True:
+            item = await sub.queue.get()
+            if item is None:  # 结束哨兵 (运行终止 / 消费者被背压丢弃)
+                break
+            seq, payload = item
+            yield f"id: {seq}\ndata: {payload}\n\n"
+    finally:
+        if sub.run is not None and sub.queue is not None:
+            hub.unsubscribe(sub.run, sub.queue)
+
+
+async def _set_thread_status(db: AsyncSession, thread: Optional[Thread], status: str) -> None:
+    if thread is None:
+        return
+    thread.status = status
+    db.add(thread)
+    await db.commit()
+
+
+async def _pump_run(
+    thread_id: str,
+    thread_uuid,
+    rs: RunStream,
+    stream_factory,
+    session_factory=None,
+) -> None:
+    """后台泵任务: 消费 Harness SSE 流 → 落库 + 经 StreamHub 广播。
+
+    独立于任何 HTTP 连接运行 (execute/respond 的 StreamingResponse 与
+    resume 消费者都只是订阅者), 因此客户端断开不中断事件生产;
+    DB 使用自带 session (请求级 session 随响应结束已关闭)。
+    """
+    hub = get_stream_hub()
+    sf = session_factory or _default_session_factory
+    async with sf() as db:
+        thread_result = await db.execute(select(Thread).where(Thread.id == thread_uuid))
+        thread = thread_result.scalar_one_or_none()
+        # 立即 commit 释放连接: 泵任务贯穿整个运行周期, 而 SQLite 连接池
+        # 只有 1 个连接 (app/db/engine.py) — 若挂着未提交事务, 运行期间
+        # 所有其他请求都会在 get_current_user 处等连接 30s 后超时。
+        # 后续 db.add() 只在内存暂存, 各 commit 点是短暂事务, 不长占连接。
+        await db.commit()
+        # 流式事件持久化器 — 中间事件即时 db.add, 终态统一 commit;
+        # AI 文本/thinking 按 tool_call 边界切段 (与前端气泡形态一致)
+        persister = _StreamPersister(db, thread_uuid)
+        try:
+            async for event_json in stream_factory():
+                try:
+                    event = json.loads(event_json) if isinstance(event_json, str) else event_json
+                except json.JSONDecodeError:
+                    hub.publish(rs, event_json if isinstance(event_json, str)
+                                else json.dumps(event_json, default=str))
+                    continue
+
+                event_type = event.get("type", "")
+
+                if event_type == "clarification":
+                    # 澄清暂停: 后端会正常结束流但不发 finished, 必须立即落库,
+                    # 否则 session 关闭回滚导致本轮事件全部丢失
+                    await _persist_clarification(db, thread, thread_uuid, event)
+                else:
+                    persister.handle(event_type, event)
+
+                # 分配序号并广播给所有订阅者 (原客户端 + resume 消费者)
+                hub.publish(rs, json.dumps(event, default=str))
+
+                # ── 终态事件: 一次性 commit 所有累积数据 ──
+                if event_type == "finished":
+                    persister.finalize()
+                    await _set_thread_status(db, thread, "finished")
+                elif event_type == "error":
+                    await _set_thread_status(db, thread, "error")
+                elif event_type == "team_error":
+                    # team 失败走 team_error 而非 error, 同样要落库终态,
+                    # 否则会话列表永远显示 running
+                    await _set_thread_status(db, thread, "error")
+                elif event_type == "team_end" and event.get("status") == "cancelled":
+                    # 团队任务被取消时不会发 finished, 恢复 idle
+                    await _set_thread_status(db, thread, "idle")
+                elif event_type == "title_update":
+                    title_text = event.get("title", "")
+                    if title_text and thread is not None and thread.title != title_text:
+                        thread.title = title_text
+                        db.add(thread)
+                        await db.commit()
+
+        except HarnessUnavailableError:
+            await _set_thread_status(db, thread, "error")
+            hub.publish(rs, json.dumps({'type': 'error', 'content': 'Harness 服务不可用，请稍后重试', 'status': 'service_unavailable'}))
+        except Exception as e:
+            logger.exception(f"SSE 泵任务异常: {e}")
+            try:
+                await _set_thread_status(db, thread, "error")
+            except Exception:
+                logger.exception("泵任务异常后更新线程状态失败")
+            hub.publish(rs, json.dumps({'type': 'error', 'content': str(e), 'status': 'error'}))
+        finally:
+            hub.end_run(rs)
 
 
 @router.post("")
@@ -64,100 +196,73 @@ async def execute(
     db.add(thread)
     await db.commit()
 
-    async def event_generator():
-        """SSE 事件流生成器 — 转发 Harness SSE 事件并持久化关键事件"""
-        # ── 持久化用户消息 (HumanMessage 不会通过 SSE 事件发送) ──
-        human_msg = Message(
-            thread_id=thread_uuid,
-            role="human",
-            content=req.message,
-            msg_type="text",
-            extra_metadata={},
-            token_count=0,
-        )
-        db.add(human_msg)
-        await db.commit()
+    # ── 持久化用户消息 (HumanMessage 不会通过 SSE 事件发送) ──
+    # 附件元数据随 extra_metadata.files 落库, 供历史消息还原附件文件卡片
+    human_msg = Message(
+        thread_id=thread_uuid,
+        role="human",
+        content=req.message,
+        msg_type="text",
+        extra_metadata={"files": req.files} if req.files else {},
+        token_count=0,
+    )
+    db.add(human_msg)
+    await db.commit()
 
-        # 流式事件持久化器 — 中间事件即时 db.add, 终态统一 commit;
-        # AI 文本/thinking 按 tool_call 边界切段 (与前端气泡形态一致)
-        persister = _StreamPersister(db, thread_uuid)
-        try:
-            async for event_json in harness.stream_execute(
-                thread_id=req.thread_id,
-                user_id=current_user.username,
-                message=req.message,
-                execution_graph=req.execution_graph,
-                files=req.files,
-                project_id=req.project_id,
-                agent_name=req.agent_name,
-                mode=req.mode,
-            ):
-                try:
-                    event = json.loads(event_json) if isinstance(event_json, str) else event_json
-                except json.JSONDecodeError:
-                    yield f"data: {event_json}\n\n"
-                    continue
-
-                event_type = event.get("type", "")
-
-                if event_type == "clarification":
-                    # 澄清暂停: 后端会正常结束流但不发 finished, 必须立即落库,
-                    # 否则 session 关闭回滚导致本轮事件全部丢失
-                    await _persist_clarification(db, thread, thread_uuid, event)
-                else:
-                    persister.handle(event_type, event)
-
-                # 转发 SSE 到前端
-                yield f"data: {json.dumps(event, default=str)}\n\n"
-
-                # ── 终态事件: 一次性 commit 所有累积数据 ──
-                if event_type == "finished":
-                    persister.finalize()
-                    thread.status = "finished"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "error":
-                    thread.status = "error"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "team_error":
-                    # team 失败走 team_error 而非 error, 同样要落库终态,
-                    # 否则会话列表永远显示 running
-                    thread.status = "error"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "team_end" and event.get("status") == "cancelled":
-                    # 团队任务被取消时不会发 finished, 恢复 idle
-                    thread.status = "idle"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "title_update":
-                    title_text = event.get("title", "")
-                    if title_text and thread.title != title_text:
-                        thread.title = title_text
-                        db.add(thread)
-                        await db.commit()
-
-        except HarnessUnavailableError:
-            thread.status = "error"
-            db.add(thread)
-            await db.commit()
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Harness 服务不可用，请稍后重试', 'status': 'service_unavailable'})}\n\n"
-        except Exception as e:
-            logger.exception(f"SSE 流异常: {e}")
-            thread.status = "error"
-            db.add(thread)
-            await db.commit()
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e), 'status': 'error'})}\n\n"
+    # 启动后台泵任务 (事件生产/落库独立于本 HTTP 连接),
+    # 本响应只是该 thread 事件流的一个订阅者
+    hub = get_stream_hub()
+    rs = hub.start_run(req.thread_id)
+    rs.pump_task = asyncio.create_task(_pump_run(
+        req.thread_id, thread_uuid, rs,
+        lambda: harness.stream_execute(
+            thread_id=req.thread_id,
+            user_id=current_user.username,
+            message=req.message,
+            execution_graph=req.execution_graph,
+            files=req.files,
+            project_id=req.project_id,
+            agent_name=req.agent_name,
+            mode=req.mode,
+        ),
+    ))
+    # 泵任务尚未被调度 (本函数内无 await), 此刻订阅必成功
+    sub = hub.subscribe(req.thread_id, last_event_id=0)
 
     return StreamingResponse(
-        event_generator(),
+        _sse_frames(sub),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.post("/{thread_id}/resume")
+async def resume_execution(
+    thread_id: str,
+    last_event_id: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """断线续传 — 补发 seq > last_event_id 的缓冲事件后挂接实时流。
+
+    绝不重发 execute 的 POST body (会重复执行); 本端点只做事件订阅。
+    运行已结束 (not_running) 或缓冲覆盖不到 (gap) 时, 流内下发一次性
+    resync 事件并结束, 由前端回退到状态轮询。
+    """
+    # 所有权校验
+    thread_uuid = uuid_mod.UUID(thread_id)
+    thread_result = await db.execute(
+        select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
+    )
+    if thread_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    hub = get_stream_hub()
+    sub = hub.subscribe(thread_id, max(last_event_id, 0))
+    return StreamingResponse(
+        _sse_frames(sub),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
@@ -187,96 +292,51 @@ async def respond_to_clarification(
     db.add(thread)
     await db.commit()
 
-    async def event_generator():
-        # 持久化用户的澄清回答
-        answer_msg = Message(
-            thread_id=thread_uuid,
-            role="human",
-            content=req.answer,
-            msg_type="text",
-            extra_metadata={},
-            token_count=0,
-        )
-        db.add(answer_msg)
-        await db.commit()
+    # 持久化用户的澄清回答
+    answer_msg = Message(
+        thread_id=thread_uuid,
+        role="human",
+        content=req.answer,
+        msg_type="text",
+        extra_metadata={},
+        token_count=0,
+    )
+    db.add(answer_msg)
+    await db.commit()
 
-        persister = _StreamPersister(db, thread_uuid)
-        try:
-            # ── s32: team 模式澄清恢复走 _execute_team() 路径 ──
-            if thread.mode == "team" and thread.project_id:
-                # user_id 必须是文件系统用户名 (非 UUID), 否则 Harness 找不到项目目录
-                fs_uid = current_user.username or "default"
-                event_stream = harness.stream_execute(
-                    thread_id=thread_id,
-                    user_id=fs_uid,
-                    message=req.answer,
-                    project_id=thread.project_id,
-                    agent_name=thread.agent_name,
-                    mode="team",
-                )
-            else:
-                event_stream = harness.stream_respond_clarification(
-                    thread_id=thread_id,
-                    answer=req.answer,
-                )
-            async for event_json in event_stream:
-                try:
-                    event = json.loads(event_json) if isinstance(event_json, str) else event_json
-                except json.JSONDecodeError:
-                    yield f"data: {event_json}\n\n"
-                    continue
+    # ── s32: team 模式澄清恢复走 _execute_team() 路径 ──
+    if thread.mode == "team" and thread.project_id:
+        # user_id 必须是文件系统用户名 (非 UUID), 否则 Harness 找不到项目目录
+        fs_uid = current_user.username or "default"
 
-                event_type = event.get("type", "")
+        def stream_factory() -> AsyncIterator[str]:
+            return harness.stream_execute(
+                thread_id=thread_id,
+                user_id=fs_uid,
+                message=req.answer,
+                project_id=thread.project_id,
+                agent_name=thread.agent_name,
+                mode="team",
+            )
+    else:
+        def stream_factory() -> AsyncIterator[str]:
+            return harness.stream_respond_clarification(
+                thread_id=thread_id,
+                answer=req.answer,
+            )
 
-                if event_type == "clarification":
-                    # 恢复执行中再次澄清: 同样立即落库, 避免流结束无 finished 时回滚
-                    await _persist_clarification(db, thread, thread_uuid, event)
-                else:
-                    persister.handle(event_type, event)
-
-                yield f"data: {json.dumps(event, default=str)}\n\n"
-
-                if event_type == "finished":
-                    persister.finalize()
-                    thread.status = "finished"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "error":
-                    thread.status = "error"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "team_error":
-                    # team 失败走 team_error 而非 error, 同样要落库终态,
-                    # 否则会话列表永远显示 running
-                    thread.status = "error"
-                    db.add(thread)
-                    await db.commit()
-                elif event_type == "team_end" and event.get("status") == "cancelled":
-                    # 团队任务被取消时不会发 finished, 恢复 idle
-                    thread.status = "idle"
-                    db.add(thread)
-                    await db.commit()
-
-        except HarnessUnavailableError:
-            thread.status = "error"
-            db.add(thread)
-            await db.commit()
-            yield f"data: {json.dumps({'type': 'error', 'content': 'Harness 服务不可用', 'status': 'service_unavailable'})}\n\n"
-        except Exception as e:
-            logger.exception(f"Clarification respond SSE 异常: {e}")
-            thread.status = "error"
-            db.add(thread)
-            await db.commit()
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e), 'status': 'error'})}\n\n"
+    # 与 execute 相同: 后台泵 + 订阅 (刷新后同样可经 resume 续流)
+    hub = get_stream_hub()
+    rs = hub.start_run(thread_id)
+    rs.pump_task = asyncio.create_task(
+        _pump_run(thread_id, thread_uuid, rs, stream_factory)
+    )
+    sub = hub.subscribe(thread_id, last_event_id=0)
 
     return StreamingResponse(
-        event_generator(),
+        _sse_frames(sub),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_SSE_HEADERS,
     )
 
 
@@ -379,7 +439,7 @@ _PERSIST_TEAM_EVENTS = (
 
 
 class _StreamPersister:
-    """流式 SSE 事件 → DB Message 的累积器 (execute 与 respond generator 共用).
+    """流式 SSE 事件 → DB Message 的累积器 (execute 与 respond 共用).
 
     - 中间事件立即 db.add(), 由调用方在终态统一 commit
     - AI 流式文本 / thinking 按 tool_call 边界切段落库 — 与前端流式
@@ -475,6 +535,7 @@ async def _persist_clarification(db: AsyncSession, thread: Thread, thread_uuid, 
         token_count=0,
     )
     db.add(msg)
-    thread.status = "suspended"
-    db.add(thread)
+    if thread is not None:
+        thread.status = "suspended"
+        db.add(thread)
     await db.commit()

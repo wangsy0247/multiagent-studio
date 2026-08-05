@@ -45,6 +45,50 @@ apiClient.interceptors.response.use(
 
 export default apiClient;
 
+/** 从 localStorage 读取 JWT (与 axios 请求拦截器同源) */
+export function getAccessToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = localStorage.getItem("auth-storage");
+    if (stored) {
+      const { state } = JSON.parse(stored);
+      return state?.accessToken ?? null;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 带 JWT 的裸 fetch — 给 axios 之外的访问用 (文件预览/下载)。
+ * 文件端点走 HTTPBearer 鉴权, 裸 fetch / <a href> / <img src> 不带请求头会 401。
+ */
+export async function authFetch(url: string): Promise<Response> {
+  const token = getAccessToken();
+  return fetch(
+    url,
+    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+  );
+}
+
+/** 带鉴权拉取文件并生成本地 objectURL (供 <img>/<iframe> 等无法自定义请求头的场景) */
+export async function fetchFileObjectUrl(url: string): Promise<string> {
+  const r = await authFetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return URL.createObjectURL(await r.blob());
+}
+
+/** 带鉴权下载文件到本地 (创建临时 a[download] 触发浏览器保存) */
+export async function downloadWithAuth(url: string, filename: string): Promise<void> {
+  const objUrl = await fetchFileObjectUrl(url);
+  const a = document.createElement("a");
+  a.href = objUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objUrl), 10_000);
+}
+
 /** 获取当前登录用户的文件系统 ID — 统一为 username（目录 ~/.multiagent-studio/users/{username}/），兜底 id，再兜底 "default" */
 export function getCurrentUserId(): string {
   if (typeof window === "undefined") return "default";
@@ -106,7 +150,32 @@ export const filesAPI = {
     apiClient.get(`/files${threadId ? `?thread_id=${threadId}` : ""}`),
   download: (fileId: string) => apiClient.get(`/files/${fileId}`, { responseType: "blob" }),
   delete: (fileId: string) => apiClient.delete(`/files/${fileId}`),
+  // ── outputs 产物 (agent 交付物, 对齐 DeerFlow artifacts) ──
+  listOutputs: (threadId: string) => apiClient.get(`/files/outputs/${threadId}`),
+  /**
+   * 构造 outputs 产物的下载/预览 URL。
+   * `path` 接受虚拟路径 (/mnt/user-data/outputs/...) 或 outputs 下的相对路径;
+   * 逐段 encodeURIComponent, 支持中文文件名。
+   */
+  outputsUrl: (threadId: string, path: string, download = false) => {
+    const rel = path.replace(/^\/mnt\/user-data\/outputs\//, "").replace(/^\/+/, "");
+    const encoded = rel.split("/").map(encodeURIComponent).join("/");
+    return `/api/files/outputs/${threadId}/${encoded}${download ? "?download=true" : ""}`;
+  },
 };
+
+/**
+ * markdown 链接/图片路径映射: `/mnt/user-data/outputs/...` → outputs 端点 URL。
+ * 其他路径 (含 uploads/workspace 虚拟路径) 返回 null, 保持原样。
+ */
+export function resolveOutputsUrl(
+  threadId: string | null | undefined,
+  href: string,
+  download = false
+): string | null {
+  if (!threadId || !href.startsWith("/mnt/user-data/outputs/")) return null;
+  return filesAPI.outputsUrl(threadId, href, download);
+}
 
 // ===== Agents API (persistent per-user agents) =====
 export const agentsAPI = {

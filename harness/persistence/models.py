@@ -1,6 +1,6 @@
 """ORM models — RunRow, ThreadMetaRow, RunEventRow.
 
-Table names are aligned with DeerFlow (``runs``, ``threads_meta``, ``run_events``).
+Table names are aligned with the harness design (``runs``, ``threads_meta``, ``run_events``).
 """
 from __future__ import annotations
 

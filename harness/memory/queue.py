@@ -1,4 +1,4 @@
-"""Memory update queue with asyncio debounce — adapted from DeerFlow.
+"""Memory update queue with asyncio debounce — adapted from harness.
 
 Unlike the previous ``threading.Timer`` implementation, this version uses
 ``asyncio.create_task`` + ``asyncio.sleep`` for debouncing, which:

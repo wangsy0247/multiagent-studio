@@ -1,4 +1,4 @@
-"""Skill data types and constants — portable from DeerFlow.
+"""Skill data types and constants — portable from harness.
 
 A Skill is a self-contained workflow packaged as a directory containing a
 ``SKILL.md`` file with YAML frontmatter and Markdown instructions.

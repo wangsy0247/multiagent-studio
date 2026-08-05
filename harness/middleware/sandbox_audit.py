@@ -1,6 +1,6 @@
 """SandboxAuditMiddleware — audit sandbox shell/file operations for security logging.
 
-Matches DeerFlow's design: wraps tool calls (awrap_tool_call) to classify
+Matches the harness design: wraps tool calls (awrap_tool_call) to classify
 and log bash commands by risk level before execution.
 """
 

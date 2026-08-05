@@ -20,6 +20,12 @@ function isProcessMessage(msg: ChatMessage): boolean {
   if (msg.msgType === "task_boundary") return false; // 任务分隔条
   if (msg.role === "human") return false;
   if (msg.msgType === "error") return false; // 错误必须可见, 不能藏进折叠组
+  // present_files 产物卡片单独归组, 不进折叠 (用户必须能直接看到交付文件)
+  if (
+    msg.msgType === "tool_call" &&
+    (msg.metadata as Record<string, unknown> | undefined)?.tool_name === "present_files"
+  )
+    return false;
   if (msg.role === "tool" || msg.role === "subagent") return true;
   if (msg.msgType === "thinking") return true;
   if (msg.role === "system") {
@@ -138,7 +144,10 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
           );
         }
         // ── 普通消息 ──
-        return <MessageItem key={msg.id} message={msg} />;
+        // 只有"流式中且为最后一条 AI 生长消息"才开平滑打字机/代码块降级, 避免每条消息都挂 rAF
+        const isLiveStreaming =
+          isStreaming && gi === groups.length - 1 && msg.role === "ai";
+        return <MessageItem key={msg.id} message={msg} isLiveStreaming={isLiveStreaming} />;
       })}
 
       {isStreaming && (

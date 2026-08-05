@@ -1,6 +1,6 @@
 """SafetyFinishReasonMiddleware — suppress tool calls on provider safety termination.
 
-Matches DeerFlow's design: runs at ``aafter_model``, detects when a provider
+Matches the harness design: runs at ``aafter_model``, detects when a provider
 safety-terminated the response (e.g. ``finish_reason=content_filter``) but
 still emitted partial ``tool_calls``. Strips those tool calls and appends
 a user-facing explanation.

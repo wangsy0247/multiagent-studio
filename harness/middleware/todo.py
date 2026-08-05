@@ -1,6 +1,6 @@
 """TodoMiddleware — track and manage plan-mode TODO lists.
 
-Adapted from DeerFlow's TodoMiddleware, extended for HarnessState/TodoItem:
+Adapted from the reference TodoMiddleware, extended for HarnessState/TodoItem:
 
 - ``abefore_agent``: clears stale completion-reminder state from the same
   thread's other runs; if plan_mode is set but the todo list is empty the

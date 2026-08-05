@@ -1,6 +1,6 @@
 """Async database engine lifecycle — SQLite WAL + Postgres support.
 
-DeerFlow-aligned: creates a single ``deerflow.db`` shared by LangGraph's
+harness-aligned: creates a single ``deerflow.db`` shared by LangGraph's
 checkpointer and the application-layer ORM tables.
 """
 from __future__ import annotations

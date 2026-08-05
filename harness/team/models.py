@@ -247,7 +247,7 @@ class TeamMessage(BaseModel):
 
 
 class TeammateStatus(str, Enum):
-    """Teammate Agent 生命周期状态 
+    """Teammate Agent 生命周期状态
 
     SPAWNING → WORKING ↔ IDLE → SHUTTING_DOWN → SHUTDOWN.
     """

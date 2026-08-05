@@ -3,7 +3,7 @@
 After each model call, extract usage metadata from the AIMessage response and
 accumulate into ``state["token_usage"]`` as a plain dict.  Storing a dict
 instead of a custom Pydantic model avoids msgpack serialization issues in
-LangGraph checkpoints (aligned with DeerFlow).
+LangGraph checkpoints (aligned with the harness design).
 """
 from __future__ import annotations
 

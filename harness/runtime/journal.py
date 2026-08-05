@@ -1,6 +1,6 @@
 """RunJournal — LangChain callback that captures LLM/tool events.
 
-DeerFlow-aligned: writes lifecycle, message, and trace events to a pluggable
+harness-aligned: writes lifecycle, message, and trace events to a pluggable
 ``RunEventStore``. Also supports sub-agent token attribution.
 """
 
@@ -164,7 +164,7 @@ class RunJournal(BaseCallbackHandler):
         )
 
     # ------------------------------------------------------------------
-    # Sub-agent token attribution (DeerFlow-aligned)
+    # Sub-agent token attribution (harness-aligned)
     # ------------------------------------------------------------------
 
     def record_subagent_tokens(

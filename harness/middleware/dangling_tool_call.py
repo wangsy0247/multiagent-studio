@@ -1,7 +1,7 @@
 """DanglingToolCallMiddleware — detect and repair unmatched tool_calls.
 
 Implements ``awrap_model_call`` — innermost onion wrapper closest to LLM.
-Patches message history before the model sees it, following DeerFlow pattern.
+Patches message history before the model sees it, following harness pattern.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class DanglingToolCallMiddleware(HarnessAgentMiddleware):
 
         patched = self._build_patched_messages(list(messages))
         if patched is not None:
-            # Use request.override() if available (DeerFlow pattern)
+            # Use request.override() if available (harness pattern)
             if hasattr(request, "override"):
                 request = request.override(messages=patched)
             else:

@@ -1,6 +1,6 @@
 """SubAgent Manager — lifecycle, registry, concurrency, and isolated execution.
 
-DeerFlow-aligned refactor:
+harness-aligned refactor:
 - Uses ``SubagentExecutor`` for isolated event-loop execution.
 - Concurrency gating via ``asyncio.Semaphore``.
 - SubAgents receive a stripped-down middleware chain (7-9 items)

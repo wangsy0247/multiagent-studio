@@ -1,10 +1,10 @@
-"""tool_search — MCP 工具延迟加载 (DeerFlow-aligned).
+"""tool_search — MCP 工具延迟加载 (harness-aligned).
 
 核心思想: MCP 工具全量绑定会让模型为几十上百个 JSON Schema 付出 token
 成本并降低选择准确率。启用后, MCP 工具只暴露名字 (system prompt 清单),
 完整 schema 由模型按需通过 ``tool_search`` 工具检索获取。
 
-四个协作组件 (对齐 DeerFlow):
+四个协作组件:
 
 1. ``DeferredToolCatalog`` — 构建期对 MCP 工具建目录, 提供 regex 搜索与
    ``select:`` 精确选取, 并计算 catalog_hash (schema 集合的指纹)。
@@ -76,7 +76,7 @@ class DeferredToolCatalog:
         return None
 
     def search(self, query: str, max_results: int = MAX_RESULTS) -> list[BaseTool]:
-        """三种查询模式 (DeerFlow-aligned):
+        """三种查询模式 (harness-aligned):
 
         - ``select:name1,name2`` — 按名精确选取
         - 普通文本 — 作为 regex (编译失败则转义为字面量) 匹配 name+description,

@@ -1,6 +1,6 @@
 """Extensions configuration — MCP servers and skills enabled state.
 
-Adapted from DeerFlow's ``deerflow.config.extensions_config``.
+Adapted from the reference extensions-config design.
 Reads and writes ``extensions_config.json``.
 """
 

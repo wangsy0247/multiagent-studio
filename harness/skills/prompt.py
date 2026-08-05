@@ -16,7 +16,7 @@ def get_skills_prompt_section(
 ) -> str:
     """Generate the ``<skill_system>`` XML block listing available skills.
 
-    Uses DeerFlow's progressive-loading pattern:
+    Uses the harness's progressive-loading pattern:
     1. LLM sees skill names, descriptions, and file locations in the prompt.
     2. When a query matches a skill, LLM calls ``file_read`` on the skill's
        ``<location>`` to load the full SKILL.md.

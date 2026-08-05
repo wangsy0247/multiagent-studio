@@ -1,6 +1,6 @@
 """HarnessGraphFactory — build the execution graph using create_agent().
 
-Architecture (aligned with DeerFlow):
+Architecture (aligned with the harness design):
 
     Inner graph (create_agent):
         Handles the core model ↔ tools ReAct loop with all middleware

@@ -75,7 +75,7 @@ def mask_host_paths(output: str, thread_data: dict[str, str] | None) -> str:
 class ThreadDataMiddleware(HarnessAgentMiddleware):
     """Initialise per-thread sandbox directories and virtual path state.
 
-    Creates the DeerFlow-compliant layout::
+    Creates the harness-compliant layout::
 
         {data_root}/users/{user_id}/threads/{thread_id}/user-data/
             workspace/    — working directory
@@ -88,7 +88,7 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
         When True and ``thread_data`` is already present in state (injected
         by the SubAgent executor from the parent Lead Agent), skip directory
         creation and path computation entirely — the SubAgent reuses the
-        parent's sandbox.  This is the DeerFlow-aligned behaviour for
+        parent's sandbox.  This is the harness-aligned behaviour for
         SubAgents.
     """
 
@@ -104,7 +104,7 @@ class ThreadDataMiddleware(HarnessAgentMiddleware):
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
-        # ── DeerFlow-aligned: skip when parent state is already injected ──
+        # ── harness-aligned: skip when parent state is already injected ──
         if self._lazy_init and state.get("thread_data"):
             logger.debug(
                 "ThreadDataMiddleware lazy_init — reusing parent thread_data "

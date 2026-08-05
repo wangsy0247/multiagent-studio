@@ -1,6 +1,6 @@
 """TeamOrchestrator — 事件驱动的多 Agent 编排器.
 
-核心流程 (参考 learn-claude-code  Lead +  autonomous):
+核心流程:
     PLANNING → SPAWN → EVENT_LOOP → SYNTHESIS → COMPLETED
 
 与旧版关键差异:

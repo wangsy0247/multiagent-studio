@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent } from "react";
+import { useState, useRef, useEffect, KeyboardEvent, ChangeEvent, ClipboardEvent, DragEvent } from "react";
 import { Send, Square, Paperclip, ListTodo, X, FileText } from "lucide-react";
 import { useChatStore } from "@/lib/chat-store";
 import { AttachedFile, AgentDefinition } from "@/lib/types";
@@ -13,7 +13,7 @@ interface InputBarProps {
   onStop: () => void;
   isStreaming: boolean;
   attachedFiles?: AttachedFile[];
-  onAttachFiles?: (files: FileList | null) => void;
+  onAttachFiles?: (files: FileList | File[] | null) => void;
   onRemoveFile?: (fileId: string) => void;
   // ── Agent Team 扩展 ──
   members?: AgentDefinition[];
@@ -104,10 +104,62 @@ export default function InputBar({
     e.target.value = "";
   }
 
+  // ── 粘贴上传: 剪贴板中的文件 (截图/复制的文件) 走与选择文件相同的路径 ──
+  function handlePaste(e: ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items;
+    if (!items || !onAttachFiles) return;
+    const files: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind === "file") {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault(); // 阻止把图片占位文本塞进输入框
+      onAttachFiles(files);
+    }
+  }
+
+  // ── 拖拽上传: 仅输入区容器接收, 带悬停高亮 ──
   const isUploading = attachedFiles.some((f) => f.status === "uploading");
+  const [dragActive, setDragActive] = useState(false);
+  const canDrop = !isStreaming && !isUploading;
+
+  function handleDragOver(e: DragEvent) {
+    if (!canDrop || !e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    setDragActive(true);
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    // 子元素间移动不关闭高亮, 仅真正离开容器时关闭
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragActive(false);
+    }
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    setDragActive(false);
+    if (!canDrop || !onAttachFiles) return;
+    if (e.dataTransfer.files.length > 0) {
+      onAttachFiles(e.dataTransfer.files);
+    }
+  }
 
   return (
-    <div className="border-t bg-white p-3 space-y-2">
+    <div
+      className="relative border-t bg-white p-3 space-y-2"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-10 border-2 border-dashed border-hermes-400 bg-hermes-50/70 flex items-center justify-center">
+          <span className="text-xs font-medium text-hermes-600">松开以上传文件</span>
+        </div>
+      )}
       {todos.length > 0 && (
         <div className="flex items-center gap-2 px-1">
           <ListTodo className="w-3.5 h-3.5 text-slate-400" />
@@ -212,6 +264,7 @@ export default function InputBar({
             value={text}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={
               mode === "team"
                 ? "输入团队目标... (@agent 点名, Enter 发送)"

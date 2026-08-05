@@ -1774,7 +1774,7 @@ class HarnessService(_BaseService):
     ) -> AsyncIterator[dict[str, Any]]:
         """Resume execution after a clarification answer, streaming results.
 
-        DeerFlow-style message-based HITL: the user's answer is appended as a
+        harness-style message-based HITL: the user's answer is appended as a
         regular ``HumanMessage`` and the graph resumes from the checkpoint. No
         custom ``pending_clarification`` state key is used; pending status is
         inferred directly from the message history.

@@ -1,4 +1,4 @@
-"""Lead Agent — multi-agent orchestration core with DeerFlow-style prompt.
+"""Lead Agent — multi-agent orchestration core with harness-style prompt.
 
 The LeadAgent is a *configuration provider* for ``create_agent()`` — it builds
 the system prompt and tool list.  The actual ReAct loop is handled by
@@ -18,7 +18,7 @@ from harness.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Prompt template — DeerFlow-aligned XML-structured system prompt
+# Prompt template — harness-aligned XML-structured system prompt
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -183,12 +183,14 @@ def _build_working_directory_section() -> str:
 **File Management:**
 - Uploaded files are automatically listed in the <uploaded_files> section before each request
 - Use `file_read` tool to read uploaded files using their paths from the list
-- For PDF, PPT, Excel, and Word files, converted Markdown versions (*.md) are available alongside originals
+- Use `list_uploaded_files` to see all files uploaded in this thread (name, size, path)
+- Use `view_image` to look at image files (jpg/jpeg/png/webp/gif) in uploads, workspace, or outputs
 - All temporary work happens in `/mnt/user-data/workspace`
 - Treat `/mnt/user-data/workspace` as your default current working directory for coding and file-editing tasks
 - When writing scripts or commands that create/read files from the workspace, prefer relative paths such as `hello.txt`, `../uploads/data.csv`, and `../outputs/report.md`
 - Avoid hardcoding `/mnt/user-data/...` inside generated scripts when a relative path from the workspace is enough
 - Final deliverables must be copied to `/mnt/user-data/outputs`
+- After saving final deliverables to `/mnt/user-data/outputs`, you MUST call the `present_files` tool with their paths to present them to the user — files not presented are invisible to the user
 </working_directory>"""
 
 
@@ -214,10 +216,10 @@ Recent breakthroughs in language models have also accelerated progress
 ```markdown
 ## Executive Summary
 
-DeerFlow is an open-source AI agent framework that gained significant traction in early 2026
-[citation:GitHub Repository](https://github.com/bytedance/deer-flow). The project focuses on
-providing a production-ready agent system with sandbox execution and memory management
-[citation:DeerFlow Documentation](https://deer-flow.dev/docs).
+LangGraph is an open-source agent orchestration framework that gained significant traction in early 2026
+[citation:LangGraph Repository](https://github.com/langchain-ai/langgraph). The project focuses on
+providing a production-ready agent runtime with state management and checkpointing
+[citation:LangGraph Documentation](https://langchain-ai.github.io/langgraph/).
 
 ## Key Analysis
 
@@ -229,8 +231,8 @@ combined with a FastAPI gateway for REST API access [citation:FastAPI](https://f
 ## Sources
 
 ### Primary Sources
-- [GitHub Repository](https://github.com/bytedance/deer-flow) - Official source code and documentation
-- [DeerFlow Documentation](https://deer-flow.dev/docs) - Technical specifications
+- [LangGraph Repository](https://github.com/langchain-ai/langgraph) - Official source code and documentation
+- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/) - Technical specifications
 
 ### Media Coverage
 - [AI Trends 2026](https://techcrunch.com/ai-trends) - Industry analysis
@@ -276,7 +278,7 @@ def _build_critical_reminders_section(max_concurrent: int, subagent_enabled: boo
     )
     return f"""<critical_reminders>
 - **Clarification First**: ALWAYS clarify unclear/missing/ambiguous requirements BEFORE starting work — never assume or guess
-{subagent_reminder}- Output Files: Final deliverables must be in `/mnt/user-data/outputs`
+{subagent_reminder}- Output Files: Final deliverables must be in `/mnt/user-data/outputs`, and you MUST call `present_files` afterwards so the user can see them
 - Clarity: Be direct and helpful, avoid unnecessary meta-commentary
 - Including Images and Mermaid: Images and Mermaid diagrams are always welcomed in the Markdown format, and you're encouraged to use `![Image Description](image_path)` or "```mermaid" to display images in response or Markdown files
 - Multi-task: Better utilize parallel tool calling to call multiple tools at one time for better performance
@@ -687,7 +689,7 @@ class LeadAgent:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Middleware builder + app factory (added during DeerFlow-aligned refactor)
+# Middleware builder + app factory (added during harness-aligned refactor)
 # ──────────────────────────────────────────────────────────────────────────────
 
 from harness.config.config_manager import ConfigManager
@@ -732,7 +734,7 @@ def _build_middlewares(
     agent_name: str | None = None,
     custom_middlewares: list[AgentMiddleware] | None = None,
 ) -> list[AgentMiddleware]:
-    """Build the full 20-middleware chain matching DeerFlow order."""
+    """Build the full 20-middleware chain matching the canonical order."""
     middlewares: list[AgentMiddleware] = []
     cfg = _get_runtime_config(config)
     workspace_root = str(cfg.get("workspace_root", ""))

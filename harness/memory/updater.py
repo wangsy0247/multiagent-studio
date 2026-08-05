@@ -1,4 +1,4 @@
-"""Memory updater for reading, writing, and updating memory data — adapted from DeerFlow."""
+"""Memory updater for reading, writing, and updating memory data — adapted from harness."""
 
 import copy
 import json

@@ -1,4 +1,4 @@
-"""Configuration for memory mechanism — adapted from DeerFlow.
+"""Configuration for memory mechanism — adapted from harness.
 
 Uses JSON-based file storage for memory persistence.
 """

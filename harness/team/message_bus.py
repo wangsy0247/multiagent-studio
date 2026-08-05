@@ -1,6 +1,6 @@
 """TeamMessageBus — Agent 间消息总线 (per-agent inbox + drain-on-read).
 
-参考 learn-claude-code  MessageBus 设计:
+MessageBus 设计:
 - 每个 agent 独立的 inbox JSONL 文件
 - send: 追加写入收件人 inbox
 - read_inbox: 读完即清空 (drain-on-read), 无需游标追踪

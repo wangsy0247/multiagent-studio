@@ -1,4 +1,4 @@
-"""Tool filtering based on skill ``allowed-tools`` declarations — portable from DeerFlow.
+"""Tool filtering based on skill ``allowed-tools`` declarations — portable from harness.
 
 When one or more enabled skills declare ``allowed-tools``, the lead agent's
 tool set is restricted to the union of all declared tool names.  Skills

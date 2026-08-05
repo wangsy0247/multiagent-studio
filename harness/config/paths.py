@@ -1,6 +1,6 @@
 """Centralized path configuration for Harness sandbox data.
 
-Layout mirrors DeerFlow's per-user, per-thread directory structure:
+Layout mirrors the standard's per-user, per-thread directory structure:
 
     {base_dir}/
     └── users/

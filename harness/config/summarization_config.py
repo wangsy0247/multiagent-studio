@@ -1,4 +1,4 @@
-"""Configuration for conversation summarization — adapted from DeerFlow."""
+"""Configuration for conversation summarization — adapted from harness."""
 
 import logging
 from typing import Literal

@@ -1,6 +1,6 @@
 """DeferredToolFilterMiddleware — hide deferred MCP tool schemas from model binding.
 
-DeerFlow-aligned: when tool_search is enabled, MCP tool schemas are hidden
+harness-aligned: when tool_search is enabled, MCP tool schemas are hidden
 from the LLM until promoted via the ``tool_search`` tool.  Promotions live
 in the graph state (``promoted_tools``), merged by the
 ``merge_promoted_tools`` reducer with catalog-hash drift protection.

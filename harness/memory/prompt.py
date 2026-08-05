@@ -1,4 +1,4 @@
-"""Prompt templates for memory update and injection — adapted from DeerFlow."""
+"""Prompt templates for memory update and injection — adapted from harness."""
 
 import math
 import re
@@ -10,7 +10,7 @@ try:
 except ImportError:
     TIKTOKEN_AVAILABLE = False
 
-# ── Memory update prompt (identical to DeerFlow) ──────────────────────────
+# ── Memory update prompt (identical to the canonical format) ──────────────────────────
 MEMORY_UPDATE_PROMPT = """You are a memory management system. Your task is to analyze a conversation and update the user's memory profile.
 
 Current Memory State:
@@ -131,7 +131,7 @@ def _coerce_confidence(value: Any, default: float = 0.0) -> float:
 
 
 def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2000) -> str:
-    """Format memory data for injection into system prompt — identical to DeerFlow."""
+    """Format memory data for injection into system prompt — identical to the canonical format."""
     if not memory_data:
         return ""
 
@@ -223,7 +223,7 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
 
 
 def format_conversation_for_update(messages: list[Any]) -> str:
-    """Format conversation messages for memory update prompt — identical to DeerFlow."""
+    """Format conversation messages for memory update prompt — identical to the canonical format."""
     lines = []
     for msg in messages:
         role = getattr(msg, "type", "unknown")

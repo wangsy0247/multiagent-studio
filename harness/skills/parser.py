@@ -1,4 +1,4 @@
-"""SKILL.md YAML frontmatter parser — portable from DeerFlow."""
+"""SKILL.md YAML frontmatter parser — portable from harness."""
 
 import logging
 import re

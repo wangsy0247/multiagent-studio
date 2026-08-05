@@ -1,6 +1,6 @@
 """UploadsMiddleware — inject uploaded file context into the agent prompt.
 
-Mirrors DeerFlow's uploads middleware: reads file metadata from the latest
+Mirrors the standard uploads middleware: reads file metadata from the latest
 HumanMessage's ``additional_kwargs.files`` and scans the thread's uploads
 directory for historical files. The resulting ``<uploaded_files>`` block is
 prepended to the latest human message so the model knows which files are
@@ -21,8 +21,6 @@ from harness.models import HarnessState
 
 logger = logging.getLogger(__name__)
 
-_OUTLINE_PREVIEW_LINES = 5
-
 
 def _format_size(size_bytes: int) -> str:
     """Human-readable file size."""
@@ -32,68 +30,17 @@ def _format_size(size_bytes: int) -> str:
     return f"{kb / 1024:.1f} MB"
 
 
-def _extract_outline_for_file(file_path: Path) -> tuple[list[dict], list[str]]:
-    """Return (outline, fallback_preview) for a file's companion .md.
-
-    Looks for ``<stem>.md`` next to the original file (e.g. report.pdf → report.md)
-    produced by an upload conversion pipeline.
-    """
-    md_path = file_path.with_suffix(".md")
-    if not md_path.is_file():
-        return [], []
-
-    outline: list[dict] = []
-    try:
-        with md_path.open("r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, start=1):
-                stripped = line.strip()
-                if stripped.startswith("#"):
-                    title = stripped.lstrip("#").strip()
-                    outline.append({"title": title, "line": line_no})
-    except Exception:
-        logger.debug("Failed to extract outline from %s", md_path, exc_info=True)
-
-    if outline:
-        return outline, []
-
-    preview: list[str] = []
-    try:
-        with md_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if stripped:
-                    preview.append(stripped)
-                if len(preview) >= _OUTLINE_PREVIEW_LINES:
-                    break
-    except Exception:
-        logger.debug("Failed to read preview from %s", md_path, exc_info=True)
-    return [], preview
-
-
 def _format_file_entry(file: dict, lines: list[str]) -> None:
     """Append a single file entry to the message lines."""
     size_str = _format_size(int(file.get("size", 0)))
     virtual_path = file.get("path", f"{VIRTUAL_PATH_PREFIX}/uploads/{file['filename']}")
     lines.append(f"- {file['filename']} ({size_str})")
     lines.append(f"  Path: {virtual_path}")
-
-    outline = file.get("outline") or []
-    if outline:
-        lines.append("  Document outline (use `file_read` with line ranges to read sections):")
-        for entry in outline[:30]:
-            lines.append(f"    L{entry.get('line', 0)}: {entry.get('title', '')}")
-        if len(outline) > 30:
-            lines.append(f"    ... ({len(outline) - 30} more headings)")
-    else:
-        preview = file.get("outline_preview") or []
-        if preview:
-            lines.append("  No structural headings detected. Document begins with:")
-            for text in preview:
-                lines.append(f"    > {text}")
-        lines.append(
-            "  Use `grep_tool` to search for keywords "
-            f"(e.g. `grep_tool(pattern='keyword', path='{VIRTUAL_PATH_PREFIX}/uploads/')`)."
-        )
+    lines.append(
+        "  Use `file_read` to read it, `grep_tool` to search for keywords "
+        f"(e.g. `grep_tool(pattern='keyword', path='{VIRTUAL_PATH_PREFIX}/uploads/')`), "
+        "or `view_image` if it is an image."
+    )
     lines.append("")
 
 
@@ -186,20 +133,14 @@ class UploadsMiddleware(HarnessAgentMiddleware):
                 continue
             if file_path.name in exclude_names:
                 continue
-            if file_path.suffix.lower() == ".md" and (uploads_dir / file_path.stem).exists():
-                # Skip companion markdown of convertible originals
-                continue
 
             stat = file_path.stat()
-            outline, preview = _extract_outline_for_file(file_path)
             files.append(
                 {
                     "filename": file_path.name,
                     "size": stat.st_size,
                     "path": f"{VIRTUAL_PATH_PREFIX}/uploads/{file_path.name}",
                     "extension": file_path.suffix,
-                    "outline": outline,
-                    "outline_preview": preview,
                 }
             )
         return files
@@ -228,12 +169,6 @@ class UploadsMiddleware(HarnessAgentMiddleware):
         # Historical uploads (everything else in the directory)
         new_filenames = {f["filename"] for f in new_files}
         historical_files = self._list_historical_files(uploads_dir, new_filenames)
-
-        # Attach outlines to new files too
-        for f in new_files:
-            outline, preview = _extract_outline_for_file(uploads_dir / f["filename"])
-            f["outline"] = outline
-            f["outline_preview"] = preview
 
         if not new_files and not historical_files:
             return None

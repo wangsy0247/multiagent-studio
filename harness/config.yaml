@@ -1,6 +1,6 @@
 config_version: 1
 
-# --- Models (same pattern as DeerFlow) ---
+# --- Models (same pattern as the harness core) ---
 # models:
 #   - name: gpt-4o
 #     display_name: GPT-4o
@@ -105,7 +105,7 @@ tools:
 
 # --- Sandbox ---
 sandbox:
-  # Sandbox provider (DeerFlow-style). Leave empty to use LocalSandboxProvider.
+  # Sandbox provider (harness-style). Leave empty to use LocalSandboxProvider.
   # Available providers:
   #   - harness.services.open_sandbox_provider:OpenSandboxProvider  (recommended)
   #   - harness.services.local_sandbox_provider:LocalSandboxProvider
@@ -170,7 +170,7 @@ loop_detection:
   tool_freq_hard_limit: 30 # Layer 2: 同工具名强制停止
   window_size: 35
 
-# --- Tool Search (MCP 工具延迟加载, DeerFlow-aligned) ---
+# --- Tool Search (MCP 工具延迟加载, harness-aligned) ---
 # 启用后 MCP 工具只暴露名字, 完整 schema 由模型通过 tool_search 工具按需加载;
 # promoted 记录存图状态 (merge_promoted_tools reducer), catalog_hash 漂移自动失效
 tool_search:

@@ -1,7 +1,7 @@
 """SummarizationMiddleware — extends LangChain's SummarizationMiddleware with hook support
 and skill rescue.
 
-Adapted from DeerFlow: adds ``before_summarization`` hooks so that
+Adapted from the reference implementation: adds ``before_summarization`` hooks so that
 ``memory_flush_hook`` can save conversation context to memory before
 messages are compressed away, and rescues recently-loaded skill file
 reads (AIMessage + ToolMessage bundles under ``/mnt/skills``) from
@@ -114,7 +114,7 @@ def _clone_ai_message(
 ) -> AIMessage:
     """Clone an AIMessage while keeping raw provider tool-call metadata in sync.
 
-    Ported from DeerFlow ``tool_call_metadata.clone_ai_message_with_tool_calls``.
+    Ported from the reference ``tool_call_metadata.clone_ai_message_with_tool_calls``.
     """
     kept_ids = {tc["id"] for tc in tool_calls if isinstance(tc.get("id"), str) and tc["id"]}
 
@@ -157,7 +157,7 @@ class _SkillBundle:
     skill_key: str
 
 
-# ── DeerFlow-aligned SummarizationMiddleware ──────────────────────────────
+# ── harness-aligned SummarizationMiddleware ──────────────────────────────
 
 class SummarizationMiddleware(LangChainSummarizationMiddleware):
     """LangChain SummarizationMiddleware extended with pre-summarization hooks
@@ -168,7 +168,7 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
     Skill rescue keeps recently-loaded skill file reads (under
     ``skills_container_path``) out of compression within count/token budgets.
 
-    Accepts the same configuration format as DeerFlow via
+    Accepts the same configuration format as the harness format via
     ``SummarizationConfig``.
     """
 

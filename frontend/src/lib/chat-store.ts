@@ -37,6 +37,12 @@ interface ChatStore {
   selectedSubagentId: string | null;
   selectSubagent: (id: string | null) => void;
 
+  // ── Artifact 预览面板 (Phase 6) ──
+  /** 当前预览的产物文件路径 (虚拟路径 /mnt/user-data/outputs/... 或相对路径)。
+   *  与 SubAgent 详情面板互斥: 打开一个自动关闭另一个。 */
+  selectedArtifactPath: string | null;
+  selectArtifact: (path: string | null) => void;
+
   // ── SubAgent 子会话存储 (v3) ──
   /** 每个 SubAgent 的独立会话: subagent_name → 消息列表 */
   subConversations: Record<string, ChatMessage[]>;
@@ -80,6 +86,68 @@ function _updateMessageMeta(
   );
 }
 
+// ── 渲染节流缓冲 (Phase 1, 对齐 DeerFlow) ──────────────────────────
+// message/thinking 的增量 token 不再逐条 set(), 先写入缓冲, 由 50ms 定时器
+// 批量 flush — React 重渲染从 "每 token 一次" 降为 ~20 次/秒。
+// 结构性事件 (tool_call/finished/...) 到达时先同步 flush, 保证气泡边界语义不变。
+// 用 setTimeout 而非 rAF: 后台标签页 rAF 会暂停, 导致内容不更新。
+const _pendingAppends = new Map<string, string>();
+let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 把增量文本写入缓冲并调度 50ms 批量 flush。 */
+function _bufferAppend(messageId: string, content: string) {
+  _pendingAppends.set(messageId, (_pendingAppends.get(messageId) || "") + content);
+  if (_flushTimer === null) {
+    _flushTimer = setTimeout(_flushPendingAppends, 50);
+  }
+}
+
+/** 立即把所有缓冲内容合并进对应消息 (一次 set())。 */
+function _flushPendingAppends() {
+  if (_flushTimer !== null) {
+    clearTimeout(_flushTimer);
+    _flushTimer = null;
+  }
+  if (_pendingAppends.size === 0) return;
+  const s = useChatStore.getState();
+  let newMessages = s.messages;
+  _pendingAppends.forEach((chunk, msgId) => {
+    newMessages = _appendToMessage(newMessages, msgId, chunk);
+  });
+  _pendingAppends.clear();
+  const tid = s.activeThreadId;
+  useChatStore.setState({
+    messages: newMessages,
+    ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
+  });
+}
+
+/** 丢弃缓冲 (清空消息时使用, 内容已无需保留)。 */
+function _discardPendingAppends() {
+  if (_flushTimer !== null) {
+    clearTimeout(_flushTimer);
+    _flushTimer = null;
+  }
+  _pendingAppends.clear();
+}
+
+/** 给当前流式 thinking 卡记录结束时间 (幂等) — 用于 "思考了 N 秒" 与自动收起。 */
+function _markThinkingEnd() {
+  const s = useChatStore.getState();
+  const thinkingId = s._streamingThinkingId;
+  if (!thinkingId) return;
+  const msg = s.messages.find((m) => m.id === thinkingId);
+  if (!msg || msg.thinkingEndAt) return;
+  const newMessages = s.messages.map((m) =>
+    m.id === thinkingId ? { ...m, thinkingEndAt: Date.now() } : m,
+  );
+  const tid = s.activeThreadId;
+  useChatStore.setState({
+    messages: newMessages,
+    ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
+  });
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
   isStreaming: false,
@@ -96,9 +164,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   _streamingMessageId: null,
   _streamingThinkingId: null,
   selectedSubagentId: null,
+  selectedArtifactPath: null,
   subConversations: {},
 
-  selectSubagent: (id) => set({ selectedSubagentId: id }),
+  // 两个右侧面板互斥: 打开一个自动关闭另一个
+  selectSubagent: (id) =>
+    set({ selectedSubagentId: id, ...(id ? { selectedArtifactPath: null } : {}) }),
+  selectArtifact: (path) =>
+    set({ selectedArtifactPath: path, ...(path ? { selectedSubagentId: null } : {}) }),
 
   appendToSubConversation: (name, msg) => {
     const message: ChatMessage = {
@@ -132,11 +205,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   handleSSEEvent: (event) => {
     const { type } = event;
-    const s = get();
+    let s = get();
 
     // 校验事件归属 — 防止旧线程的 SSE 污染当前活跃线程
     if (event.thread_id && s.activeThreadId && event.thread_id !== s.activeThreadId) {
       return;
+    }
+
+    // 结构性事件 (非 message/thinking 增量) 到达时先同步 flush 节流缓冲,
+    // 保证气泡边界语义与逐 token set() 时完全一致
+    if (type !== "message" && type !== "thinking") {
+      _flushPendingAppends();
+      s = get();
     }
 
     switch (type) {
@@ -145,15 +225,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (event.content) {
           const msgId = s._streamingMessageId;
           if (msgId && s.isStreaming) {
-            // 追加到已有的流式消息
-            const newMessages = _appendToMessage(s.messages, msgId, event.content);
-            const tid = s.activeThreadId;
-            set({
-              messages: newMessages,
-              ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
-            });
+            // 增量只写节流缓冲, 由 50ms 定时器批量 flush
+            _bufferAppend(msgId, event.content);
           } else {
-            // 第一条 message chunk — 创建新消息并记住 ID
+            // 第一条 message chunk — 先 flush 缓冲再创建新消息并记住 ID;
+            // 正文开始意味着 thinking 阶段结束
+            _flushPendingAppends();
+            _markThinkingEnd();
+            s = get();
             const message: ChatMessage = {
               id: generateId(),
               role: "ai",
@@ -179,15 +258,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (event.content) {
           const thinkingId = s._streamingThinkingId;
           if (thinkingId && s.isStreaming) {
-            // 追加到已有的 thinking 卡片
-            const newMessages = _appendToMessage(s.messages, thinkingId, event.content);
-            const tid = s.activeThreadId;
-            set({
-              messages: newMessages,
-              ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
-            });
+            // 增量只写节流缓冲, 由 50ms 定时器批量 flush
+            _bufferAppend(thinkingId, event.content);
           } else {
-            // 第一条 thinking chunk — 创建新的 thinking 卡片
+            // 第一条 thinking chunk — 先 flush 缓冲再创建新的 thinking 卡片,
+            // 并记录思考开始时间 (用于 "思考了 N 秒" 与自动收起)
+            _flushPendingAppends();
+            s = get();
             const message: ChatMessage = {
               id: generateId(),
               role: "ai",
@@ -196,6 +273,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               metadata: {},
               tokenCount: 0,
               createdAt: new Date().toISOString(),
+              thinkingStartAt: Date.now(),
             };
             const newMessages = [...s.messages, message];
             const tid = s.activeThreadId;
@@ -211,7 +289,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       // ── 工具调用 ──────────────────────────────────────────────────
       case "tool_call":
         // 当前 AI 流式消息已完成 (触发工具调用的是完整的 AI 回复), 清除 streaming ID
-        // 以便工具返回后的新 AI 回复创建新消息而不是追加到旧消息
+        // 以便工具返回后的新 AI 回复创建新消息而不是追加到旧消息;
+        // thinking 阶段同时结束, 记录结束时间
+        _markThinkingEnd();
         set({ _streamingMessageId: null, _streamingThinkingId: null });
         get().addMessage({
           role: "tool",
@@ -234,7 +314,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       // ── SubAgent 事件 ─────────────────────────────────────────────
       case "subagent_start": {
-        // task 工具调用触发了 subagent — 清除 streaming ID
+        // task 工具调用触发了 subagent — 清除 streaming ID; thinking 阶段同时结束
+        _markThinkingEnd();
         set({ _streamingMessageId: null, _streamingThinkingId: null });
         const sName = event.subagent_name || "unknown";
         // 初始化子会话存储
@@ -493,6 +574,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         useTeamStore.getState().setRunning(false);
         // team_end 语义上即 run 终止 — 无论后续 finished 是否到达,
         // 都必须解除 streaming 状态, 否则 UI 永远停在 "AI 正在思考..."
+        _markThinkingEnd();
         set({ isStreaming: false });
         get().addMessage({
           role: "system",
@@ -506,6 +588,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case "team_error": {
         useTeamStore.getState().setRunning(false);
+        _markThinkingEnd();
         set({ isStreaming: false });
         get().addMessage({
           role: "system",
@@ -567,6 +650,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       // ── 错误 / 澄清 / 结束 ───────────────────────────────────────
       case "error":
+        _markThinkingEnd();
         set({
           error: event.content || "执行出错",
           isStreaming: false,
@@ -585,6 +669,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
 
       case "clarification":
+        _markThinkingEnd();
         set({ isStreaming: false });
         if (event.request) {
           set({ pendingClarification: event.request });
@@ -609,6 +694,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       case "finished":
+        _markThinkingEnd();
         set({
           isStreaming: false,
           _stopClarificationFn: null,
@@ -619,15 +705,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
-  setStreaming: (v) =>
+  setStreaming: (v) => {
+    // 停止生成/开始新一轮前 flush 节流缓冲, 确保无残留内容丢失;
+    // 停止时 thinking 阶段同时结束
+    _flushPendingAppends();
+    if (!v) _markThinkingEnd();
     set({
       isStreaming: v,
       // 开始新的一轮流式时清除旧 ID
       ...(v ? {} : { _streamingMessageId: null, _streamingThinkingId: null }),
-    }),
+    });
+  },
 
   setTitle: (t) => set({ title: t }),
-  clearMessages: () =>
+  clearMessages: () => {
+    // 消息即将清空, 缓冲内容直接丢弃 (flush 也无落点)
+    _discardPendingAppends();
     set({
       messages: [],
       todos: [],
@@ -637,8 +730,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       _streamingMessageId: null,
       _streamingThinkingId: null,
       selectedSubagentId: null,
+      selectedArtifactPath: null,
       subConversations: {},
-    }),
+    });
+  },
   setError: (e) => set({ error: e }),
   setPendingClarification: (req) => set({ pendingClarification: req }),
   setStopClarificationFn: (fn) => set({ _stopClarificationFn: fn }),
@@ -655,6 +750,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     })),
 
   setActiveThread: (threadId) => {
+    // 切换线程前 flush 节流缓冲, 让旧线程的残留增量先落进旧 threadMessages
+    _flushPendingAppends();
     const s = get();
     const updated: Record<string, ChatMessage[]> = { ...s.threadMessages };
     if (s.activeThreadId) {
@@ -679,6 +776,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       _streamingMessageId: null,
       _streamingThinkingId: null,
       selectedSubagentId: null,
+      selectedArtifactPath: null,
       subConversations: {},
     });
   },

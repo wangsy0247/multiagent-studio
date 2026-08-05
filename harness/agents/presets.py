@@ -1,10 +1,10 @@
-"""Preset SubAgent configurations — DeerFlow-style builtin subagents."""
+"""Preset SubAgent configurations — harness-style builtin subagents."""
 from __future__ import annotations
 
 from harness.models import SubAgentConfig
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Built-in SubAgent configurations (mirroring DeerFlow subagents/builtins/)
+# Built-in SubAgent configurations (mirroring the standard subagents/builtins/)
 # ──────────────────────────────────────────────────────────────────────────────
 
 RESEARCHER_CONFIG = SubAgentConfig(
@@ -209,7 +209,7 @@ For each review:
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Registry (mirrors DeerFlow BUILTIN_SUBAGENTS)
+# Registry (mirrors the standard BUILTIN_SUBAGENTS)
 # ──────────────────────────────────────────────────────────────────────────────
 
 BUILTIN_SUBAGENTS: dict[str, SubAgentConfig] = {

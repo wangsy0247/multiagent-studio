@@ -64,6 +64,12 @@ def get_upload_dir(user_id: str, thread_id: str) -> Path:
     return Path(root) / "users" / user_id / "threads" / thread_id / "user-data" / "uploads"
 
 
+def get_outputs_dir(user_id: str, thread_id: str) -> Path:
+    """返回当前线程 outputs 目录的物理路径 (Harness 布局, agent 交付物)."""
+    root = _get_harness_data_root()
+    return Path(root) / "users" / user_id / "threads" / thread_id / "user-data" / "outputs"
+
+
 def _sanitize_filename(name: str | None) -> str:
     """清理文件名, 只保留 basename 并防止路径遍历."""
     if not name:

@@ -29,7 +29,7 @@ class TestPresets:
         config = build_subagent_config("my-coder", "coder")
         assert isinstance(config, SubAgentConfig)
         assert config.name == "my-coder"
-        assert config.model == "inherit"  # DeerFlow-style default
+        assert config.model == "inherit"  # harness-style default
 
     def test_build_with_custom_prompt(self):
         config = build_subagent_config("custom", "coder", custom_system_prompt="Custom prompt")

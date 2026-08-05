@@ -1,4 +1,4 @@
-"""Memory storage providers — adapted from DeerFlow.
+"""Memory storage providers — adapted from harness.
 
 Single JSON file per user: ``{memory_root}/users/{user_id}/memory.json``
 """
@@ -23,7 +23,7 @@ def utc_now_iso_z() -> str:
 
 
 def create_empty_memory() -> dict[str, Any]:
-    """Create an empty memory structure matching DeerFlow's schema."""
+    """Create an empty memory structure matching the canonical schema."""
     return {
         "version": "1.0",
         "lastUpdated": utc_now_iso_z(),

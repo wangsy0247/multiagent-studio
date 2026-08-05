@@ -1,4 +1,4 @@
-"""Sandbox provider abstraction (DeerFlow-style).
+"""Sandbox provider abstraction (harness-style).
 
 Provides a pluggable sandbox layer so that file and shell tools can run
 against either an OpenSandbox container or the local filesystem depending on

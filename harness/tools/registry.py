@@ -96,7 +96,7 @@ class ToolRegistry:
     # ---- config-driven tool loading ----
 
     def load_tools_from_config(self, tools_config: list[ToolConfig] | None) -> list[BaseTool]:
-        """Load tools declared in ``config.yaml`` (DeerFlow-style).
+        """Load tools declared in ``config.yaml`` (harness-style).
 
         Each ``ToolConfig.use`` is a variable path like
         ``harness.tools.search:web_search``. Loaded tools override any

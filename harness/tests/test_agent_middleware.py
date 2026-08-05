@@ -24,7 +24,7 @@ class TestHarnessAgentMiddleware:
     """Test the HarnessAgentMiddleware base class."""
 
     def test_all_20_in_order(self):
-        """Verify all 20 middlewares match DeerFlow's exact order."""
+        """Verify all 20 middlewares match the harness's exact order."""
         assert len(AGENT_MIDDLEWARE_ORDER) == 20
         names = [mw.name for mw in AGENT_MIDDLEWARE_ORDER]
         assert names == [
@@ -41,7 +41,7 @@ class TestHarnessAgentMiddleware:
         """Every middleware in AGENT_MIDDLEWARE_ORDER must extend HarnessAgentMiddleware.
 
         Exception: SummarizationMiddleware inherits from LangChain's
-        SummarizationMiddleware (same as DeerFlow).
+        SummarizationMiddleware (same as the canonical design).
         """
         from harness.middleware.summarization import SummarizationMiddleware as SumMW
         for mw_cls in AGENT_MIDDLEWARE_ORDER:

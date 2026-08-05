@@ -7,6 +7,7 @@ import { globalSSEManager } from "@/lib/global-sse";
 import { threadsAPI, filesAPI, executeAPI, getCurrentUserId } from "@/lib/api-client";
 import { ChatMessage, AttachedFile, AgentLogEntry, ClarificationRequest } from "@/lib/types";
 import { generateId } from "@/lib/utils";
+import { validateUploadFile } from "@/lib/upload-limits";
 import { useProjectStore } from "@/lib/project-store";
 import { useTeamStore } from "@/lib/team-store";
 import { TeamMemberList } from "@/components/team/TeamMemberList";
@@ -15,6 +16,7 @@ import MessageList from "./MessageList";
 import ClarificationDialog from "./ClarificationDialog";
 import InputBar from "./InputBar";
 import SubagentDetailPanel from "./SubagentDetailPanel";
+import ArtifactPreviewPanel from "./ArtifactPreviewPanel";
 
 interface ChatPanelProps {
   threadId?: string;
@@ -29,12 +31,6 @@ interface ChatPanelProps {
   viewAgentName?: string;
   agentLogEntries?: AgentLogEntry[];
   agentLogsLoading?: boolean;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function ChatPanel({
@@ -71,9 +67,28 @@ export default function ChatPanel({
     if (agentName) setSelectedAgent(agentName);
   }, [agentName]);
 
-  const handleAttachFiles = useCallback((fileList: FileList | null) => {
+  const handleAttachFiles = useCallback((fileList: FileList | File[] | null) => {
     if (!fileList) return;
-    const newFiles: AttachedFile[] = Array.from(fileList).map((file) => ({
+    const incoming: File[] = Array.from(fileList);
+
+    // ── 前端预校验 (大小/类型, 白名单与后端 file_service.py 同步) ──
+    // 不合格文件直接拦截, 不发请求; 复用 error 横幅提示 (项目无 toast 组件)
+    const accepted: File[] = [];
+    const rejected: string[] = [];
+    for (const file of incoming) {
+      const reason = validateUploadFile(file);
+      if (reason) {
+        rejected.push(`${file.name}: ${reason}`);
+      } else {
+        accepted.push(file);
+      }
+    }
+    if (rejected.length > 0) {
+      setError(`已拦截 ${rejected.length} 个文件 — ${rejected.join("; ")}`);
+    }
+    if (accepted.length === 0) return;
+
+    const newFiles: AttachedFile[] = accepted.map((file) => ({
       id: generateId(), // 本地唯一 id — 同名文件按 id 区分, 避免互相覆盖状态
       filename: file.name,
       original_name: file.name,
@@ -86,7 +101,7 @@ export default function ChatPanel({
 
     // Upload each file immediately
     newFiles.forEach((attached, index) => {
-      const file = fileList[index];
+      const file = accepted[index];
       if (!file) return;
 
       setAttachedFiles((prev) =>
@@ -122,7 +137,7 @@ export default function ChatPanel({
           );
         });
     });
-  }, [threadId]);
+  }, [threadId, setError]);
 
   const handleRemoveFile = useCallback((fileId: string) => {
     setAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
@@ -186,18 +201,11 @@ export default function ChatPanel({
       mime_type: f.mime_type,
     }));
 
-    const displayContent = [
-      text,
-      readyFiles.length > 0
-        ? `\n\n[Attached ${readyFiles.length} file(s): ${readyFiles
-            .map((f) => `${f.original_name || f.filename} (${formatFileSize(f.size_bytes)})`)
-            .join(", ")}]`
-        : "",
-    ].join("");
-
+    // 附件不再拼接 "[Attached N file(s)]" 纯文本 — 由 MessageItem 依据
+    // metadata.files 渲染附件 chip; 历史消息由后端 extra_metadata.files 结构化还原
     addMessage({
       role: "human",
-      content: displayContent.trim(),
+      content: text.trim(),
       msgType: "text",
       metadata: { files: filesPayload },
       tokenCount: 0,
@@ -265,10 +273,18 @@ export default function ChatPanel({
         if (current && current.length > 0) return;
       }
       await fetchHistory(threadId);
-      // DB 状态 running 但无本地 SSE 连接 → 后台任务可能在跑 (如刷新页面), 启动状态轮询
+      // DB 状态 running 但无本地 SSE 连接 → 后台任务可能在跑 (如刷新页面):
+      // 有 lastEventId 记录说明刷新前经历过本次运行 → 优先 resume 断点续流,
+      // 失败 (not_running/gap/网络错误) 静默回退到状态轮询
       try {
         const { data: info } = await threadsAPI.get(threadId);
-        if (info?.status === "running") startPolling(threadId);
+        if (info?.status === "running") {
+          if (globalSSEManager.getLastEventId(threadId) !== null) {
+            tryResume(threadId);
+          } else {
+            startPolling(threadId);
+          }
+        }
       } catch {
         // 状态查询失败静默忽略, 不影响历史展示
       }
@@ -335,6 +351,18 @@ export default function ChatPanel({
           if (++failures >= 5) stopPolling();
         }
       }, 5000);
+    };
+
+    // 断线续传 (Phase 3): 刷新后 store 为空, 传 last_event_id=0 让后端
+    // 全量补发本次运行的缓冲事件 — 历史已从 DB 加载 (含上一轮完整记录),
+    // 补发事件走现有增量逻辑重建本轮的流式气泡; 失败则回退轮询
+    const tryResume = (tid: string) => {
+      useChatStore.setState({ _streamingMessageId: null, _streamingThinkingId: null });
+      setStreaming(true);
+      globalSSEManager.resume(tid, 0, () => {
+        setStreaming(false);
+        startPolling(tid);
+      });
     };
 
     loadHistory();
@@ -519,8 +547,9 @@ export default function ChatPanel({
         <ClarificationDialog threadId={threadId || ""} />
       </div>
 
-      {/* ── 右侧: SubAgent 详情面板 ── */}
+      {/* ── 右侧: SubAgent 详情面板 / Artifact 预览面板 (互斥, 由 store 保证) ── */}
       <SubagentDetailPanel />
+      <ArtifactPreviewPanel />
     </div>
   );
 }

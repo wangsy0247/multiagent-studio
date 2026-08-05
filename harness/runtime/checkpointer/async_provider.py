@@ -1,6 +1,6 @@
 """Async checkpointer provider — factory with graceful degradation.
 
-DeerFlow-aligned: creates the appropriate ``BaseCheckpointSaver`` for the
+harness-aligned: creates the appropriate ``BaseCheckpointSaver`` for the
 configured backend.  SQLite and Postgres savers are imported at runtime so
 that neither is a hard dependency — if the import fails the provider falls
 back to ``MemorySaver`` (which is always available).

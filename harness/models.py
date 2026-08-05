@@ -46,7 +46,7 @@ class TokenUsage(BaseModel):
 
 
 class SubAgentConfig(BaseModel):
-    """SubAgent configuration — mirrors DeerFlow SubagentConfig.
+    """SubAgent configuration — mirrors the standard SubagentConfig.
 
     Attributes:
         name: Unique identifier.
@@ -94,7 +94,7 @@ class ExecutionGraph(BaseModel):
 
 
 class SubagentStatus(str, Enum):
-    """Status of a subagent execution — DeerFlow-aligned.
+    """Status of a subagent execution — harness-aligned.
 
     Terminal states: SUCCESS, ERROR, MAX_ITERATIONS_REACHED, CANCELLED, TIMED_OUT.
     Non-terminal states: RUNNING (used internally during execution).
@@ -120,7 +120,7 @@ class SubagentStatus(str, Enum):
 
 
 class SubAgentResult(BaseModel):
-    """SubAgent execution result — DeerFlow-aligned.
+    """SubAgent execution result — harness-aligned.
 
     Attributes:
         task_id: Unique identifier for this execution.
@@ -140,7 +140,7 @@ class SubAgentResult(BaseModel):
         _state_lock: Guards terminal-status writes against timeouts racing
             with the execution worker.
         _usage_reported: Guard against double-reporting token usage to the
-            parent RunJournal (DeerFlow-aligned).
+            parent RunJournal (harness-aligned).
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -162,7 +162,7 @@ class SubAgentResult(BaseModel):
     _usage_reported: bool = PrivateAttr(default=False)
 
     # ------------------------------------------------------------------
-    # Single-writer terminal-state protection (DeerFlow-aligned)
+    # Single-writer terminal-state protection (harness-aligned)
     # ------------------------------------------------------------------
 
     def try_set_terminal(
@@ -272,7 +272,7 @@ def add_token_usage(left: dict[str, Any], right: dict[str, Any]) -> dict[str, An
     """Add token usage counters.
 
     Store token usage as plain dict to avoid serializing custom Pydantic
-    models into LangGraph checkpoints (matches DeerFlow approach).
+    models into LangGraph checkpoints (matches the canonical approach).
     """
     return {
         "prompt_tokens": left.get("prompt_tokens", 0) + right.get("prompt_tokens", 0),
@@ -312,7 +312,7 @@ def merge_artifacts(left: list[str], right: list[str]) -> list[str]:
 def merge_promoted_tools(
     left: dict[str, Any] | None, right: dict[str, Any] | None
 ) -> dict[str, Any]:
-    """Merge deferred-tool promotion records (DeerFlow-aligned).
+    """Merge deferred-tool promotion records (harness-aligned).
 
     Record shape: ``{"catalog_hash": str, "names": list[str]}``.
 
@@ -381,6 +381,8 @@ class HarnessState(TypedDict):
     loop_history: NotRequired[Annotated[list[str], append_loop_history]]
     context_lost: NotRequired[bool]
     artifacts: NotRequired[Annotated[list[str], merge_artifacts]]
+    # view_image 工具看过的图片: path → base64 data-URL (ViewImageMiddleware 写入)
+    viewed_images: NotRequired[dict[str, str]]
     promoted_tools: NotRequired[Annotated[dict[str, Any], merge_promoted_tools]]
     plan_mode_exit: NotRequired[bool]
     suggested_title: NotRequired[str]

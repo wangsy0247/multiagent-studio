@@ -1,6 +1,6 @@
 """SubAgentExecutor — isolated execution engine for delegated tasks.
 
-Aligns with DeerFlow's ``SubagentExecutor``: runs subagents on a persistent,
+Aligns with the harness's ``SubagentExecutor``: runs subagents on a persistent,
 isolated event loop in a daemon thread, decoupled from the parent HTTP request
 lifecycle.  Supports cooperative cancellation, wall-clock timeout, streaming
 via ``astream``, and lightweight token collection.
@@ -783,7 +783,7 @@ class SubagentExecutor:
 
         Blocks the calling thread until completion or timeout.
 
-        P2 improvement (DeerFlow-aligned): re-raises ``FuturesTimeoutError``
+        P2 improvement (harness-aligned): re-raises ``FuturesTimeoutError``
         so the caller (``execute()``) can unify error handling in one
         ``except Exception`` block.  The timeout handler sets the cancel
         event so the background worker exits cooperatively.

@@ -1,4 +1,4 @@
-"""Harness middleware package — 20-layer middleware matching DeerFlow design.
+"""Harness middleware package — 20-layer middleware matching the harness design.
 
 Execution order for each hook type:
   - before_agent / before_model: forward (index 0 → N)
@@ -28,7 +28,7 @@ from harness.middleware.loop_detection import LoopDetectionMiddleware
 from harness.middleware.safety_finish_reason import SafetyFinishReasonMiddleware
 from harness.middleware.clarification import ClarificationMiddleware
 
-# Strict registration order (matches DeerFlow spec)
+# Strict registration order (matches harness spec)
 #   [0-2]  Sandbox infrastructure
 #   [3-5]  wrap_model_call onion: LLMError → LoopDetection → DanglingToolCall
 #   [6]    Guardrail (awrap_tool_call)
@@ -50,7 +50,7 @@ AGENT_MIDDLEWARE_ORDER: list[type[HarnessAgentMiddleware]] = [
     ThreadDataMiddleware,
     UploadsMiddleware,
     SandboxMiddleware,
-    # [3-4] wrap_model_call innermost pair (matches DeerFlow: Dangling innermost → LLMError wraps it)
+    # [3-4] wrap_model_call innermost pair (matches the canonical design: Dangling innermost → LLMError wraps it)
     DanglingToolCallMiddleware,     # innermost: closest to LLM — patches missing ToolMessages
     LLMErrorHandlingMiddleware,     # wraps DanglingToolCall — catches LLM exceptions
     # [5] Guardrail (awrap_tool_call)

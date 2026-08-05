@@ -15,7 +15,7 @@ class ToolGroupConfig(BaseModel):
 class ToolConfig(BaseModel):
     """Config section for a tool.
 
-    The ``use`` field follows DeerFlow's convention:
+    The ``use`` field follows the harness's convention:
     ``module.path:variable_name`` (e.g. ``harness.tools.search:web_search``).
     """
 

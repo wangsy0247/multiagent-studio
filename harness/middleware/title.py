@@ -3,14 +3,14 @@
 The generated title is written into ``HarnessState.suggested_title`` and
 guarded by ``title_generated``.  Both fields are checkpoint-persisted.
 
-Ported from DeerFlow with the same single-hook design: ``aafter_model``
+Ported from the reference implementation with the same single-hook design: ``aafter_model``
 generates the title synchronously and returns it as a state update.  The
 ChatOpenAI instance is cached (lazy-init) so connection pooling keeps
 subsequent calls fast.
 
-Improvements over DeerFlow:
+Improvements over the reference design:
   - precise trigger — only after the first complete exchange (1 user + ≥1 assistant)
-  - ``_title_emitted_ref`` — cross-run dedup (not needed in DeerFlow because
+  - ``_title_emitted_ref`` — cross-run dedup (not needed in the reference design because
     ``state.title`` is checked against a different field name)
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _normalize_content(content: object) -> str:
 class TitleMiddleware(HarnessAgentMiddleware):
     """Generate a short title after the first assistant message.
 
-    Mirrors DeerFlow's ``TitleMiddleware``: a single ``aafter_model`` hook
+    Mirrors the standard ``TitleMiddleware``: a single ``aafter_model`` hook
     that generates the title synchronously and returns it as a state update.
     The ``ChatOpenAI`` instance is cached so connection pooling keeps
     subsequent calls fast.
@@ -76,7 +76,7 @@ class TitleMiddleware(HarnessAgentMiddleware):
         self._llm_config_hash: int = 0
 
     # ------------------------------------------------------------------
-    # hook (single hook — DeerFlow pattern)
+    # hook (single hook — harness pattern)
     # ------------------------------------------------------------------
 
     @override
@@ -140,12 +140,12 @@ class TitleMiddleware(HarnessAgentMiddleware):
         }
 
     # ------------------------------------------------------------------
-    # title generation (DeerFlow pattern)
+    # title generation (harness pattern)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _is_user_message_for_title(message: object) -> bool:
-        """DeerFlow-compatible user message filter."""
+        """harness-compatible user message filter."""
         return (
             isinstance(message, HumanMessage)
             and not is_dynamic_context_reminder(message)
@@ -153,7 +153,7 @@ class TitleMiddleware(HarnessAgentMiddleware):
 
     @staticmethod
     def _fallback_title(user_msg: str) -> str:
-        """Truncate the first user message as a fallback title (DeerFlow pattern)."""
+        """Truncate the first user message as a fallback title (harness pattern)."""
         cleaned = user_msg.strip()
         if not cleaned:
             return "新会话"
@@ -162,7 +162,7 @@ class TitleMiddleware(HarnessAgentMiddleware):
         return cleaned
 
     def _build_title_prompt(self, messages: list) -> tuple[str, str]:
-        """Build prompt from first user + last assistant message (DeerFlow pattern).
+        """Build prompt from first user + last assistant message (harness pattern).
 
         Returns (prompt, user_msg) so the caller can use user_msg as fallback.
         """
@@ -190,7 +190,7 @@ class TitleMiddleware(HarnessAgentMiddleware):
         return prompt, user_msg
 
     async def _generate_title(self, messages: list, user_id: str = "default") -> str:
-        """Generate title via LLM (DeerFlow pattern — single LLM call)."""
+        """Generate title via LLM (harness pattern — single LLM call)."""
         prompt, _ = self._build_title_prompt(messages)
         if not prompt:
             return ""

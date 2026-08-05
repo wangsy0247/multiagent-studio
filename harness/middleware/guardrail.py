@@ -1,6 +1,6 @@
 """GuardrailMiddleware — tool-call authorization via awrap_tool_call.
 
-Matches DeerFlow's GuardrailMiddleware design: wraps each tool call and
+Matches the standard GuardrailMiddleware design: wraps each tool call and
 evaluates it against a GuardrailProvider before execution. Denied calls
 return an error ToolMessage so the agent can adapt.
 """

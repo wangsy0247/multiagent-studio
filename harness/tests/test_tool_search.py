@@ -1,4 +1,4 @@
-"""Tests for tool_search deferred MCP tool loading (DeerFlow-aligned)."""
+"""Tests for tool_search deferred MCP tool loading (harness-aligned)."""
 
 from __future__ import annotations
 

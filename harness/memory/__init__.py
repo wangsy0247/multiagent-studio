@@ -1,4 +1,4 @@
-"""Harness memory package — DeerFlow-aligned.
+"""Harness memory package — harness-aligned.
 
 Memory is a global singleton system:
 - ``FileMemoryStorage`` — single JSON file per user (file backend)

@@ -1,6 +1,6 @@
 """ViewImageMiddleware — inject image data into messages before the model call.
 
-Matches DeerFlow's design: runs at ``abefore_model``, scans the message
+Matches the harness design: runs at ``abefore_model``, scans the message
 history for completed ``view_image`` tool results, and injects the image
 content as a HumanMessage with multimodal content blocks so the vision model
 can see the image.
@@ -45,14 +45,15 @@ class ViewImageMiddleware(HarnessAgentMiddleware):
 
     def __init__(self, config: dict | None = None):
         super().__init__(config)
-        self._max_image_bytes = 5 * 1024 * 1024  # 5 MiB
+        # 与 view_image 工具上限 (harness/tools/builtins/view_image_tool.py) 保持一致
+        self._max_image_bytes = 20 * 1024 * 1024  # 20 MiB
 
     # ------------------------------------------------------------------
     # image resolution
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _resolve_image(path: str, max_bytes: int = 5 * 1024 * 1024) -> str | None:
+    def _resolve_image(path: str, max_bytes: int = 20 * 1024 * 1024) -> str | None:
         """Convert a local file path to a base64 data-URL, or return None."""
         if path.startswith(("http://", "https://", "data:")):
             return path

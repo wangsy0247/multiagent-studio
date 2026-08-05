@@ -10,7 +10,12 @@ from langgraph.prebuilt import InjectedState
 
 from harness.agents.presets import build_subagent_config
 from harness.tools.builtins.cron_tool import cron_tool
+from harness.tools.builtins.present_files_tool import present_files_tool
 from harness.tools.builtins.session_search_tool import create_session_search_tool
+from harness.tools.builtins.view_image_tool import (
+    list_uploaded_files_tool,
+    view_image_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +130,7 @@ def _extract_parent_state(
         if thread_id:
             result["thread_id"] = thread_id
 
-    # ── from graph state: user_id + path mappings (DeerFlow-aligned) ──
+    # ── from graph state: user_id + path mappings (harness-aligned) ──
     if state is not None:
         # user_id is NOT in config.configurable — extract from state
         user_id = state.get("user_id")
@@ -206,12 +211,19 @@ def build_lead_tools(
     Tools included:
     - Agent: Create specialized SubAgents and delegate tasks (merged create_subagent + task)
     - ask_clarification: Ask user for clarification
+    - cron: Create/manage scheduled tasks
+    - present_files: Present output files to the user (artifacts state)
     - session_search: Search the user's historical session messages (FTS5)
+    - view_image: View an image (pairs with ViewImageMiddleware for injection)
+    - list_uploaded_files: List files the user uploaded in this thread
     """
     tools: list[BaseTool] = [
         Agent_tool(manager, parent_skills=parent_skills),
         ask_clarification_tool(),
         cron_tool(),
+        present_files_tool(),
+        view_image_tool(),
+        list_uploaded_files_tool(),
     ]
 
     # session_search：搜索用户历史会话消息（FTS5 全文检索，App 侧内部 API）。

@@ -1,6 +1,6 @@
 """LLMErrorHandlingMiddleware — wrap model calls with retry.
 
-Matches DeerFlow spec: wrap_model_call stage, onion-model nested.
+Matches the canonical spec: wrap_model_call stage, onion-model nested.
 Retries failed LLM calls with exponential backoff, then falls back to
 an error message injected into the conversation.
 

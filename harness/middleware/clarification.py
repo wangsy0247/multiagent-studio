@@ -1,6 +1,6 @@
 """ClarificationMiddleware — human-in-the-loop confirmation and approval.
 
-Matches DeerFlow's design: intercept ``ask_clarification`` tool calls
+Matches the harness design: intercept ``ask_clarification`` tool calls
 before they execute and return a ``Command`` that jumps to ``END`` with the
 formatted question stored as a ``ToolMessage``. This cleanly stops the ReAct
 loop and lets the frontend present the clarification request.
@@ -76,7 +76,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
     the clarification card, and the worker resumes execution when the user
     answers.
 
-    This follows DeerFlow's message-based state management: no custom
+    This follows the harness's message-based state management: no custom
     ``pending_clarification`` state key is used. The pending clarification is
     inferred directly from the message history.
     """

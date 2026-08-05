@@ -70,7 +70,6 @@ export default function ClarificationDialog({ threadId }: ClarificationDialogPro
           setStopClarificationFn(null);
         }
       },
-      maxReconnectAttempts: 0, // /respond 是 POST — 自动重连会用相同答案重复恢复 agent
     });
     sseRef.current = sse;
 

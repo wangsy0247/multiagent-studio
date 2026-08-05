@@ -1,6 +1,6 @@
 """SubagentTokenCollector — lightweight callback for per-subagent token tracking.
 
-DeerFlow-aligned: uses ``BaseCallbackHandler.on_llm_end()`` with run_id
+harness-aligned: uses ``BaseCallbackHandler.on_llm_end()`` with run_id
 deduplication, avoiding the heavyweight TokenUsageMiddleware for subagents.
 """
 from __future__ import annotations

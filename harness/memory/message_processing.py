@@ -1,6 +1,6 @@
 """Shared helpers for turning conversations into memory update inputs.
 
-Adapted from DeerFlow — identical logic, adapted import paths.
+Adapted from the reference implementation — identical logic, adapted import paths.
 """
 
 from __future__ import annotations

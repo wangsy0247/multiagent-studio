@@ -4,7 +4,7 @@ Uses an LLM to evaluate whether skill content is safe.  Default-deny: any
 failure to reach a decision (model error, unparseable output, timeout)
 results in ``BLOCK``.
 
-Adapted from DeerFlow's security scanner design.
+Adapted from the reference security scanner design.
 """
 
 from __future__ import annotations
