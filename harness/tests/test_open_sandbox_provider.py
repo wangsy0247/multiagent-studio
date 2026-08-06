@@ -264,3 +264,63 @@ class TestFallbackChain:
 
         with pytest.raises(Exception):
             get_sandbox_provider()
+
+
+
+def _mock_client_sbx():
+    m = MagicMock()
+    m.kill = AsyncMock()
+    m.close = AsyncMock()
+    return m
+
+class TestSandboxReuse:
+    """P0 修复回归: 容器按线程缓存复用 + 可全量清理."""
+
+    @pytest.mark.asyncio
+    async def test_acquire_reuses_cached_sandbox(self, tmp_paths, monkeypatch):
+        provider = OpenSandboxProvider()
+        create_mock = AsyncMock(return_value=MagicMock())
+        monkeypatch.setattr(
+            "harness.services.open_sandbox_provider.OpenSandboxClient.create",
+            create_mock,
+        )
+
+        s1 = await provider.acquire("thread-1", "/workspace", user_id="u1")
+        s2 = await provider.acquire("thread-1", "/workspace", user_id="u1")
+        s3 = await provider.acquire("thread-2", "/workspace", user_id="u1")
+
+        assert s1 is s2            # 同线程复用, 不新建容器
+        assert s3 is not s1        # 不同线程各自独立
+        assert create_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cleanup_kills_all_cached(self, tmp_paths, monkeypatch):
+        provider = OpenSandboxProvider()
+        monkeypatch.setattr(
+            "harness.services.open_sandbox_provider.OpenSandboxClient.create",
+            AsyncMock(side_effect=[_mock_client_sbx(), _mock_client_sbx()]),
+        )
+        s1 = await provider.acquire("thread-1", "/w", user_id="u1")
+        s2 = await provider.acquire("thread-2", "/w", user_id="u1")
+
+        await provider.cleanup()
+
+        s1._sbx.kill.assert_awaited_once()
+        s2._sbx.kill.assert_awaited_once()
+        assert provider._sandboxes == {}
+
+    @pytest.mark.asyncio
+    async def test_release_thread_only_kills_own(self, tmp_paths, monkeypatch):
+        provider = OpenSandboxProvider()
+        monkeypatch.setattr(
+            "harness.services.open_sandbox_provider.OpenSandboxClient.create",
+            AsyncMock(side_effect=[_mock_client_sbx(), _mock_client_sbx()]),
+        )
+        s1 = await provider.acquire("thread-1", "/w", user_id="u1")
+        s2 = await provider.acquire("thread-2", "/w", user_id="u1")
+
+        await provider.release_thread("thread-1")
+
+        s1._sbx.kill.assert_awaited_once()
+        s2._sbx.kill.assert_not_awaited()
+        assert len(provider._sandboxes) == 1

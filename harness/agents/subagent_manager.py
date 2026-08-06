@@ -10,6 +10,7 @@ harness-aligned refactor:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from typing import Any, Callable
 
@@ -26,6 +27,28 @@ from harness.models import HarnessState, SubAgentConfig, SubAgentResult, Subagen
 from harness.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# ── 属主隔离 ──
+# SubAgent 注册表是进程级共享的; 缓存的 executor 固化着创建时的 LLM 凭证
+# (api_key/base_url), 若按名字全局共享, 用户 B 调同名 subagent 会用用户 A
+# 的凭证执行 — 跨用户凭证泄漏。所有缓存键因此带属主维度, 由请求入口
+# (main.py execute) 通过 contextvar 设置当前用户。
+_current_owner: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "harness_subagent_owner", default="default"
+)
+
+
+def set_current_owner(owner: str | None) -> None:
+    """设置当前请求上下文的属主 (通常是 user_id)."""
+    _current_owner.set(owner or "default")
+
+
+def _owner() -> str:
+    return _current_owner.get()
+
+
+def _owner_key(name: str) -> tuple[str, str]:
+    return (_owner(), name)
 
 
 def _resolve_tools(
@@ -76,16 +99,17 @@ class SubagentManager:
         # Cache core tools at init time (they don't change per request)
         self._core_tools: list[BaseTool] = tool_registry.get_core_tools()
 
-        # Registry: name → (config, tools, llm)
+        # Registry: (owner, name) → (config, tools, llm)
+        # owner 维度隔离多用户 — 缓存的 llm 固化创建者凭证, 不可跨用户共享
         self._agents: dict[
-            str, tuple[SubAgentConfig, list[BaseTool], BaseChatModel]
+            tuple[str, str], tuple[SubAgentConfig, list[BaseTool], BaseChatModel]
         ] = {}
 
         # ── Last-result cache (for SSE handler retrieval) ──
-        # Keyed by subagent name; consumed by main.py's on_tool_end
+        # Keyed by (owner, subagent name); consumed by main.py's on_tool_end
         # to build the subagent_end SSE event without exposing internal
         # details (ai_messages) to the Lead Agent's tool result.
-        self._last_results: dict[str, SubAgentResult] = {}
+        self._last_results: dict[tuple[str, str], SubAgentResult] = {}
 
     # ------------------------------------------------------------------
     # CRUD
@@ -101,7 +125,7 @@ class SubagentManager:
         Returns the ``SubagentExecutor`` so callers can inspect the resolved
         configuration.  Raises ``ValueError`` if the name already exists.
         """
-        if config.name in self._agents:
+        if _owner_key(config.name) in self._agents:
             raise ValueError(f"SubAgent '{config.name}' 已存在")
 
         # Resolve model
@@ -114,7 +138,7 @@ class SubagentManager:
         # Resolve tools
         tools = _resolve_tools(config, self._tool_registry, self._core_tools)
 
-        self._agents[config.name] = (config, tools, llm)
+        self._agents[_owner_key(config.name)] = (config, tools, llm)
         logger.info(
             "SubAgent created: name=%s display=%s tools=%d model=%s timeout=%ds",
             config.name,
@@ -126,17 +150,19 @@ class SubagentManager:
         return SubagentExecutor(config=config, llm=llm, tools=tools)
 
     def get(self, name: str) -> SubAgentConfig | None:
-        """Look up a SubAgent config by name."""
-        entry = self._agents.get(name)
+        """Look up a SubAgent config by name (当前属主的命名空间)."""
+        entry = self._agents.get(_owner_key(name))
         return entry[0] if entry else None
 
     def list(self) -> list[SubAgentConfig]:
-        """Return configs for all registered SubAgents."""
-        return [entry[0] for entry in self._agents.values()]
+        """Return configs for registered SubAgents (当前属主的命名空间)."""
+        return [
+            entry[0] for key, entry in self._agents.items() if key[0] == _owner()
+        ]
 
     async def delete(self, name: str) -> None:
-        """Remove a SubAgent."""
-        self._agents.pop(name, None)
+        """Remove a SubAgent (当前属主的命名空间)."""
+        self._agents.pop(_owner_key(name), None)
 
     def pop_last_result(self, name: str) -> SubAgentResult | None:
         """Retrieve and consume the last execution result for *name*.
@@ -145,7 +171,7 @@ class SubagentManager:
         event with full metadata without exposing internal details
         (ai_messages) to the Lead Agent's tool result text.
         """
-        return self._last_results.pop(name, None)
+        return self._last_results.pop(_owner_key(name), None)
 
     # ------------------------------------------------------------------
     # execution — synchronous (waits for completion)
@@ -170,7 +196,7 @@ class SubagentManager:
         enabled, a git worktree is created before execution and merged / cleaned
         up afterwards.
         """
-        entry = self._agents.get(name)
+        entry = self._agents.get(_owner_key(name))
         if entry is None:
             return SubAgentResult(
                 status=SubagentStatus.ERROR,
@@ -229,7 +255,7 @@ class SubagentManager:
                     # execute() is blocking on the isolated loop — run in thread
                     result = await asyncio.to_thread(executor.execute, full_instruction)
                     # ── Cache the full result for the SSE handler ──
-                    self._last_results[name] = result
+                    self._last_results[_owner_key(name)] = result
                     return result
                 except asyncio.CancelledError:
                     logger.info(

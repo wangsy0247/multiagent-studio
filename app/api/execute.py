@@ -172,6 +172,14 @@ async def _pump_run(
             hub.end_run(rs)
 
 
+def _parse_thread_uuid(thread_id: str) -> uuid_mod.UUID:
+    """畸形 UUID 返回 400 而非 500."""
+    try:
+        return uuid_mod.UUID(thread_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid thread_id")
+
+
 @router.post("")
 async def execute(
     req: ExecuteRequest,
@@ -182,7 +190,7 @@ async def execute(
     执行 Agent 任务 — 代理到 Harness 服务，流式返回 SSE 事件
     """
     harness = get_harness_client()
-    thread_uuid = uuid_mod.UUID(req.thread_id)
+    thread_uuid = _parse_thread_uuid(req.thread_id)
 
     # 更新线程状态
     thread_result = await db.execute(
@@ -250,7 +258,7 @@ async def resume_execution(
     resync 事件并结束, 由前端回退到状态轮询。
     """
     # 所有权校验
-    thread_uuid = uuid_mod.UUID(thread_id)
+    thread_uuid = _parse_thread_uuid(thread_id)
     thread_result = await db.execute(
         select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
     )
@@ -276,7 +284,7 @@ async def respond_to_clarification(
 ):
     """回复澄清请求 — 流式返回 Agent 恢复执行后的输出"""
     harness = get_harness_client()
-    thread_uuid = uuid_mod.UUID(thread_id)
+    thread_uuid = _parse_thread_uuid(thread_id)
 
     # 更新线程状态 (含所有权校验)
     thread_result = await db.execute(
@@ -347,20 +355,22 @@ async def stop_execution(
     db: AsyncSession = Depends(get_db),
 ):
     """停止执行"""
+    # 先校验归属, 再调 harness — 防止知道 thread_id 即可停止他人任务
+    thread_uuid = _parse_thread_uuid(thread_id)
+    thread_result = await db.execute(
+        select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
+    )
+    thread = thread_result.scalar_one_or_none()
+    if thread is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
     harness = get_harness_client()
-    thread_uuid = uuid_mod.UUID(thread_id)
     try:
         result = await harness.stop_execution(thread_id)
 
-        # 更新线程状态 (含所有权校验)
-        thread_result = await db.execute(
-            select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
-        )
-        thread = thread_result.scalar_one_or_none()
-        if thread:
-            thread.status = "idle"
-            db.add(thread)
-            await db.commit()
+        thread.status = "idle"
+        db.add(thread)
+        await db.commit()
 
         return result
     except HarnessUnavailableError:
@@ -375,7 +385,7 @@ async def get_execution_status(
 ):
     """查询执行状态"""
     # 所有权校验
-    thread_uuid = uuid_mod.UUID(thread_id)
+    thread_uuid = _parse_thread_uuid(thread_id)
     thread_result = await db.execute(
         select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
     )

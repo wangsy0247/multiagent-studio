@@ -58,35 +58,47 @@ _scheduler_pool = ThreadPoolExecutor(
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Per-subagent asyncio.Queue consumed by the SSE handler on the main loop.
-# Keyed by subagent name (e.g. "researcher", "coder").
+# Keyed by "{thread_id}:{subagent_name}" — 全局按名字共享会让并发 run 的
+# SSE 事件跨用户/跨会话串台 (含工具参数与结果), 且一方结束会误删另一方的队列。
 # Writes happen via run_coroutine_threadsafe() from the isolated daemon thread.
 _subagent_streams: dict[str, "asyncio.Queue[dict[str, Any]]"] = {}
 _subagent_streams_lock = threading.Lock()
 
 
-def get_subagent_stream(name: str) -> "asyncio.Queue[dict[str, Any]]":
-    """Get or create the real-time message queue for a subagent.
+def _stream_key(thread_id: str, name: str) -> str:
+    return f"{thread_id or 'default'}:{name}"
+
+
+def get_subagent_stream(key: str) -> "asyncio.Queue[dict[str, Any]]":
+    """Get or create the real-time message queue for a stream key.
 
     Called from the main event loop to obtain a consumer handle,
     and from the isolated daemon thread (via run_coroutine_threadsafe)
     to push messages.
     """
     with _subagent_streams_lock:
-        if name not in _subagent_streams:
-            _subagent_streams[name] = asyncio.Queue()
-        return _subagent_streams[name]
+        if key not in _subagent_streams:
+            _subagent_streams[key] = asyncio.Queue()
+        return _subagent_streams[key]
 
 
-def remove_subagent_stream(name: str) -> None:
-    """Remove a subagent's message queue (called after execution completes)."""
+def remove_subagent_stream(key: str) -> None:
+    """Remove a stream queue (called after execution completes)."""
     with _subagent_streams_lock:
-        _subagent_streams.pop(name, None)
+        _subagent_streams.pop(key, None)
 
 
-def list_active_subagent_names() -> list[str]:
-    """Return names of subagents with active message streams."""
+def list_active_subagent_names(thread_id: str | None = None) -> list[str]:
+    """Return stream keys with active queues, 可按 thread_id 过滤.
+
+    消费方 (main.py 的 drainer) 只应消费自己 thread 的队列。
+    """
     with _subagent_streams_lock:
-        return list(_subagent_streams.keys())
+        keys = list(_subagent_streams.keys())
+    if thread_id is None:
+        return keys
+    prefix = f"{thread_id or 'default'}:"
+    return [k for k in keys if k.startswith(prefix)]
 
 
 def _msg_to_dict(msg: Any) -> dict[str, Any]:
@@ -502,7 +514,9 @@ class SubagentExecutor:
         if self._main_loop is None or self._main_loop.is_closed():
             return
         try:
-            stream = get_subagent_stream(self.config.name)
+            stream = get_subagent_stream(
+                _stream_key(self.thread_id, self.config.name)
+            )
             asyncio.run_coroutine_threadsafe(
                 stream.put({
                     "subagent_name": self.config.name,

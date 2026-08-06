@@ -346,7 +346,7 @@ class HarnessService(_BaseService):
         try:
             from harness.skills.evolution.curator import maybe_run_curator
 
-            _model = eff.model
+            _model = bootstrap_eff.model
             _skill_storage = self.skill_storage
             _llm_factory = self._init_llm
 
@@ -375,6 +375,16 @@ class HarnessService(_BaseService):
             pass
         if self.sandbox:
             await self.sandbox.cleanup()
+        # 释放所有缓存的沙箱容器 (OpenSandboxProvider 按线程复用的实例)
+        try:
+            from harness.services.sandbox_provider import get_sandbox_provider
+
+            provider = get_sandbox_provider()
+            cleanup = getattr(provider, "cleanup", None)
+            if cleanup is not None:
+                await cleanup()
+        except Exception:
+            logger.warning("Error cleaning up sandbox provider", exc_info=True)
         # Close checkpointer connections (sqlite / postgres)
         if self._checkpointer is not None:
             closer = getattr(self._checkpointer, "aclose", None)
@@ -1123,6 +1133,9 @@ class HarnessService(_BaseService):
             "base_url": ctx.effective_config.base_url,
             "model": ctx.effective_config.model,
         })
+        # SubAgent 注册表属主隔离 (防跨用户复用缓存的 LLM 凭证)
+        from harness.agents.subagent_manager import set_current_owner
+        set_current_owner(user_id)
 
         # ── 斜杠指令: /compact, /clear (不走 agent 执行, team 路由之前拦截) ──
         cmd = parse_slash_command(message)
@@ -1285,15 +1298,16 @@ class HarnessService(_BaseService):
                 remove_subagent_stream,
             )
             while True:
-                names = list_active_subagent_names()
-                if not names:
+                # 只消费本 thread 的队列 — 全局消费会让并发 run 的 SSE 事件跨用户串台
+                keys = list_active_subagent_names(thread_id)
+                if not keys:
                     await asyncio.sleep(0.1)
                     continue
 
-                # 轮询所有活跃队列 — 谁有数据先处理谁
-                for name in names:
+                # 轮询本 thread 的活跃队列 — 谁有数据先处理谁
+                for key in keys:
                     try:
-                        stream = get_subagent_stream(name)
+                        stream = get_subagent_stream(key)
                         item = await asyncio.wait_for(stream.get(), timeout=0.05)
                     except asyncio.TimeoutError:
                         continue
@@ -1306,7 +1320,7 @@ class HarnessService(_BaseService):
 
                     # ── sentinel: subagent finished, clean up stream ──
                     if msg.get("__sentinel__"):
-                        remove_subagent_stream(item["subagent_name"])
+                        remove_subagent_stream(key)
                         continue
                     iteration = item.get("iteration", 0)
 

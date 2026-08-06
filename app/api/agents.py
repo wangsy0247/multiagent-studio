@@ -1,30 +1,40 @@
 """Agent 管理 API — per-user persistent agents (SOUL.md + config.yaml)."""
 
 import logging
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+import re
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import resolve_fs_user_id
+from app.api.deps import get_current_user
 from app.db.engine import get_db
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Agent管理"])
 
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+def _validate_name(name: str) -> str:
+    """agent 名会拼接进文件路径, 只放行安全字符."""
+    if not name or not _SAFE_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail=f"Invalid agent name: {name!r}")
+    return name
+
 
 @router.get("")
 async def list_agents(
-    user_id: str = "default",
-    authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from harness.config.agents_config import list_custom_agents
-    uid = await resolve_fs_user_id(user_id, authorization, db)
+    uid = current_user.username
     agents = list_custom_agents(user_id=uid)
     return {"agents": [a.model_dump() for a in agents], "count": len(agents)}
 
 
 @router.post("")
-async def create_agent(request: Request, db: AsyncSession = Depends(get_db)):
+async def create_agent(request: Request, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     from harness.config.agents_config import (
         AgentConfig, AgentMemoryFields, AgentFeaturesFields,
         AgentLimitsFields, AgentTeamFields, AgentSubagentsFields,
@@ -84,8 +94,7 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db)):
             max_concurrent=sub_data.get("max_concurrent", 3),
         ),
     )
-    auth_header = request.headers.get("Authorization")
-    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
+    user_id = current_user.username
     logger.info(f"[create_agent] 最终 user_id={user_id}, name={name}, model={model}")
     save_agent_config(name, cfg, user_id=user_id)
     if soul:
@@ -104,27 +113,27 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db)):
 @router.get("/{name}")
 async def get_agent(
     name: str,
-    user_id: str = "default",
-    authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from harness.config.agents_config import load_agent_config, load_agent_soul
-    uid = await resolve_fs_user_id(user_id, authorization, db)
+    _validate_name(name)
+    uid = current_user.username
     cfg = load_agent_config(name, user_id=uid)
     if cfg is None: raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return {"agent": cfg.model_dump(), "soul": load_agent_soul(name, user_id=uid)}
 
 
 @router.put("/{name}")
-async def update_agent(name: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def update_agent(name: str, request: Request, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     from harness.config.agents_config import (
         AgentConfig, AgentMemoryFields, AgentFeaturesFields,
         AgentLimitsFields, AgentTeamFields, AgentSubagentsFields,
         load_agent_config, save_agent_config, save_agent_soul,
     )
     body = await request.json()
-    auth_header = request.headers.get("Authorization")
-    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
+    _validate_name(name)
+    user_id = current_user.username
     existing = load_agent_config(name, user_id=user_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
@@ -180,14 +189,14 @@ async def update_agent(name: str, request: Request, db: AsyncSession = Depends(g
 @router.delete("/{name}")
 async def delete_agent(
     name: str,
-    user_id: str = "default",
-    authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from harness.config.agents_config import delete_agent, is_default_agent
+    _validate_name(name)
     if is_default_agent(name):
         raise HTTPException(status_code=403, detail="Cannot delete the 'default' agent — it is required by the system")
-    uid = await resolve_fs_user_id(user_id, authorization, db)
+    uid = current_user.username
     if not delete_agent(name, user_id=uid):
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return {"status": "deleted", "name": name}
@@ -196,13 +205,12 @@ async def delete_agent(
 # ── 用户全局配置 ──
 @router.get("/config/global")
 async def get_user_global_config(
-    user_id: str = "default",
-    authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取用户全局 config.yaml (L1) 内容."""
     from harness.config.config_loader import ConfigLoader
-    uid = await resolve_fs_user_id(user_id, authorization, db)
+    uid = current_user.username
     data = ConfigLoader.load_user_global(uid)
     if data is None:
         return {"exists": False, "message": "用户全局配置不存在 — 请确认已完成注册"}
@@ -210,13 +218,12 @@ async def get_user_global_config(
 
 
 @router.put("/config/global")
-async def update_user_global_config(request: Request, db: AsyncSession = Depends(get_db)):
+async def update_user_global_config(request: Request, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     """更新用户全局 config.yaml (L1)."""
     from harness.config.config_loader import ConfigLoader, GLOBAL_CONFIG_FILENAME, format_user_global_config_yaml
     from harness.config.paths import get_paths
     body = await request.json()
-    auth_header = request.headers.get("Authorization")
-    user_id = await resolve_fs_user_id(body.get("user_id"), auth_header, db)
+    user_id = current_user.username
     config_dir = get_paths().base_dir / "users" / user_id
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / GLOBAL_CONFIG_FILENAME
@@ -230,23 +237,23 @@ async def update_user_global_config(request: Request, db: AsyncSession = Depends
 @router.get("/{name}/memory")
 async def get_agent_memory(
     name: str,
-    user_id: str = "default",
-    authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from harness.memory.updater import get_memory_data
-    uid = await resolve_fs_user_id(user_id, authorization, db)
+    _validate_name(name)
+    uid = current_user.username
     return {"name": name, "memory": get_memory_data(agent_name=name, user_id=uid)}
 
 
 @router.delete("/{name}/memory")
 async def clear_agent_memory(
     name: str,
-    user_id: str = "default",
-    authorization: str | None = Header(None, include_in_schema=False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from harness.memory.updater import clear_memory_data
-    uid = await resolve_fs_user_id(user_id, authorization, db)
+    _validate_name(name)
+    uid = current_user.username
     clear_memory_data(agent_name=name, user_id=uid)
     return {"status": "cleared", "name": name}

@@ -6,6 +6,7 @@ the configured backend.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shlex
@@ -196,7 +197,11 @@ class OpenSandbox(Sandbox):
 
 
 class OpenSandboxProvider(SandboxProvider):
-    """Provider that manages OpenSandbox instances per thread."""
+    """Provider that manages OpenSandbox instances per thread.
+
+    容器按 (thread_id, user_id) 缓存复用 — 之前每次工具调用都新建容器且
+    从不释放, 一次多轮对话会泄漏几十上百个容器 (只能靠服务端 TTL 兜底)。
+    """
 
     def __init__(
         self,
@@ -218,6 +223,15 @@ class OpenSandboxProvider(SandboxProvider):
             protocol=protocol,
         )
         self.resource = {"cpu": resource_cpu, "memory": resource_memory}
+        # (thread_id, user_id) → 复用的沙箱实例
+        self._sandboxes: dict[tuple[str, str | None], OpenSandbox] = {}
+        self._lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        # 延迟创建, 避免在无数事件循环的线程里实例化 asyncio.Lock
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def _build_volumes(
         self, thread_id: str, *, user_id: str | None = None
@@ -301,16 +315,26 @@ class OpenSandboxProvider(SandboxProvider):
     async def acquire(
         self, thread_id: str, workspace: str, *, user_id: str | None = None
     ) -> Sandbox:
-        volumes = self._build_volumes(thread_id, user_id=user_id)
-        sbx = await OpenSandboxClient.create(
-            self.image,
-            connection_config=self.connection_config,
-            timeout=timedelta(minutes=self.timeout_minutes),
-            entrypoint=["/bin/sh", "-c", "sleep infinity"],
-            resource=self.resource,
-            volumes=volumes,
-        )
-        return OpenSandbox(thread_id, sbx, user_id=user_id)
+        # 同一线程复用已创建的容器 (volumes 只依赖 thread_id/user_id,
+        # workspace 参数不影响挂载), 不再每次工具调用新建容器
+        key = (thread_id, user_id)
+        async with self._get_lock():
+            cached = self._sandboxes.get(key)
+            if cached is not None:
+                return cached
+
+            volumes = self._build_volumes(thread_id, user_id=user_id)
+            sbx = await OpenSandboxClient.create(
+                self.image,
+                connection_config=self.connection_config,
+                timeout=timedelta(minutes=self.timeout_minutes),
+                entrypoint=["/bin/sh", "-c", "sleep infinity"],
+                resource=self.resource,
+                volumes=volumes,
+            )
+            sandbox = OpenSandbox(thread_id, sbx, user_id=user_id)
+            self._sandboxes[key] = sandbox
+            return sandbox
 
     async def release(self, sandbox: Sandbox) -> None:
         if isinstance(sandbox, OpenSandbox):
@@ -319,3 +343,22 @@ class OpenSandboxProvider(SandboxProvider):
                 await sandbox._sbx.close()
             except Exception as exc:
                 logger.warning("Error releasing OpenSandbox %s: %s", sandbox.thread_id, exc)
+            # 从缓存摘除 (若在)
+            for key, sb in list(self._sandboxes.items()):
+                if sb is sandbox:
+                    self._sandboxes.pop(key, None)
+
+    async def release_thread(self, thread_id: str) -> None:
+        """释放某线程的全部缓存容器 (线程结束时调用)."""
+        victims = [k for k in self._sandboxes if k[0] == thread_id]
+        for key in victims:
+            sb = self._sandboxes.pop(key, None)
+            if sb is not None:
+                await self.release(sb)
+
+    async def cleanup(self) -> None:
+        """释放全部缓存容器 (服务关闭时调用)."""
+        for key in list(self._sandboxes):
+            sb = self._sandboxes.pop(key, None)
+            if sb is not None:
+                await self.release(sb)
