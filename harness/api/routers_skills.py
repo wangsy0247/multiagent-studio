@@ -46,15 +46,15 @@ def _get_skill_storage() -> Any:
 
 
 def _get_extensions_config_path() -> Path:
-    """Resolve the extensions_config.json path."""
-    import os
+    """Resolve the extensions_config.json path.
 
-    if env := os.getenv("EXTENSIONS_CONFIG_PATH"):
-        return Path(env)
-    return (
-        Path(os.path.dirname(os.path.abspath(__file__)))
-        .parent / "extensions_config.json"
-    )
+    与所有读取方 (MCP 工具加载 / skills storage) 使用同一路径解析器 —
+    之前此处独立解析到 harness/ 目录下的副本, 导致 skill 开关写到
+    运行时不读的文件里 (split-brain)。
+    """
+    from harness.config.extensions_config import _default_config_path
+
+    return _default_config_path()
 
 
 def _read_extensions_config() -> dict[str, Any]:

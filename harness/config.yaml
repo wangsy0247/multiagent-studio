@@ -1,22 +1,9 @@
 config_version: 1
 
-# --- Models (same pattern as the harness core) ---
-# models:
-#   - name: gpt-4o
-#     display_name: GPT-4o
-#     use: langchain_openai:ChatOpenAI
-#     model: gpt-4o
-#     api_key: $OPENAI_API_KEY
-#     temperature: 0.7
-#     max_tokens: 4096
-#     supports_vision: true
-
 # --- Tool Groups ---
 tool_groups:
   - name: search
     description: 搜索工具组
-  # - name: code
-  #   description: 代码执行工具组
   - name: files
     description: 文件操作工具组
   - name: files_readonly
@@ -48,14 +35,6 @@ tools:
   - name: arxiv_search
     group: search
     use: harness.tools.search:arxiv_search
-
-  # - name: web_fetch
-  #   group: search
-  #   use: harness.tools.search:web_fetch
-
-  # - name: web_fetch
-  #   group: search
-  #   use: harness.tools.serpapi_fetch:web_fetch
 
   - name: web_fetch
     group: search
@@ -125,10 +104,6 @@ sandbox:
   bash_output_max_chars: 20000
   read_file_output_max_chars: 50000
   ls_output_max_chars: 20000
-  # mounts:
-  #   - host_path: /home/user/data
-  #     container_path: /mnt/data
-  #     read_only: true
 
 # --- Memory ---
 memory:
@@ -140,20 +115,15 @@ memory:
   fact_confidence_threshold: 0.9
   injection_enabled: true
   max_injection_tokens: 1000
-  # ── 项目记忆 (仅 Team 模式) ──
-  # project_memory_enabled: true
-  # project_memory_root: ""      # 空 = 使用项目的 git root
 
 # --- Summarization ---
 summarization:
   enabled: True
   trigger:
-    # - type: tokens
-    #   value: 20000
     - type: fraction
       value: 0.7
     - type: messages
-      valude: 100
+      value: 100
   keep:
     type: tokens
     value: 10000
@@ -192,14 +162,14 @@ worktree:
 
 # --- Checkpointer (conversation state persistence) ---
 # backend: memory | sqlite | postgres
-# sqlite_dir 为空时自动使用 data_root+/data/（即 ~/.multiagent-studio/data/deerflow.db）
+# sqlite_dir 为空时自动使用 data_root+/data/（即 ~/.multiagent-studio/data/app.db）
 checkpointer:
   backend: sqlite
   sqlite_dir: ""           # 空 = 使用 Paths.data_dir
   postgres_url: ""
 
 # --- Database (application-level persistence: runs/threads/events) ---
-# 与 checkpointer 共享同一个 deerflow.db 文件
+# 与 checkpointer 共享同一个 app.db 文件
 database:
   backend: sqlite
   sqlite_dir: ""           # 空 = 使用 Paths.data_dir
@@ -216,14 +186,4 @@ langfuse_public_key: ${LANGFUSE_PUBLIC_KEY}
 langfuse_secret_key: ${LANGFUSE_SECRET_KEY}
 langfuse_host: ${LANGFUSE_HOST}
 
-# --- Guardrails ---
-# guardrails:
-#   enabled: true
-#   provider:
-#     use: harness.config.builtin:AllowlistProvider
-#     config:
-#       denied_tools: ["bash"]
-
-
-# --- MCP Extension Config (separate file) ---
-# See extensions_config.json for MCP server definitions
+# MCP server 定义见项目根目录 extensions_config.json

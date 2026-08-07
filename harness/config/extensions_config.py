@@ -39,8 +39,8 @@ def _default_config_path() -> Path:
         return cwd_candidate
 
     # Fallback: resolve relative to the harness package directory.
-    # This handles the case where start.sh runs from the project root
-    # but extensions_config.json lives in the harness/ directory.
+    # 规范位置是项目根目录 (start.sh 从项目根启动, CWD 即根目录);
+    # 此 fallback 兼容从 harness/ 目录内启动的场景。
     harness_dir = Path(__file__).resolve().parent.parent
     harness_candidate = harness_dir / _EXTENSIONS_CONFIG_FILENAME
     if harness_candidate.exists():

@@ -1,3 +1,5 @@
+# 可选基础设施: PostgreSQL (替代默认 SQLite) + Redis
+# 默认配置下无需启动 — 只有 .env 配置了 DATABASE_URL 指向 PostgreSQL 时才需要
 version: "3.3"
 
 services:
@@ -35,7 +37,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  clickhouse_data:
 
 networks:
   workbench:
