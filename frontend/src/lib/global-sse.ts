@@ -38,8 +38,9 @@ class GlobalSSEManager {
   /** 启动新 SSE 连接 (如果该 thread 已有连接则跳过) */
   connect(threadId: string, url: string, body: object): void {
     if (this.connections.has(threadId)) return;
-    // 新运行序号从 1 重置, 旧 lastEventId 已失效
+    // 新运行序号从 1 重置, 旧 lastEventId 已失效; 顺带清掉陈旧 manualStops
     this.clearLastEventId(threadId);
+    this.manualStops.delete(threadId);
 
     const sse = new SSEClient({
       onEvent: (event: SSEEvent, eventId?: number) => {
@@ -56,6 +57,11 @@ class GlobalSSEManager {
         // 否则残留连接会让后续 connect() 静默跳过, 消息被吞掉
         if (status === "disconnected" || status === "error") {
           this.connections.delete(threadId);
+        }
+        // 异常终止 (非 2xx / 运行中网络断开) → 通知订阅方自愈,
+        // 否则 isStreaming 永久卡死 ("AI 正在思考..." 且无恢复路径)
+        if (status === "error" && !this.manualStops.delete(threadId)) {
+          this.dispatch(threadId, { type: "connection_lost", thread_id: threadId });
         }
       },
     });

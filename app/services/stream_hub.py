@@ -73,10 +73,17 @@ class StreamHub:
         self._runs: dict[str, RunStream] = {}
 
     def start_run(self, thread_id: str) -> RunStream:
-        """开始一次新运行 — 序号重置, 替换旧状态 (若有)"""
+        """开始一次新运行 — 序号重置, 替换旧状态 (若有)
+
+        旧泵任务必须取消: 否则它会继续消费 harness 流并向同一 thread
+        重复落库消息 (双击发送/刷新后重复 execute 的场景)。
+        """
         old = self._runs.get(thread_id)
         if old is not None:
             old.running = False
+            old_pump = getattr(old, "pump_task", None)
+            if old_pump is not None and not old_pump.done():
+                old_pump.cancel()
             if old.cleanup_task is not None:
                 old.cleanup_task.cancel()
             self._close_subscribers(old)

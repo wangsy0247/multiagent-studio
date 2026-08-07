@@ -909,6 +909,30 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
     # WORKING 阶段 — 完整 ReAct agent loop
     # ------------------------------------------------------------------
 
+    async def _emit_task_update_safe(self, task_id: str) -> None:
+        """程序性任务状态变更后补发 team_task_update SSE, 失败不阻断.
+
+        正常路径由 task_update 工具/编排器发事件; 异常 FAILED / 协议违规 /
+        重试回池等程序性路径也要发, 否则前端任务板永久卡在"执行中"。
+        """
+        if self._event_queue is None or not task_id:
+            return
+        try:
+            task = await self._task_store.get_task(task_id)
+            if task is None:
+                return
+            await self._event_queue.put({
+                "type": "team_task_update",
+                "thread_id": self._thread_id,
+                "project_id": self._project_id,
+                "task": task.model_dump(),
+            })
+        except Exception:
+            logger.debug(
+                "Teammate '%s' failed to emit task_update for '%s'",
+                self.name, task_id, exc_info=True,
+            )
+
     async def _work_loop(self) -> None:
         """WORKING 阶段 — create_agent() + 预构建中间件 + astream_events.
 
@@ -1120,17 +1144,39 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             logger.error("Teammate '%s' work_loop failed: %s", self.name, exc)
             self.last_error = str(exc)
             if self.current_task_id:
-                await self._task_store.update_task(
-                    self.current_task_id,
-                    status=TeamTaskStatus.FAILED,
-                    error=str(exc),
-                )
-                # ── Tracing: 任务失败事件 ──
-                if self._tracer is not None:
-                    self._tracer.trace_task_event(
-                        self.current_task_id, "failed",
-                        metadata={"agent_name": self.name, "error": str(exc)},
+                # ── 有界重试 (对齐崩溃回收路径 orchestrator.py:1966-1986) ──
+                # 瞬时错误 (LLM 限流/网络抖动/递归触顶) 不再直接 FAILED 级联团灭:
+                # retry_count 未达上限 → 回池 PENDING 重派; 达上限才 FAILED 终态
+                board_task = await self._task_store.get_task(self.current_task_id)
+                if (
+                    board_task is not None
+                    and board_task.retry_count + 1 < board_task.max_retries
+                ):
+                    await self._task_store.update_task(
+                        self.current_task_id,
+                        status=TeamTaskStatus.PENDING,
+                        assigned_agent=None,
+                        retry_count=board_task.retry_count + 1,
+                        error=f"第 {board_task.retry_count + 1} 次执行异常: {exc}",
                     )
+                    logger.warning(
+                        "Teammate '%s' task '%s' requeued for retry (%d/%d)",
+                        self.name, self.current_task_id,
+                        board_task.retry_count + 1, board_task.max_retries,
+                    )
+                else:
+                    await self._task_store.update_task(
+                        self.current_task_id,
+                        status=TeamTaskStatus.FAILED,
+                        error=str(exc),
+                    )
+                    # ── Tracing: 任务失败事件 ──
+                    if self._tracer is not None:
+                        self._tracer.trace_task_event(
+                            self.current_task_id, "failed",
+                            metadata={"agent_name": self.name, "error": str(exc)},
+                        )
+                await self._emit_task_update_safe(self.current_task_id)
 
         # ── 任务结算 → 回到 IDLE (或被 shutdown 打断 → SHUTTING_DOWN) ──
         completed_task_id = self.current_task_id
@@ -1167,20 +1213,36 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                     # 成员已提交审查, 等待 Lead task_review — 工作周期正常结束
                     self.completed_tasks += 1
                 elif board_task.status == TeamTaskStatus.IN_PROGRESS:
-                    # 协议违规: 跑完了但没调 task_update 上报 → 任务会永远卡 IN_PROGRESS.
-                    # 记失败并置 FAILED, 让下游级联取消能拿到真实原因.
-                    work_failed = True
-                    self.failed_tasks += 1
-                    self.last_error = "成员未上报执行结果 (协议违规)"
-                    await self._task_store.update_task(
-                        completed_task_id,
-                        status=TeamTaskStatus.FAILED,
-                        error=self.last_error,
+                    # ── 等待 Lead 审批 (request_plan_approval) → 正常暂停, 非违规 ──
+                    # 协议要求成员"提交审批后立即停止", 本轮结束任务仍是 IN_PROGRESS
+                    # 是预期行为; Lead 的审批回复经 inbox 唤醒后继续执行
+                    has_pending_approval = any(
+                        req.get("type") == "plan_approval"
+                        and req.get("status") == RequestStatus.PENDING
+                        for req in self._pending_requests.values()
                     )
-                    logger.warning(
-                        "Teammate '%s' finished task '%s' without task_update — marked FAILED",
-                        self.name, completed_task_id,
-                    )
+                    if has_pending_approval:
+                        logger.info(
+                            "Teammate '%s' task '%s' paused for plan approval — "
+                            "keeping IN_PROGRESS (not a protocol violation)",
+                            self.name, completed_task_id,
+                        )
+                    else:
+                        # 协议违规: 跑完了但没调 task_update 上报 → 任务会永远卡 IN_PROGRESS.
+                        # 记失败并置 FAILED, 让下游级联取消能拿到真实原因.
+                        work_failed = True
+                        self.failed_tasks += 1
+                        self.last_error = "成员未上报执行结果 (协议违规)"
+                        await self._task_store.update_task(
+                            completed_task_id,
+                            status=TeamTaskStatus.FAILED,
+                            error=self.last_error,
+                        )
+                        await self._emit_task_update_safe(completed_task_id)
+                        logger.warning(
+                            "Teammate '%s' finished task '%s' without task_update — marked FAILED",
+                            self.name, completed_task_id,
+                        )
                 else:
                     # member 自行 task_update(failed) 等 → 计失败
                     work_failed = True

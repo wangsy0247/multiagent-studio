@@ -114,6 +114,19 @@ class SchedulerService:
                 await db.commit()
                 logger.warning("[scheduler] 恢复 %d 个中断的执行记录", result.rowcount)
 
+            # Thread 状态同样需要恢复: 进程退出时泵任务死亡, threads 表
+            # 永久卡 running — 前端永远显示运行中, 绑定它的 fixed 定时任务
+            # 每次 tick 都被当作"忙"跳过, 永久停摆
+            from app.models.thread import Thread
+            t_result = await db.execute(
+                sa_update(Thread)
+                .where(Thread.status == "running")
+                .values(status="idle")
+            )
+            if t_result.rowcount:
+                await db.commit()
+                logger.warning("[scheduler] 恢复 %d 个卡在 running 的会话 → idle", t_result.rowcount)
+
     # ── tick 循环 ────────────────────────────────────────────
 
     async def _loop(self) -> None:

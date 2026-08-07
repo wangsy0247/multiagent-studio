@@ -226,14 +226,38 @@ class LoopDetectionMiddleware(HarnessAgentMiddleware):
 
     @staticmethod
     def _get_thread_id(runtime: Runtime) -> str:
+        """thread_id 解析链: runtime.context → LangGraph config configurable → "default".
+
+        实测 create_agent 的 runtime.context 为 None (main.py 只传 configurable),
+        只读 context 会让所有 run 落到 ("default","default") — 并发 run 共享
+        计数器/警告串台/互相清状态。必须有 get_config() 回退。
+        """
         if runtime.context:
             return str(runtime.context.get("thread_id", "default"))
+        try:
+            from langgraph.config import get_config
+
+            tid = get_config().get("configurable", {}).get("thread_id")
+            if tid:
+                return str(tid)
+        except RuntimeError:
+            pass
         return "default"
 
     @staticmethod
     def _get_run_id(runtime: Runtime) -> str:
+        """run_id 解析链: runtime.context → LangGraph config configurable → thread_id."""
         if runtime.context:
             return str(runtime.context.get("run_id", "default"))
+        try:
+            from langgraph.config import get_config
+
+            configurable = get_config().get("configurable", {})
+            rid = configurable.get("run_id") or configurable.get("thread_id")
+            if rid:
+                return str(rid)
+        except RuntimeError:
+            pass
         return "default"
 
     def _pending_key(self, runtime: Runtime) -> tuple[str, str]:

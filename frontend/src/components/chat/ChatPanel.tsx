@@ -143,87 +143,98 @@ export default function ChatPanel({
     setAttachedFiles((prev) => prev.filter((f) => f.id !== fileId));
   }, []);
 
-  async function sendMessage(text: string, files: AttachedFile[]) {
-    if ((!text.trim() && files.length === 0) || isStreaming) return;
+  // 重复提交互斥: 新线程路径在 setStreaming(true) 之前有 await (创建线程),
+  // 此期间 isStreaming 仍是 false, 连按 Enter 会建两个线程执行两次
+  const sendingRef = useRef(false);
 
-    const resolvedMode = propMode || (projectId ? "team" : "single");
+  async function sendMessage(text: string, files: AttachedFile[], targetAgents: string[] = []) {
+    if ((!text.trim() && files.length === 0) || isStreaming || sendingRef.current) return;
+    sendingRef.current = true;
 
-    // 无 threadId (项目页快速单聊): 先创建线程再发送
-    let currentThreadId: string | undefined = threadId;
-    if (!currentThreadId) {
-      if (onThreadCreated && projectId) {
-        try {
-          const { data } = await threadsAPI.create({
-            title: resolvedMode === "single" ? `与 ${selectedAgent} 的对话` : "团队对话",
-            project_id: projectId,
-            agent_name: resolvedMode === "single" ? selectedAgent : undefined,
-            mode: resolvedMode,
-          });
-          currentThreadId = data.id;
-          setActiveThread(data.id); // 立即切换, 保住下面的乐观消息气泡
-          onThreadCreated(data.id);
-        } catch (err) {
-          console.error("创建会话线程失败", err);
-          setError("创建会话线程失败，请重试");
+    try {
+      const resolvedMode = propMode || (projectId ? "team" : "single");
+
+      // 无 threadId (项目页快速单聊): 先创建线程再发送
+      let currentThreadId: string | undefined = threadId;
+      if (!currentThreadId) {
+        if (onThreadCreated && projectId) {
+          try {
+            const { data } = await threadsAPI.create({
+              title: resolvedMode === "single" ? `与 ${selectedAgent} 的对话` : "团队对话",
+              project_id: projectId,
+              agent_name: resolvedMode === "single" ? selectedAgent : undefined,
+              mode: resolvedMode,
+            });
+            currentThreadId = data.id;
+            setActiveThread(data.id); // 立即切换, 保住下面的乐观消息气泡
+            onThreadCreated(data.id);
+          } catch (err) {
+            console.error("创建会话线程失败", err);
+            setError("创建会话线程失败，请重试");
+            return;
+          }
+        } else {
+          setError("尚未创建会话线程");
           return;
         }
-      } else {
-        setError("尚未创建会话线程");
-        return;
       }
+      if (!currentThreadId) return; // 类型收窄: 上面所有分支均已返回或赋值
+
+      // 该线程已有活跃 SSE 连接 → connect() 会静默跳过, 提前拦截避免消息被吞.
+      // 自愈合: 本地记录运行中但后端可能早已结束 (僵尸连接, 如旧 bundle 残留 /
+      // 流异常结束未清理) → 以后端状态为准, 后端说没在跑就清掉本地僵尸连接放行.
+      if (globalSSEManager.isRunning(currentThreadId)) {
+        let backendBusy = true;
+        try {
+          const { data } = await executeAPI.getStatus(currentThreadId);
+          backendBusy = data?.status === "running" || data?.status === "cancelling";
+        } catch {
+          backendBusy = true; // 状态查询失败时保持保守拦截
+        }
+        if (backendBusy) {
+          setError("该会话正在运行中，请等待完成或先停止");
+          return;
+        }
+        globalSSEManager.stop(currentThreadId); // 清理僵尸连接
+      }
+
+      // Build file metadata payload for Harness UploadsMiddleware
+      const readyFiles = files.filter((f) => f.status === "done");
+      const filesPayload = readyFiles.map((f) => ({
+        filename: f.filename,
+        size: f.size_bytes,
+        path: f.virtual_path,
+        mime_type: f.mime_type,
+      }));
+
+      // 附件不再拼接 "[Attached N file(s)]" 纯文本 — 由 MessageItem 依据
+      // metadata.files 渲染附件 chip; 历史消息由后端 extra_metadata.files 结构化还原
+      addMessage({
+        role: "human",
+        content: text.trim(),
+        msgType: "text",
+        metadata: { files: filesPayload },
+        tokenCount: 0,
+      });
+      setStreaming(true);
+      setError(null);
+      setAttachedFiles([]);
+
+      // 通过全局 SSE 管理器启动连接 (连接生命周期独立于组件)
+      globalSSEManager.connect(currentThreadId, "/api/execute", {
+        thread_id: currentThreadId,
+        user_id: getCurrentUserId(),
+        message: text,
+        files: filesPayload.length > 0 ? filesPayload : undefined,
+        project_id: projectId || undefined,
+        agent_name: selectedAgent,
+        mode: resolvedMode,
+        // @点名成员 → 后端注入"优先安排"指令给 Lead
+        mentions: targetAgents.length > 0 ? targetAgents : undefined,
+      });
+    } finally {
+      sendingRef.current = false;
     }
-    if (!currentThreadId) return; // 类型收窄: 上面所有分支均已返回或赋值
-
-    // 该线程已有活跃 SSE 连接 → connect() 会静默跳过, 提前拦截避免消息被吞.
-    // 自愈合: 本地记录运行中但后端可能早已结束 (僵尸连接, 如旧 bundle 残留 /
-    // 流异常结束未清理) → 以后端状态为准, 后端说没在跑就清掉本地僵尸连接放行.
-    if (globalSSEManager.isRunning(currentThreadId)) {
-      let backendBusy = true;
-      try {
-        const { data } = await executeAPI.getStatus(currentThreadId);
-        backendBusy = data?.status === "running" || data?.status === "cancelling";
-      } catch {
-        backendBusy = true; // 状态查询失败时保持保守拦截
-      }
-      if (backendBusy) {
-        setError("该会话正在运行中，请等待完成或先停止");
-        return;
-      }
-      globalSSEManager.stop(currentThreadId); // 清理僵尸连接
-    }
-
-    // Build file metadata payload for Harness UploadsMiddleware
-    const readyFiles = files.filter((f) => f.status === "done");
-    const filesPayload = readyFiles.map((f) => ({
-      filename: f.filename,
-      size: f.size_bytes,
-      path: f.virtual_path,
-      mime_type: f.mime_type,
-    }));
-
-    // 附件不再拼接 "[Attached N file(s)]" 纯文本 — 由 MessageItem 依据
-    // metadata.files 渲染附件 chip; 历史消息由后端 extra_metadata.files 结构化还原
-    addMessage({
-      role: "human",
-      content: text.trim(),
-      msgType: "text",
-      metadata: { files: filesPayload },
-      tokenCount: 0,
-    });
-    setStreaming(true);
-    setError(null);
-    setAttachedFiles([]);
-
-    // 通过全局 SSE 管理器启动连接 (连接生命周期独立于组件)
-    globalSSEManager.connect(currentThreadId, "/api/execute", {
-      thread_id: currentThreadId,
-      user_id: getCurrentUserId(),
-      message: text,
-      files: filesPayload.length > 0 ? filesPayload : undefined,
-      project_id: projectId || undefined,
-      agent_name: selectedAgent,
-      mode: resolvedMode,
-    });
   }
 
   function stopExecution() {
@@ -239,9 +250,34 @@ export default function ChatPanel({
   // ── 线程切换：订阅全局 SSE 事件 + 加载历史消息 ──
   useEffect(() => {
     if (!threadId) return;
+    // 竞态守卫: 快速切换会话时旧 effect 的 await 链仍在跑, 其回调会把
+    // setStreaming/setPendingClarification/轮询 错误地应用到新会话上
+    let cancelled = false;
 
     // 订阅全局 SSE 管理器 (不关闭连接 — 切走时 agent 继续后台执行)
     const { unsubscribe } = globalSSEManager.subscribe(threadId, (event) => {
+      // 连接异常终止 (非 2xx / 运行中断网): 后端还在跑 → 转轮询跟踪;
+      // 后端已停 → 解除卡死并刷新历史 (保住已落库的部分输出)
+      if (event.type === "connection_lost") {
+        (async () => {
+          let backendBusy = false;
+          try {
+            const { data } = await executeAPI.getStatus(threadId);
+            backendBusy = data?.status === "running" || data?.status === "cancelling";
+          } catch {
+            backendBusy = false;
+          }
+          if (backendBusy) {
+            setError("连接中断，已转为后台跟踪执行状态…");
+            startPolling(threadId);
+          } else {
+            setStreaming(false);
+            setError("连接中断或请求失败，请重试");
+            fetchHistory(threadId);
+          }
+        })();
+        return;
+      }
       handleSSEEvent(event);
       if (event.type === "finished" || event.type === "error") {
         setStreaming(false);
@@ -273,11 +309,13 @@ export default function ChatPanel({
         if (current && current.length > 0) return;
       }
       await fetchHistory(threadId);
+      if (cancelled) return; // 已切走 — 后续 resume/轮询不得应用到新会话
       // DB 状态 running 但无本地 SSE 连接 → 后台任务可能在跑 (如刷新页面):
       // 有 lastEventId 记录说明刷新前经历过本次运行 → 优先 resume 断点续流,
       // 失败 (not_running/gap/网络错误) 静默回退到状态轮询
       try {
         const { data: info } = await threadsAPI.get(threadId);
+        if (cancelled) return;
         if (info?.status === "running") {
           if (globalSSEManager.getLastEventId(threadId) !== null) {
             tryResume(threadId);
@@ -294,6 +332,7 @@ export default function ChatPanel({
     const fetchHistory = async (tid: string) => {
       try {
         const { data } = await threadsAPI.getMessages(tid);
+        if (cancelled) return; // 已切走 — 不得覆盖新会话的消息/澄清状态
         if (data?.messages && data.messages.length > 0) {
           const dbMsgs: ChatMessage[] = data.messages.map((m: any) => ({
             id: m.id,
@@ -344,6 +383,7 @@ export default function ChatPanel({
           const s = data?.status;
           if (s !== "running" && s !== "cancelling") {
             stopPolling();
+            setStreaming(false);
             fetchHistory(tid);
           }
         } catch {
@@ -357,9 +397,11 @@ export default function ChatPanel({
     // 全量补发本次运行的缓冲事件 — 历史已从 DB 加载 (含上一轮完整记录),
     // 补发事件走现有增量逻辑重建本轮的流式气泡; 失败则回退轮询
     const tryResume = (tid: string) => {
+      if (cancelled) return;
       useChatStore.setState({ _streamingMessageId: null, _streamingThinkingId: null });
       setStreaming(true);
       globalSSEManager.resume(tid, 0, () => {
+        if (cancelled) return;
         setStreaming(false);
         startPolling(tid);
       });
@@ -369,6 +411,7 @@ export default function ChatPanel({
 
     return () => {
       // 组件卸载时只取消订阅，不关闭连接 (agent 继续后台执行)
+      cancelled = true;
       unsubscribe();
       stopPolling();
     };

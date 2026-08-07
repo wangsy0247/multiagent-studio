@@ -103,6 +103,10 @@ class TaskMemoryStore:
     """
 
     def __init__(self, project_id: str, user_id: str = "default") -> None:
+        # project_id 可能来自 LLM 工具入参 — 白名单校验防路径穿越
+        from harness.memory.project_index import _validate_project_id
+
+        _validate_project_id(project_id)
         paths = get_paths()
         self._memory_dir: Path = (
             paths.base_dir / "users" / user_id / "projects" / project_id

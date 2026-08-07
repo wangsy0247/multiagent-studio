@@ -68,6 +68,9 @@ VERIFIER_ALLOWED_TOOL_GROUPS = {"files_readonly", "search"}
 # 工具 +25/个, 技能 +30/个, CJK bigram +3/个 (纯中文任务有效匹配约 15+)
 CLAIM_THRESHOLD = 15
 
+# 高危任务验收打回的最大返工次数 — 防 Verifier FAIL ↔ 打回无限循环
+MAX_TASK_REVISIONS = 3
+
 # ── Phase 3: Verifier 验收结论解析 ──
 _VERDICT_RE = re.compile(r"VERDICT\s*[:：]\s*(PASS|FAIL)\b", re.IGNORECASE)
 
@@ -164,6 +167,10 @@ class TeamOrchestrator:
         self._member_memory_store = MemberMemoryStore(user_id)
         self.team_context: TeamContext | None = None
         self.teammates: dict[str, TeammateAgent] = {}  # agent_name → TeammateAgent (仅已 spawn)
+        # TOCTOU 保护: Lead 的 spawn_teammate 工具 (Lead agent loop 内执行) 与
+        # dispatch 循环的 _ensure_teammate 懒加载会并发进 _create_teammate,
+        # 无锁时同名双实例 → 双 agent loop 抢同一 inbox + 旧 loop 永久泄漏
+        self._teammate_lock = asyncio.Lock()
         # ── 成员名册 (懒加载): initialize 时只存名字不 spawn, 首次派单/
         # 恢复任务时由 _ensure_teammate 按需拉起, 避免简单问候也拉起全部成员 ──
         self._member_names: list[str] = []
@@ -398,6 +405,11 @@ class TeamOrchestrator:
         旧 agent loop 泄漏且双消费同一 inbox); 同名但已 SHUTDOWN/FAILED →
         先确保旧实例 agent loop 已终结再替换.
         """
+        async with self._teammate_lock:
+            return await self._create_teammate_locked(name)
+
+    async def _create_teammate_locked(self, name: str) -> TeammateAgent | None:
+        """_create_teammate 的实现 (调用方必须持 _teammate_lock)."""
         existing = self.teammates.get(name)
         if existing is not None:
             if existing.status not in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
@@ -910,6 +922,17 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                         "Lead triage %s — using fallback plan",
                         "failed" if lead.last_error else "timed out",
                     )
+                    if lead_timed_out:
+                        # 必须先停掉仍在后台跑的 Lead — 否则它稍后自行拆出的
+                        # 子任务照样进入 dispatch, 同一用户目标被执行两遍
+                        # (写文件类任务产生双份副作用); respawn 供后续 synthesis 使用
+                        try:
+                            await lead.shutdown()
+                            await lead.respawn()
+                        except Exception:
+                            logger.warning(
+                                "Failed to restart timed-out Lead", exc_info=True,
+                            )
                     yield await self._emit_team_status(
                         "triage",
                         "Lead 分析失败 (LLM 可能不可用)，自动降级为简单任务拆分。"
@@ -1371,6 +1394,21 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                     if tm is None:
                         excluded.add(task.assigned_agent)
                 if tm is None or tm.status in (TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
+                    # 指定成员不可用
+                    if task.verifies_task_id:
+                        # 验收任务禁止改派普通成员 (可能改成"原执行者自验"):
+                        # 置 FAILED 走 fail-safe — 原任务由消化逻辑回退 Lead 审查
+                        logger.warning(
+                            "Verifier unavailable for verification task '%s' — "
+                            "marking FAILED (orig falls back to lead review)",
+                            task.id,
+                        )
+                        await self.task_store.update_task(
+                            task.id,
+                            status=TeamTaskStatus.FAILED,
+                            error="Verifier 不可用, 验收终止 — 原任务回退 Lead 审查",
+                        )
+                        continue
                     # 指定成员不可用 → 收回任务到公共池重新分配
                     logger.warning(
                         "Task '%s' assigned to unavailable teammate '%s' — returning to pool",
@@ -1622,7 +1660,12 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
             if await self._ensure_verifier() is None:
                 verifier = None
         if verifier is not None:
-            verified_ids = {v.verifies_task_id for v in tasks if v.verifies_task_id}
+            # 只统计"在途"的验收子任务 — 已终态的永久留在任务板上,
+            # 若计入会让验收 FAIL 返工后的高危任务永远失去独立 Verifier 验收
+            verified_ids = {
+                v.verifies_task_id for v in tasks
+                if v.verifies_task_id and not v.status.is_terminal
+            }
             for t in tasks:
                 if t.status != TeamTaskStatus.IN_REVIEW:
                     continue
@@ -1700,20 +1743,40 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                 progress = True
             elif verdict == "fail":
                 new_revision = orig.revision_count + 1
-                feedback = f"Verifier 验收不通过: {reason or '未说明理由'}"
-                updated = await self.task_store.update_task(
-                    orig.id,
-                    status=TeamTaskStatus.REVISION_NEEDED,
-                    review_feedback=feedback,
-                    revision_count=new_revision,
-                )
-                logger.info("Task '%s' REJECTED by verifier: %s", orig.id, reason[:120])
+                if new_revision > MAX_TASK_REVISIONS:
+                    # 返工次数耗尽 → 终止, 避免 Verifier FAIL ↔ 打回无限循环
+                    updated = await self.task_store.update_task(
+                        orig.id,
+                        status=TeamTaskStatus.FAILED,
+                        review_feedback=f"Verifier 验收不通过已达最大返工次数 ({MAX_TASK_REVISIONS})",
+                        revision_count=new_revision,
+                        error="验收不通过次数超过上限",
+                    )
+                    logger.warning(
+                        "Task '%s' FAILED: verifier rejected %d times (cap=%d)",
+                        orig.id, new_revision, MAX_TASK_REVISIONS,
+                    )
+                else:
+                    feedback = f"Verifier 验收不通过: {reason or '未说明理由'}"
+                    updated = await self.task_store.update_task(
+                        orig.id,
+                        status=TeamTaskStatus.REVISION_NEEDED,
+                        review_feedback=feedback,
+                        revision_count=new_revision,
+                    )
+                    logger.info("Task '%s' REJECTED by verifier: %s", orig.id, reason[:120])
                 if updated:
                     await self._event_queue.put(await self._emit_task_update(updated))
-                await self._notify_executor(
-                    orig,
-                    f"↩️ 验收不通过 (第 {new_revision} 次修改), 请根据验收意见修改后重新提交:\n{reason}",
-                )
+                if new_revision > MAX_TASK_REVISIONS:
+                    await self._notify_executor(
+                        orig,
+                        f"❌ 验收不通过已达最大返工次数 ({MAX_TASK_REVISIONS}), 任务终止:\n{reason}",
+                    )
+                else:
+                    await self._notify_executor(
+                        orig,
+                        f"↩️ 验收不通过 (第 {new_revision} 次修改), 请根据验收意见修改后重新提交:\n{reason}",
+                    )
                 progress = True
             else:
                 # VERDICT 解析失败 → fail-safe: 原任务留 IN_REVIEW 转 Lead 审查
@@ -1966,7 +2029,15 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                 if crashed_task_id:
                     crashed = await self.task_store.get_task(crashed_task_id)
                     if crashed is not None and crashed.status == TeamTaskStatus.IN_PROGRESS:
-                        if crashed.retry_count < crashed.max_retries:
+                        if crashed.verifies_task_id:
+                            # 崩溃的是持有验收任务的 Verifier → 禁止回池改派
+                            # (可能变成执行者自验); 置 FAILED 走 fail-safe 回退 Lead 审查
+                            await self.task_store.update_task(
+                                crashed_task_id,
+                                status=TeamTaskStatus.FAILED,
+                                error=f"Verifier '{tm.name}' 崩溃, 验收终止 — 原任务回退 Lead 审查",
+                            )
+                        elif crashed.retry_count < crashed.max_retries:
                             # 回收任务到公共池, 让其他成员接手 (有界重试).
                             # 附上前次失败原因 (Prior attempts), 下一个接手的成员不再盲试
                             note = (f"\n\n[前次执行失败 (第 {crashed.retry_count + 1} 次尝试): "
@@ -1988,88 +2059,103 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                     await self._emit_member_status(tm.name, "failed"))
 
     async def _watchdog(self) -> None:
-        """后台看门狗: 整体超时、死锁检测、崩溃成员回收."""
+        """后台看门狗: 整体超时、死锁检测、崩溃成员回收.
+
+        循环体必须整体兜底异常 — 任何一处抛错 (如任务板有旧格式/损坏记录
+        导致 load_tasks 模型校验失败) 都会让看门狗静默死亡, 之后整体超时、
+        死锁检测、崩溃回收全部失效, run 无限期挂起。
+        """
         while True:
             await asyncio.sleep(5)
             if self._cancelled:
                 return
+            try:
+                await self._watchdog_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error(
+                    "Watchdog tick failed — retrying next cycle", exc_info=True,
+                )
 
-            # 整体超时
-            if self._started_at:
-                elapsed = (datetime.now(timezone.utc)
-                           - datetime.fromisoformat(self._started_at)).total_seconds()
-                if elapsed > OVERALL_TIMEOUT:
-                    logger.warning("Watchdog: overall timeout (%.0fs)", elapsed)
+    async def _watchdog_tick(self) -> None:
+        """看门狗单轮检查 (异常由 _watchdog 兜底, 不得中断主循环)."""
+        # 整体超时
+        if self._started_at:
+            elapsed = (datetime.now(timezone.utc)
+                       - datetime.fromisoformat(self._started_at)).total_seconds()
+            if elapsed > OVERALL_TIMEOUT:
+                logger.warning("Watchdog: overall timeout (%.0fs)", elapsed)
+                await self._event_queue.put(
+                    await self._emit_team_error(f"Team 执行超过超时限制 ({OVERALL_TIMEOUT}s)"))
+                self._cancelled = True
+                return
+
+        # ── 崩溃成员回收: 状态 WORKING 但 agent loop 已终止 → 任务有界重试 ──
+        await self._reap_crashed_teammates()
+
+        # 死锁检测
+        if self._last_progress_at:
+            since = (datetime.now(timezone.utc)
+                     - datetime.fromisoformat(self._last_progress_at)).total_seconds()
+            if since > DEADLOCK_TIMEOUT:
+                ready = await self.task_store.get_ready_tasks()
+                # ── 统计排除 Lead: Lead 不参与派单 (_select_best_match_teammate 排除),
+                # 计入 idle 会在"所有 member 阵亡、仍有就绪任务"时漏判死锁 ──
+                busy = sum(1 for name, tm in self.teammates.items()
+                           if name != TEAM_LEAD_NAME
+                           and tm.status == TeammateStatus.WORKING)
+                idle = sum(1 for name, tm in self.teammates.items()
+                           if name != TEAM_LEAD_NAME
+                           and tm.status == TeammateStatus.IDLE)
+                # 无进展且无推进可能: 无人在干活, 且 (无就绪任务 或 有就绪任务但无人能接)
+                if busy == 0 and (not ready or idle == 0):
+                    # ── 存在 IN_REVIEW 任务且 Lead 存活 → 等 Lead 审查是健康状态,
+                    # 提醒 Lead task_review 并刷新进度时间戳, 不判死锁 ──
+                    in_review = await self.task_store.list_tasks(
+                        status=TeamTaskStatus.IN_REVIEW,
+                    )
+                    # ── Phase 3: 有在途验收子任务的高危任务 — 等 Verifier 是健康状态,
+                    # 不计入待 Lead 审查 (验收子任务自身走正常派单, 看门狗按 busy/ready 判) ──
+                    all_tasks_wd = await self.task_store.load_tasks()
+                    verifying_ids = {
+                        v.verifies_task_id for v in all_tasks_wd
+                        if v.verifies_task_id and not v.status.is_terminal
+                    }
+                    in_review = [t for t in in_review if t.id not in verifying_ids]
+                    lead = self._get_lead()
+                    if in_review and lead is not None and lead.status not in (
+                            TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
+                        logger.info(
+                            "Watchdog: %d task(s) awaiting lead review — nudging lead",
+                            len(in_review),
+                        )
+                        await self.message_bus.send(TeamMessage(
+                            from_agent="orchestrator", to_agent=lead.name,
+                            msg_type=TeamMessageType.LIFECYCLE,
+                            content=(
+                                f"有 {len(in_review)} 个任务处于 in_review 状态等待你审查, "
+                                f"请使用 task_review 处理 (approved / revision_needed)"
+                            ),
+                            task_id=in_review[0].id,
+                        ))
+                        self._last_progress_at = _now_iso()
+                        return
+                    logger.warning("Watchdog: deadlock detected (ready=%d, idle=%d)",
+                                   len(ready), idle)
                     await self._event_queue.put(
-                        await self._emit_team_error(f"Team 执行超过超时限制 ({OVERALL_TIMEOUT}s)"))
+                        await self._emit_team_error(f"死锁检测 ({DEADLOCK_TIMEOUT}s 无进展)"))
                     self._cancelled = True
                     return
 
-            # ── 崩溃成员回收: 状态 WORKING 但 agent loop 已终止 → 任务有界重试 ──
-            await self._reap_crashed_teammates()
-
-            # 死锁检测
-            if self._last_progress_at:
-                since = (datetime.now(timezone.utc)
-                         - datetime.fromisoformat(self._last_progress_at)).total_seconds()
-                if since > DEADLOCK_TIMEOUT:
-                    ready = await self.task_store.get_ready_tasks()
-                    # ── 统计排除 Lead: Lead 不参与派单 (_select_best_match_teammate 排除),
-                    # 计入 idle 会在"所有 member 阵亡、仍有就绪任务"时漏判死锁 ──
-                    busy = sum(1 for name, tm in self.teammates.items()
-                               if name != TEAM_LEAD_NAME
-                               and tm.status == TeammateStatus.WORKING)
-                    idle = sum(1 for name, tm in self.teammates.items()
-                               if name != TEAM_LEAD_NAME
-                               and tm.status == TeammateStatus.IDLE)
-                    # 无进展且无推进可能: 无人在干活, 且 (无就绪任务 或 有就绪任务但无人能接)
-                    if busy == 0 and (not ready or idle == 0):
-                        # ── 存在 IN_REVIEW 任务且 Lead 存活 → 等 Lead 审查是健康状态,
-                        # 提醒 Lead task_review 并刷新进度时间戳, 不判死锁 ──
-                        in_review = await self.task_store.list_tasks(
-                            status=TeamTaskStatus.IN_REVIEW,
-                        )
-                        # ── Phase 3: 有在途验收子任务的高危任务 — 等 Verifier 是健康状态,
-                        # 不计入待 Lead 审查 (验收子任务自身走正常派单, 看门狗按 busy/ready 判) ──
-                        all_tasks_wd = await self.task_store.load_tasks()
-                        verifying_ids = {
-                            v.verifies_task_id for v in all_tasks_wd
-                            if v.verifies_task_id and not v.status.is_terminal
-                        }
-                        in_review = [t for t in in_review if t.id not in verifying_ids]
-                        lead = self._get_lead()
-                        if in_review and lead is not None and lead.status not in (
-                                TeammateStatus.SHUTDOWN, TeammateStatus.FAILED):
-                            logger.info(
-                                "Watchdog: %d task(s) awaiting lead review — nudging lead",
-                                len(in_review),
-                            )
-                            await self.message_bus.send(TeamMessage(
-                                from_agent="orchestrator", to_agent=lead.name,
-                                msg_type=TeamMessageType.LIFECYCLE,
-                                content=(
-                                    f"有 {len(in_review)} 个任务处于 in_review 状态等待你审查, "
-                                    f"请使用 task_review 处理 (approved / revision_needed)"
-                                ),
-                                task_id=in_review[0].id,
-                            ))
-                            self._last_progress_at = _now_iso()
-                            continue
-                        logger.warning("Watchdog: deadlock detected (ready=%d, idle=%d)",
-                                       len(ready), idle)
-                        await self._event_queue.put(
-                            await self._emit_team_error(f"死锁检测 ({DEADLOCK_TIMEOUT}s 无进展)"))
-                        self._cancelled = True
-                        return
-
-            # 循环依赖检测
-            cycles = await self.task_store.check_circular_dependency()
-            if cycles:
-                cycle_strs = [" → ".join(c) for c in cycles]
-                await self._event_queue.put(
-                    await self._emit_team_error(f"检测到任务依赖环: {'; '.join(cycle_strs)}"))
-                self._cancelled = True
-                return
+        # 循环依赖检测
+        cycles = await self.task_store.check_circular_dependency()
+        if cycles:
+            cycle_strs = [" → ".join(c) for c in cycles]
+            await self._event_queue.put(
+                await self._emit_team_error(f"检测到任务依赖环: {'; '.join(cycle_strs)}"))
+            self._cancelled = True
+            return
 
     @staticmethod
     def _format_existing_tasks(tasks: list[TeamTask]) -> str:

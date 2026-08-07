@@ -13,6 +13,7 @@ import fnmatch
 import logging
 import os
 import re
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,7 +93,7 @@ class LocalSandbox(Sandbox):
         if skills_root.exists():
             from harness.config.paths import ensure_user_skills_symlink
             ensure_user_skills_symlink(
-                skills_root, self.user_id or "default", paths,
+                skills_root, self.user_id or "default", _paths=paths,
             )
             mappings.append(
                 PathMapping(
@@ -235,19 +236,34 @@ class LocalSandbox(Sandbox):
         else:
             work_dir = self.resolve_path(f"{VIRTUAL_PATH_PREFIX}/workspace")
 
+        proc = None
         try:
-            proc = await asyncio.wait_for(
-                asyncio.create_subprocess_shell(
-                    resolved_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=work_dir,
-                ),
-                timeout=timeout,
+            proc = await asyncio.create_subprocess_shell(
+                resolved_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=work_dir,
+                # 独立进程组: 超时时需要连子进程一起杀 (shell 的子进程持有
+                # stdout 管道, 只杀 shell 会等管道 EOF 才返回 — 等于没超时)
+                start_new_session=True,
             )
-            stdout, _ = await proc.communicate()
+            # wait_for 必须包住 communicate — 只包创建的话超时永不生效,
+            # 且超时时进程不会被 kill (sleep 600 / 死循环会永久挂起工具调用)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return stdout.decode("utf-8", errors="replace")
         except asyncio.TimeoutError:
+            if proc is not None and proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
             return f"[error] command timed out after {timeout}s"
         except Exception as exc:
             logger.warning("Local command execution failed: %s", exc)

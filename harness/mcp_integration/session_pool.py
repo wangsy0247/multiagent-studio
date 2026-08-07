@@ -33,78 +33,122 @@ class MCPSessionPool:
     def __init__(self) -> None:
         self._entries: OrderedDict[
             tuple[str, str],
-            tuple[ClientSession, asyncio.AbstractEventLoop],
+            tuple[ClientSession, asyncio.AbstractEventLoop, str | None],
         ] = OrderedDict()
         self._context_managers: dict[tuple[str, str], Any] = {}
         self._lock = threading.Lock()
+        # 并发创建竞态: Phase2 (建 session) 在锁外, 两个并发首调会各建一个、
+        # 被覆盖者的子进程/连接泄漏 → 创建路径用 per-loop asyncio 锁串行化
+        self._create_lock: asyncio.Lock | None = None
+        self._create_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_create_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._create_lock is None or self._create_lock_loop is not loop:
+                self._create_lock = asyncio.Lock()
+                self._create_lock_loop = loop
+        return self._create_lock
+
+    @staticmethod
+    def _merge_connection(
+        connection: dict[str, Any], headers: dict[str, str] | None
+    ) -> dict[str, Any]:
+        """把 OAuth 等动态 headers 合并进连接配置 (仅 sse/http 传输)."""
+        if not headers:
+            return connection
+        if connection.get("transport") not in ("sse", "http"):
+            return connection
+        merged = dict(connection)
+        merged["headers"] = {**connection.get("headers", {}), **headers}
+        return merged
 
     async def get_session(
         self,
         server_name: str,
         scope_key: str,
         connection: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
     ) -> ClientSession:
         """Get or create a persistent MCP session.
 
         If an existing session was created in a different event loop, it is
         closed and replaced with a fresh one in the current loop.
 
-        Args:
-            server_name: MCP server name.
-            scope_key: Isolation key (typically thread_id).
-            connection: Connection configuration for ``create_session``.
-
-        Returns:
-            An initialized ``ClientSession``.
+        ``headers`` (如 OAuth 刷新后的 Authorization) 与已建 session 的
+        创建时 headers 不一致时, 就地重建 session — 否则刷新出的新 token
+        永远不会生效, 初始 token 过期后所有调用持续 401 到进程重启。
         """
         key = (server_name, scope_key)
         current_loop = asyncio.get_running_loop()
+        auth = (headers or {}).get("Authorization")
 
-        # Phase 1: inspect/mutate the registry under the thread lock (no awaits).
-        cms_to_close: list[tuple[tuple[str, str], Any]] = []
+        # 快速路径: 无锁命中 (同 loop 且 headers 一致)
         with self._lock:
             if key in self._entries:
-                session, loop = self._entries[key]
-                if loop is current_loop:
+                session, loop, entry_auth = self._entries[key]
+                if loop is current_loop and entry_auth == auth:
                     self._entries.move_to_end(key)
                     return session
-                # Session belongs to a different event loop – evict it.
-                cm = self._context_managers.pop(key, None)
-                self._entries.pop(key)
-                if cm is not None:
-                    cms_to_close.append((key, cm))
 
-            # Evict LRU entries when at capacity.
-            while len(self._entries) >= self.MAX_SESSIONS:
-                oldest_key = next(iter(self._entries))
-                cm = self._context_managers.pop(oldest_key, None)
-                self._entries.pop(oldest_key)
-                if cm is not None:
-                    cms_to_close.append((oldest_key, cm))
+        # 慢速路径: per-loop 创建锁串行化 (防并发双建泄漏)
+        async with self._get_create_lock():
+            # Phase 1: inspect/mutate the registry under the thread lock (no awaits).
+            cms_to_close: list[tuple[tuple[str, str], Any]] = []
+            with self._lock:
+                if key in self._entries:
+                    session, loop, entry_auth = self._entries[key]
+                    if loop is current_loop and entry_auth == auth:
+                        self._entries.move_to_end(key)
+                        return session
+                    # loop 变了或 headers 变了 – 就地重建
+                    cm = self._context_managers.pop(key, None)
+                    self._entries.pop(key)
+                    if cm is not None:
+                        cms_to_close.append((key, cm))
 
-        # Phase 2: async cleanup outside the lock.
-        for close_key, cm in cms_to_close:
+                # Evict LRU entries when at capacity.
+                while len(self._entries) >= self.MAX_SESSIONS:
+                    oldest_key = next(iter(self._entries))
+                    cm = self._context_managers.pop(oldest_key, None)
+                    self._entries.pop(oldest_key)
+                    if cm is not None:
+                        cms_to_close.append((oldest_key, cm))
+
+            # Phase 2: async cleanup outside the lock.
+            for close_key, cm in cms_to_close:
+                try:
+                    await cm.__aexit__(None, None, None)
+                except Exception:
+                    logger.warning(
+                        "Error closing MCP session %s", close_key, exc_info=True
+                    )
+
+            from langchain_mcp_adapters.sessions import create_session
+
+            cm = create_session(self._merge_connection(connection, headers))
             try:
-                await cm.__aexit__(None, None, None)
+                session = await cm.__aenter__()
+                await session.initialize()
             except Exception:
-                logger.warning(
-                    "Error closing MCP session %s", close_key, exc_info=True
-                )
+                # initialize 失败必须 aexit, 否则 stdio 子进程泄漏
+                try:
+                    await cm.__aexit__(None, None, None)
+                except Exception:
+                    logger.warning(
+                        "Error closing failed MCP session %s", key, exc_info=True
+                    )
+                raise
 
-        from langchain_mcp_adapters.sessions import create_session
-
-        cm = create_session(connection)
-        session = await cm.__aenter__()
-        await session.initialize()
-
-        # Phase 3: register the new session under the lock.
-        with self._lock:
-            self._entries[key] = (session, current_loop)
-            self._context_managers[key] = cm
-        logger.info(
-            "Created persistent MCP session for %s/%s", server_name, scope_key
-        )
-        return session
+            # Phase 3: register the new session under the lock.
+            with self._lock:
+                self._entries[key] = (session, current_loop, auth)
+                self._context_managers[key] = cm
+            logger.info(
+                "Created persistent MCP session for %s/%s", server_name, scope_key
+            )
+            return session
 
     # ------------------------------------------------------------------
     # Cleanup helpers
@@ -161,7 +205,7 @@ class MCPSessionPool:
             self._entries.clear()
             self._context_managers.clear()
 
-        for key, (_, loop) in entries:
+        for key, (_, loop, _auth) in entries:
             cm = cms.get(key)
             if cm is None or loop.is_closed():
                 continue

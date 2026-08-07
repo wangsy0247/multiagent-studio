@@ -86,7 +86,7 @@ class ToolRegistry:
 
     def get_mcp_tools_sync(self) -> list[BaseTool]:
         """Get cached MCP tools (synchronous, for lazy-init paths)."""
-        from harness.mcp import get_cached_mcp_tools
+        from harness.mcp_integration.cache import get_cached_mcp_tools
 
         tools = get_cached_mcp_tools()
         for t in tools:

@@ -741,7 +741,14 @@ def _build_middlewares(
     is_plan_mode = cfg.get("is_plan_mode", False)
     subagent_enabled = cfg.get("subagent_enabled", False)
     max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
-    memory_enabled = True; summarization_enabled = False; guardrail_enabled = False
+    # per-user 开关优先 (来自该用户 EffectiveConfig, 由 main.py 放进 configurable);
+    # 缺省时回退全局 config.yaml — 之前硬编码默认值导致用户级开关被静默忽略
+    _has_per_user_mem = "memory_enabled" in cfg
+    _has_per_user_summ = "summarization_enabled" in cfg
+    _has_per_user_guard = "guardrail_enabled" in cfg
+    memory_enabled = cfg.get("memory_enabled", True)
+    summarization_enabled = cfg.get("summarization_enabled", False)
+    guardrail_enabled = cfg.get("guardrail_enabled", False)
     vision_enabled = cfg.get("vision_enabled", False)
     tool_search_enabled = cfg.get("tool_search_enabled", False)
     tool_max_retries = cfg.get("tool_max_retries", 3)
@@ -751,18 +758,22 @@ def _build_middlewares(
     api_key = cfg.get("openai_api_key", ""); base_url = cfg.get("openai_base_url", "")
     user_id = cfg.get("user_id", "default")
     if config_manager is not None:
-        try:
-            mem_cfg = config_manager.get("memory")
-            if isinstance(mem_cfg, dict): memory_enabled = mem_cfg.get("enabled", True)
-        except Exception: pass
-        try:
-            summ_cfg = config_manager.get("summarization")
-            if isinstance(summ_cfg, dict): summarization_enabled = summ_cfg.get("enabled", False)
-        except Exception: pass
-        try:
-            guard_cfg = config_manager.get("guardrails")
-            if isinstance(guard_cfg, dict): guardrail_enabled = guard_cfg.get("enabled", False)
-        except Exception: pass
+        # 全局 config.yaml 仅在用户未显式配置时作为回退
+        if not _has_per_user_mem:
+            try:
+                mem_cfg = config_manager.get("memory")
+                if isinstance(mem_cfg, dict): memory_enabled = mem_cfg.get("enabled", True)
+            except Exception: pass
+        if not _has_per_user_summ:
+            try:
+                summ_cfg = config_manager.get("summarization")
+                if isinstance(summ_cfg, dict): summarization_enabled = summ_cfg.get("enabled", False)
+            except Exception: pass
+        if not _has_per_user_guard:
+            try:
+                guard_cfg = config_manager.get("guardrails")
+                if isinstance(guard_cfg, dict): guardrail_enabled = guard_cfg.get("enabled", False)
+            except Exception: pass
         try:
             ts_cfg = config_manager.get("tool_search")
             if isinstance(ts_cfg, dict): tool_search_enabled = ts_cfg.get("enabled", False)
@@ -803,7 +814,8 @@ def _build_middlewares(
     if memory_enabled:
         middlewares.append(MemoryMiddleware(
             {"openai_api_key": api_key, "openai_base_url": base_url,
-             "memory_model": cfg.get("memory_model", "")},
+             "memory_model": cfg.get("memory_model", ""),
+             "memory_enabled": memory_enabled},
             agent_name=agent_name,
         ))
     if vision_enabled: middlewares.append(ViewImageMiddleware())

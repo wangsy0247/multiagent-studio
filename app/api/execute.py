@@ -53,6 +53,7 @@ class ExecuteRequest(BaseModel):
     project_id: Optional[str] = None
     agent_name: Optional[str] = None
     mode: str = "single"  # "single" | "team"
+    mentions: Optional[list[str]] = None  # @点名成员 — 注入指令请 Lead 优先安排
 
 
 class ClarificationResponse(BaseModel):
@@ -217,6 +218,12 @@ async def execute(
     db.add(human_msg)
     await db.commit()
 
+    # @点名注入: InputBar 解析出的 mentions 转为给 Lead 的分派指令
+    message = req.message
+    if req.mentions:
+        mention_str = ", ".join(f"@{m}" for m in req.mentions)
+        message = f"[用户点名, 请优先安排以下成员参与: {mention_str}]\n{message}"
+
     # 启动后台泵任务 (事件生产/落库独立于本 HTTP 连接),
     # 本响应只是该 thread 事件流的一个订阅者
     hub = get_stream_hub()
@@ -226,7 +233,7 @@ async def execute(
         lambda: harness.stream_execute(
             thread_id=req.thread_id,
             user_id=current_user.username,
-            message=req.message,
+            message=message,
             execution_graph=req.execution_graph,
             files=req.files,
             project_id=req.project_id,

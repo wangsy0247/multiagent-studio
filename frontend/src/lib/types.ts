@@ -82,7 +82,9 @@ export type SSEEventType =
   | "team_error" | "team_degrade"
   | "message_injected"
   // ── 断线续传 (Phase 3): resume 不可续传时的一次性通知, 前端回退轮询 ──
-  | "resync";
+  | "resync"
+  // ── 前端合成事件: 连接异常终止 (非 2xx / 断流且无终态), 由 global-sse 注入 ──
+  | "connection_lost";
 
 export interface SSEEvent {
   type: SSEEventType;

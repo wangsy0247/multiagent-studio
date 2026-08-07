@@ -264,7 +264,11 @@ class TestSettlement:
         asyncio.run(_test())
 
     def test_work_loop_exception_counts_as_failed(self, deps, monkeypatch):
-        """work_loop 抛异常 → failed_tasks+1, completed_tasks 不变."""
+        """work_loop 抛异常 → 有界重试回池 (PENDING, retry_count+1), failed_tasks+1.
+
+        F5b 行为变更: 瞬时异常不再直接 FAILED 终态 (避免级联团灭下游),
+        retry_count 未达 max_retries 时回池重派; 耗尽才 FAILED。
+        """
         from harness.team.models import TeamTaskStatus
 
         def _boom(*args, **kwargs):
@@ -285,7 +289,10 @@ class TestSettlement:
             assert await self._wait_idle(agent)
 
             reloaded = await store.get_task(task.id)
-            assert reloaded.status == TeamTaskStatus.FAILED
+            # 首次异常 → 回池重试 (retry_count 0→1), 不是 FAILED 终态
+            assert reloaded.status == TeamTaskStatus.PENDING
+            assert reloaded.retry_count == 1
+            assert reloaded.assigned_agent is None
             assert "LLM 服务不可用" in (reloaded.error or "")
             assert agent.failed_tasks == 1
             assert agent.completed_tasks == 0

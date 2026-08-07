@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 
 from langchain_core.tools import BaseTool
 
@@ -15,8 +16,24 @@ logger = logging.getLogger(__name__)
 
 _mcp_tools_cache: list[BaseTool] | None = None
 _cache_initialized = False
-_initialization_lock = asyncio.Lock()
 _config_mtime: float | None = None
+
+# 初始化锁按事件循环惰性重建 — 模块级 asyncio.Lock 在跨 loop 复用时
+# (get_cached_mcp_tools 的 ThreadPoolExecutor asyncio.run 路径) 会抛
+# "attached to a different loop"
+_init_lock_guard = threading.Lock()
+_initialization_lock: asyncio.Lock | None = None
+_init_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_initialization_lock() -> asyncio.Lock:
+    global _initialization_lock, _init_lock_loop
+    loop = asyncio.get_running_loop()
+    with _init_lock_guard:
+        if _initialization_lock is None or _init_lock_loop is not loop:
+            _initialization_lock = asyncio.Lock()
+            _init_lock_loop = loop
+    return _initialization_lock
 
 
 def _get_config_mtime() -> float | None:
@@ -65,7 +82,7 @@ async def initialize_mcp_tools(config_path: str = "") -> list[BaseTool]:
     """
     global _mcp_tools_cache, _cache_initialized, _config_mtime
 
-    async with _initialization_lock:
+    async with _get_initialization_lock():
         if _cache_initialized:
             logger.info("MCP tools already initialized")
             return _mcp_tools_cache or []

@@ -32,6 +32,9 @@ class GraphContext:
     middlewares: list  # list[HarnessAgentMiddleware]
     graph: Any         # CompiledStateGraph
     lead_agent: Any    # LeadAgent
+    # 配置文件签名 (L1/L2/extensions/SOUL 的 mtime 最大值) —
+    # 缓存命中时签名不一致则重建, 否则用户改了 key/模型/prompt 永远不生效
+    config_signature: float = 0.0
 
 
 # Per-task user credentials — 供 _init_llm 在子 agent 创建时读取
@@ -39,6 +42,35 @@ class GraphContext:
 _current_req_creds: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
     "_current_req_creds", default={},
 )
+
+
+def _config_signature(user_id: str, agent_name: str) -> float:
+    """GraphContext 缓存失效签名: 相关配置文件 mtime 的最大值 (不存在记 0).
+
+    覆盖 L1 用户全局 config、L2 agent config、extensions、SOUL.md —
+    ConfigLoader.load_effective 每次全量读盘, 签名变化即需重新编译 graph。
+    """
+    from harness.config.config_loader import (
+        AGENT_CONFIG_FILENAME,
+        AGENT_EXTENSIONS_FILENAME,
+        GLOBAL_CONFIG_FILENAME,
+    )
+    from harness.config.paths import get_paths
+
+    agent_dir = get_paths().base_dir / "users" / user_id / "agents" / agent_name
+    candidates = [
+        get_paths().base_dir / "users" / user_id / GLOBAL_CONFIG_FILENAME,
+        agent_dir / AGENT_CONFIG_FILENAME,
+        agent_dir / AGENT_EXTENSIONS_FILENAME,
+        agent_dir / "SOUL.md",
+    ]
+    mtime = 0.0
+    for p in candidates:
+        try:
+            mtime = max(mtime, p.stat().st_mtime)
+        except OSError:
+            pass
+    return mtime
 
 
 def parse_slash_command(message: str) -> str | None:
@@ -438,20 +470,31 @@ class HarnessService(_BaseService):
         """返回 (user_id, agent_name) 的缓存 GraphContext, 未命中则编译.
 
         双重检查锁模式 — 避免并发请求重复编译.
+        缓存命中但配置文件签名变化 (L1/L2/extensions/SOUL mtime) → 重建,
+        否则用户改 API key/模型/Agent 配置后永远不生效 (只能重启进程)。
         """
         if not self._initialized:
             raise RuntimeError("HarnessService not initialized — call initialize() first")
 
         key = (user_id, agent_name)
-        # 快速路径: 无锁读取
-        if key in self._graph_cache:
-            return self._graph_cache[key]
+        signature = _config_signature(user_id, agent_name)
+        # 快速路径: 无锁读取 (签名一致才有效)
+        ctx = self._graph_cache.get(key)
+        if ctx is not None and ctx.config_signature == signature:
+            return ctx
 
         async with self._graph_cache_lock:
             # 获取锁后再次检查 (可能已被并发请求编译)
-            if key in self._graph_cache:
-                return self._graph_cache[key]
+            ctx = self._graph_cache.get(key)
+            if ctx is not None and ctx.config_signature == signature:
+                return ctx
+            if ctx is not None:
+                logger.info(
+                    "Graph context stale (config changed): user=%s agent=%s — rebuilding",
+                    user_id, agent_name,
+                )
             ctx = await self._build_graph_context(user_id, agent_name)
+            ctx.config_signature = signature
             self._graph_cache[key] = ctx
             logger.info(
                 "Cached graph context: user=%s agent=%s model=%s middlewares=%d",
@@ -1008,7 +1051,26 @@ class HarnessService(_BaseService):
                 checkpointer=self._checkpointer,
             )
             await orchestrator.initialize()
+        except ValueError as exc:
+            # 项目未找到等初始化期配置错误 → 降级为单 Agent
+            # (捕获范围必须限于初始化: 运行期 ValueError 若也降级重跑,
+            #  team 已产生的任务板/文件副作用会被单 agent 重复执行一遍)
+            logger.warning("Team init failed, degrading to single-agent: %s", exc)
+            yield {
+                "type": "team_degrade",
+                "thread_id": thread_id,
+                "reason": str(exc),
+            }
+            async for event in self.execute(
+                thread_id=thread_id,
+                user_id=user_id,
+                message=message,
+                mode="single",
+            ):
+                yield event
+            return
 
+        try:
             # 保存 orchestrator 引用以支持取消
             self._active_runs[thread_id]["orchestrator"] = orchestrator
 
@@ -1034,22 +1096,6 @@ class HarnessService(_BaseService):
                 run_info = self._active_runs.get(thread_id)
                 if run_info is not None:
                     run_info["paused_at"] = time.time()
-
-        except ValueError as exc:
-            # 项目未找到等配置错误 → 降级为单 Agent
-            logger.warning("Team init failed, degrading to single-agent: %s", exc)
-            yield {
-                "type": "team_degrade",
-                "thread_id": thread_id,
-                "reason": str(exc),
-            }
-            async for event in self.execute(
-                thread_id=thread_id,
-                user_id=user_id,
-                message=message,
-                mode="single",
-            ):
-                yield event
 
         except asyncio.CancelledError:
             if orchestrator:
@@ -1124,6 +1170,18 @@ class HarnessService(_BaseService):
             await self.initialize(agent_name=agent_name, user_id=user_id)
 
         # ── 获取/创建该用户的 GraphContext ──
+        # MCP 配置热更: extensions_config.json mtime 变化 → 重拉工具并使
+        # graph 缓存失效 (重新编译以绑定新工具列表); 代价 = 一次 stat
+        try:
+            from harness.mcp_integration import cache as _mcp_cache
+
+            if _mcp_cache._is_cache_stale():
+                self.tool_registry.get_mcp_tools_sync()
+                self.invalidate_graph_cache()
+                logger.info("MCP config changed — tools reloaded, graph cache invalidated")
+        except Exception:
+            logger.debug("MCP hot-reload check failed", exc_info=True)
+
         ctx = await self._get_or_create_graph_context(user_id, agent_name)
         _review_model = ctx.effective_config.model  # captured for finally block
 
@@ -1166,6 +1224,34 @@ class HarnessService(_BaseService):
             thread_id, public_key=ctx.effective_config.langfuse_public_key,
         )
 
+        # ── 并发互斥: 检查与占位之间无 await ──
+        # 双击提交/客户端重试时两个 execute 会同时通过重连检查, 互相覆盖
+        # _active_runs 并对同一 checkpoint 并发写。starting 占位在首个 await
+        # 之前完成; 占位泄漏 (agent_task 注册前崩溃) 通过 120s 陈旧期自愈。
+        _prior = self._active_runs.get(thread_id)
+        if _prior is not None:
+            _prior_task = _prior.get("agent_task")
+            _prior_busy = _prior_task is not None and not _prior_task.done()
+            if not _prior_busy and _prior.get("starting"):
+                _started_at = _prior.get("starting_at", 0.0)
+                if time.monotonic() - _started_at < 120:
+                    yield {
+                        "type": "error",
+                        "content": "该会话正在运行中，请等待完成或先停止",
+                        "thread_id": thread_id,
+                    }
+                    return
+        if _prior is None or not (
+            _prior.get("agent_task") and not _prior["agent_task"].done()
+        ):
+            self._active_runs[thread_id] = {
+                "cancelled": False,
+                "user_id": user_id,
+                "agent_name": agent_name,
+                "starting": True,
+                "starting_at": time.monotonic(),
+            }
+
         # ── 从 checkpoint 恢复状态（替旧 _active_runs） ──
         try:
             state_snapshot = await ctx.graph.aget_state(build_config)
@@ -1180,12 +1266,18 @@ class HarnessService(_BaseService):
             # 校验用户归属：同一 thread_id 只能被创建它的 user_id 访问
             existing_user = state_snapshot.values.get("user_id")
             if existing_user and existing_user != user_id:
+                # 拒绝执行 — 不能用请求者的状态覆盖原主 checkpoint
+                # (旧行为是"当新会话"继续写, 会静默污染/锁死原主的会话)
                 logger.warning(
-                    "User mismatch for thread=%s — existing=%s request=%s, "
-                    "treating as new session",
+                    "User mismatch for thread=%s — existing=%s request=%s, rejected",
                     thread_id, existing_user, user_id,
                 )
-                current_state = initial_state(thread_id, user_id, message, files)
+                yield {
+                    "type": "error",
+                    "content": "会话归属校验失败，无法执行",
+                    "thread_id": thread_id,
+                }
+                return
             else:
                 # 已有会话，追加新消息（不修改 checkpoint 反序列化出来的对象）
                 current_state = dict(state_snapshot.values)
@@ -1222,8 +1314,10 @@ class HarnessService(_BaseService):
                 return  # agent_task 已完成, 重连读取完毕
 
         # ── 注册运行期取消标记（保存 user/agent 以便后续方法查找 ctx） ──
+        # starting 占位一并刷新 — 覆盖 1280→agent_task 注册之间的 await 窗口
         self._active_runs[thread_id] = {
             "cancelled": False, "user_id": user_id, "agent_name": agent_name,
+            "starting": True, "starting_at": time.monotonic(),
         }
         try:
             self._enforce_capacity()

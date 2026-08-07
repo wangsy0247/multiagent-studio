@@ -93,6 +93,8 @@ export default function InputBar({
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    // IME 组合状态 (中文/日文输入法选词) 中的 Enter 是确认候选词, 不是发送
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey && !showMentions) {
       e.preventDefault();
       handleSend();

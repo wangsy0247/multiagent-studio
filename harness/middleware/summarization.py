@@ -259,8 +259,12 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         return config
 
     @override
-    def _create_summary(self, messages_to_summarize: list) -> str:
-        """同父类逻辑, 但 config 继承运行 callbacks (Langfuse 可见) 且异常写日志."""
+    def _create_summary(self, messages_to_summarize: list) -> str | None:
+        """同父类逻辑, 但 config 继承运行 callbacks (Langfuse 可见) 且异常写日志.
+
+        摘要 LLM 失败时返回 None — 调用方放弃本轮压缩。
+        绝不能把错误文本当摘要: 它会替换全部会话历史并写入 checkpoint, 不可恢复。
+        """
         if not messages_to_summarize:
             return "No previous conversation history."
         trimmed = self._trim_messages_for_summary(messages_to_summarize)
@@ -273,13 +277,13 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
                 config=self._summary_call_config(),
             )
             return response.text.strip()
-        except Exception as e:
-            logger.exception("Summary generation failed")
-            return f"Error generating summary: {e!s}"
+        except Exception:
+            logger.exception("Summary generation failed — skipping this compression round")
+            return None
 
     @override
-    async def _acreate_summary(self, messages_to_summarize: list) -> str:
-        """Async variant — 同 _create_summary."""
+    async def _acreate_summary(self, messages_to_summarize: list) -> str | None:
+        """Async variant — 同 _create_summary (失败返回 None, 放弃本轮压缩)."""
         if not messages_to_summarize:
             return "No previous conversation history."
         trimmed = self._trim_messages_for_summary(messages_to_summarize)
@@ -292,9 +296,9 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
                 config=self._summary_call_config(),
             )
             return response.text.strip()
-        except Exception as e:
-            logger.exception("Summary generation failed")
-            return f"Error generating summary: {e!s}"
+        except Exception:
+            logger.exception("Summary generation failed — skipping this compression round")
+            return None
 
     def _maybe_summarize(self, state: AgentState, runtime: Runtime) -> dict | None:
         """Full summarization flow with skill rescue and pre-compression hooks.
@@ -329,6 +333,11 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         )
         _t0 = time.monotonic()
         summary = self._create_summary(messages_to_summarize)
+        if summary is None:
+            logger.warning(
+                "Summarization aborted — summary model failed, history left intact"
+            )
+            return None
         new_messages = self._build_new_messages(summary)
         logger.info(
             "Summarization done in %.1fs: %d msgs -> summary + %d preserved",
@@ -371,6 +380,11 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         )
         _t0 = time.monotonic()
         summary = await self._acreate_summary(messages_to_summarize)
+        if summary is None:
+            logger.warning(
+                "Summarization aborted — summary model failed, history left intact"
+            )
+            return None
         new_messages = self._build_new_messages(summary)
         logger.info(
             "Summarization done in %.1fs: %d msgs -> summary + %d preserved",
@@ -418,6 +432,12 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         )
         _t0 = time.monotonic()
         summary = await self._acreate_summary(messages_to_summarize)
+        if summary is None:
+            logger.warning(
+                "Manual summarization (/compact) aborted — summary model failed, "
+                "history left intact"
+            )
+            return None
         new_messages = self._build_new_messages(summary)
         logger.info(
             "Manual summarization (/compact) done in %.1fs: %d msgs -> summary + %d preserved",

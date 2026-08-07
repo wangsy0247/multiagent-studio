@@ -168,7 +168,14 @@ def _make_session_pool_tool(
             from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 
             async def base_handler(request: MCPToolCallRequest) -> Any:
-                return await session.call_tool(request.name, request.args)
+                # OAuth interceptor 刷新出的新 token 在 request.headers 里 —
+                # 与已建 session 的创建时 headers 不一致时就地重建 session,
+                # 否则初始 token 过期后所有调用持续 401 到进程重启
+                live_session = await pool.get_session(
+                    server_name, thread_id, connection,
+                    headers=dict(request.headers or {}),
+                )
+                return await live_session.call_tool(request.name, request.args)
 
             handler = base_handler
             for interceptor in reversed(tool_interceptors):

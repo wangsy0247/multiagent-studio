@@ -155,7 +155,11 @@ export default function ClarificationDialog({ threadId }: ClarificationDialogPro
             placeholder="输入你的回复..."
             disabled={submitting}
             className="flex-1 px-3 py-2 text-sm border rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+            onKeyDown={(e) => {
+              // IME 组合状态 (中文输入法选词) 中的 Enter 是确认候选词, 不是提交
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === "Enter" && !e.shiftKey) handleSubmit();
+            }}
             autoFocus
           />
           <button

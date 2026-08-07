@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -36,7 +37,19 @@ def _extract_user_id(state: dict | None) -> str:
     return (state or {}).get("user_id") or ""
 
 
+# project_id 是 LLM 可控的工具入参, 直接拼进文件路径 —
+# 必须白名单校验, 否则 "../../victim/projects/p2" 可跨用户读数据/建目录
+_SAFE_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_project_id(project_id: str) -> str:
+    if not project_id or not _SAFE_PROJECT_ID_RE.match(project_id):
+        raise ValueError(f"Invalid project_id: {project_id!r}")
+    return project_id
+
+
 def _project_dir(project_id: str, user_id: str) -> Path:
+    _validate_project_id(project_id)
     return get_paths().base_dir / "users" / user_id / "projects" / project_id
 
 

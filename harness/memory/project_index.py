@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,16 @@ def _projects_dir(user_id: str) -> Path:
     return get_paths().base_dir / "users" / user_id / "projects"
 
 
+# project_id 可能来自 LLM 工具入参 — 白名单校验防路径穿越
+_SAFE_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_project_id(project_id: str) -> str:
+    if not project_id or not _SAFE_PROJECT_ID_RE.match(project_id):
+        raise ValueError(f"Invalid project_id: {project_id!r}")
+    return project_id
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     """读取 JSON dict; 失败静默降级 (log warning, 返回 None)."""
     try:
@@ -43,6 +54,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def load_project(project_id: str, user_id: str) -> dict[str, Any] | None:
     """只读加载单个项目的 project.json (新格式优先; 旧格式仅读取不迁移)."""
+    _validate_project_id(project_id)
     base = _projects_dir(user_id)
     for path in (base / project_id / "project.json", base / f"{project_id}.json"):
         if path.is_file():
