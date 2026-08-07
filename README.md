@@ -35,7 +35,6 @@
 
 ### 前置条件
 
-- [Miniconda](https://docs.conda.io/en/latest/miniconda.html)（管理 Python 环境）
 - Node.js ≥ 18.18（推荐 LTS）
 - Docker（可选 — 仅沙箱代码执行需要）
 
