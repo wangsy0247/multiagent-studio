@@ -680,9 +680,9 @@ def create_summarization_middleware(
     Args:
         before_summarization: Hooks invoked before each summarization cycle.
         model_name: Model name override (from EffectiveConfig).
-        api_key: API key (from EffectiveConfig). Falls back to L1 config → env.
-        base_url: Base URL (from EffectiveConfig). Falls back to L1 config → env.
-        user_id: User ID for loading L1 config as fallback.
+        api_key: API key (from EffectiveConfig, server-injected). Falls back to env.
+        base_url: Base URL (from EffectiveConfig, server-injected). Falls back to env.
+        user_id: Deprecated — kept for call-site compatibility, no longer used.
     """
     import os as _os
 
@@ -690,24 +690,17 @@ def create_summarization_middleware(
     if not cfg.enabled:
         return None
 
-    # Resolve model name: explicit arg > config.yaml > SYSTEM_DEFAULTS
+    # Resolve model name: explicit arg > config.yaml > 服务器 env (SUMMARY_MODEL) > DEFAULT_MODEL
     effective_model = model_name or cfg.model_name
     if not effective_model:
-        from harness.config.defaults import SYSTEM_DEFAULTS
-        effective_model = SYSTEM_DEFAULTS.get("summary_model", "")
+        effective_model = _os.getenv("SUMMARY_MODEL", "")
     if not effective_model:
         effective_model = _os.getenv("DEFAULT_MODEL", "gpt-4o")
 
     # ── 动态解析 api_key / base_url ──
-    # 优先级: 显式传入 > 用户 L1 配置 > 环境变量
+    # 优先级: 显式传入 (EffectiveConfig, 服务器注入) > 环境变量
     effective_api_key = api_key
     effective_base_url = base_url
-    if (not effective_api_key or not effective_base_url) and user_id:
-        l1 = _load_user_config(user_id)
-        if not effective_api_key:
-            effective_api_key = l1.get("api_key", "")
-        if not effective_base_url:
-            effective_base_url = l1.get("base_url", "")
     effective_api_key = effective_api_key or _os.getenv("OPENAI_API_KEY", "")
     effective_base_url = effective_base_url or _os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
@@ -758,13 +751,3 @@ def create_summarization_middleware(
         preserve_recent_skill_tokens=cfg.preserve_recent_skill_tokens,
         preserve_recent_skill_tokens_per_skill=cfg.preserve_recent_skill_tokens_per_skill,
     )
-
-
-def _load_user_config(user_id: str) -> dict:
-    """加载用户 L1 全局配置 (用于运行时动态解析 api_key/base_url)."""
-    try:
-        from harness.config.config_loader import ConfigLoader
-        cfg = ConfigLoader.load_user_global(user_id)
-        return cfg or {}
-    except Exception:
-        return {}

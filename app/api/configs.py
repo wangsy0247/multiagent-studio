@@ -1,5 +1,8 @@
 """
 配置 API 路由: 用户配置、预设、工具组
+
+注意: UserConfig.default_model 已废弃 — 模型由服务器统一配置 (harness/.env),
+该表不在主链路上, 仅为兼容保留。
 """
 
 import logging

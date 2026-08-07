@@ -247,26 +247,9 @@ class TitleMiddleware(HarnessAgentMiddleware):
         return self._llm
 
     def _resolve_credentials(self, user_id: str) -> tuple[str, str]:
-        """Resolve api_key / base_url (config → L1 user config → env)."""
+        """Resolve api_key / base_url (EffectiveConfig 服务器注入 → env)."""
         api_key = self.config.get("api_key", "")
         base_url = self.config.get("base_url", "")
-        if not api_key or not base_url:
-            cfg_user_id = self.config.get("user_id", "") or user_id
-            l1 = _load_l1_config(cfg_user_id)
-            if not api_key:
-                api_key = l1.get("api_key", "")
-            if not base_url:
-                base_url = l1.get("base_url", "")
         api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         return api_key, base_url
-
-
-def _load_l1_config(user_id: str) -> dict:
-    """加载用户 L1 全局配置."""
-    try:
-        from harness.config.config_loader import ConfigLoader
-        cfg = ConfigLoader.load_user_global(user_id)
-        return cfg or {}
-    except Exception:
-        return {}

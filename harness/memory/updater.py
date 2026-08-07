@@ -55,7 +55,7 @@ def _create_memory_model(
     if not effective_api_key:
         logger.warning(
             "Memory LLM skipped: no API key configured "
-            "(set api_key in frontend settings or OPENAI_API_KEY env)"
+            "(set OPENAI_API_KEY in harness/.env on the server)"
         )
         return None
 

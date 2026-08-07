@@ -47,10 +47,7 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db), cur
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # model 必选
-    model = body.get("model", "")
-    if not model:
-        raise HTTPException(status_code=400, detail="'model' 字段为必选项 — 请指定 Agent 使用的模型 (如 'gpt-4o')")
+    # 模型由服务器统一配置 (harness/.env env 注入), body 中的 model 字段忽略不存
 
     soul = body.get("soul", "")
 
@@ -65,7 +62,6 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db), cur
         name=name,
         display_name=body.get("display_name", name),
         description=body.get("description", ""),
-        model=model,
         temperature=body.get("temperature", 0.3),
         max_tokens=body.get("max_tokens", 4096),
         tool_groups=body.get("tool_groups", []),
@@ -95,7 +91,7 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db), cur
         ),
     )
     user_id = current_user.username
-    logger.info(f"[create_agent] 最终 user_id={user_id}, name={name}, model={model}")
+    logger.info(f"[create_agent] 最终 user_id={user_id}, name={name}")
     save_agent_config(name, cfg, user_id=user_id)
     if soul:
         save_agent_soul(name, soul, user_id=user_id)
@@ -107,7 +103,7 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db), cur
         mcp_servers=mcp_servers_data if mcp_servers_data else {},
         user_id=user_id,
     )
-    return {"status": "created", "name": name, "model": model}
+    return {"status": "created", "name": name}
 
 
 @router.get("/{name}")
@@ -149,7 +145,7 @@ async def update_agent(name: str, request: Request, db: AsyncSession = Depends(g
         name=name,
         display_name=body.get("display_name", existing.display_name),
         description=body.get("description", existing.description),
-        model=body.get("model", existing.model),
+        # 模型由服务器统一配置, 不接受更新
         temperature=body.get("temperature", existing.temperature),
         max_tokens=body.get("max_tokens", existing.max_tokens),
         tool_groups=body.get("tool_groups", existing.tool_groups),
@@ -219,7 +215,12 @@ async def get_user_global_config(
 
 @router.put("/config/global")
 async def update_user_global_config(request: Request, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """更新用户全局 config.yaml (L1)."""
+    """更新用户全局 config.yaml (L1).
+
+    只接受白名单字段 (summarization / title / memory);模型 API 由服务器统一
+    配置, 拒绝写入。其余已有字段 (sandbox/checkpointer/langfuse 等基础设施)
+    原样保留 — 先读后合并, 不再整体重写丢字段。
+    """
     from harness.config.config_loader import ConfigLoader, GLOBAL_CONFIG_FILENAME, format_user_global_config_yaml
     from harness.config.paths import get_paths
     body = await request.json()
@@ -227,8 +228,30 @@ async def update_user_global_config(request: Request, db: AsyncSession = Depends
     config_dir = get_paths().base_dir / "users" / user_id
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / GLOBAL_CONFIG_FILENAME
-    config_data = body.get("config", {})
-    content = format_user_global_config_yaml(config_data)
+
+    existing = ConfigLoader.load_user_global(user_id) or {}
+    incoming = body.get("config", {}) or {}
+
+    # 白名单: 用户可编辑的字段
+    _USER_EDITABLE = ("summarization", "title", "memory")
+    merged = dict(existing)
+    for key in _USER_EDITABLE:
+        if key in incoming and isinstance(incoming[key], dict):
+            base = merged.get(key) if isinstance(merged.get(key), dict) else {}
+            merged[key] = {**base, **incoming[key]}
+    if "config_version" in existing:
+        merged["config_version"] = existing["config_version"]
+
+    # 基础设施字段原样保留 (非白名单、非模型字段的已有 key)
+    _KNOWN = set(_USER_EDITABLE) | {"config_version"}
+    _SERVER_MANAGED = {"api_key", "base_url", "default_model", "model",
+                       "summary_model", "title_model", "memory_model"}
+    extra = {
+        k: v for k, v in existing.items()
+        if k not in _KNOWN and k not in _SERVER_MANAGED
+    }
+
+    content = format_user_global_config_yaml(merged, extra=extra or None)
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(content)
     return {"status": "updated", "path": str(config_path)}

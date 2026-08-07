@@ -24,7 +24,7 @@ from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import InjectedState
 
-from harness.middleware.title import _load_l1_config, _strip_think_tags
+from harness.middleware.title import _strip_think_tags
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +84,9 @@ _llm_key: tuple[str, str, str] | None = None
 def _resolve_summary_config(user_id: str) -> tuple[str, str, str]:
     """解析 (api_key, base_url, model)。
 
-    凭证：请求级 contextvar（前端配置）→ L1 用户全局配置 → 环境变量。
-    模型：SESSION_SEARCH_MODEL 环境变量 → L1 summary_model/title_model
-    → L1 default_model → 请求级模型 → gpt-4o-mini。
+    凭证：请求级 contextvar（EffectiveConfig 服务器注入）→ 环境变量。
+    模型：SESSION_SEARCH_MODEL → SUMMARY_MODEL/TITLE_MODEL 环境变量
+    → 请求级模型 → gpt-4o-mini。
     """
     creds: dict = {}
     try:
@@ -94,17 +94,16 @@ def _resolve_summary_config(user_id: str) -> tuple[str, str, str]:
         creds = _current_req_creds.get() or {}
     except Exception:
         pass
-    l1 = _load_l1_config(user_id) or {}
 
-    api_key = creds.get("api_key") or l1.get("api_key") or os.getenv("OPENAI_API_KEY", "")
+    api_key = creds.get("api_key") or os.getenv("OPENAI_API_KEY", "")
     base_url = (
-        creds.get("base_url") or l1.get("base_url")
+        creds.get("base_url")
         or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     )
     model = (
         os.getenv("SESSION_SEARCH_MODEL", "")
-        or l1.get("summary_model") or l1.get("title_model")
-        or l1.get("default_model") or creds.get("model")
+        or os.getenv("SUMMARY_MODEL", "") or os.getenv("TITLE_MODEL", "")
+        or creds.get("model")
         or "gpt-4o-mini"
     )
     return api_key, base_url, model

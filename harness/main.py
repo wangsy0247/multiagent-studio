@@ -624,7 +624,7 @@ class HarnessService(_BaseService):
 
         if not api_key:
             logger.warning(
-                "_init_llm: API Key 为空 — 请在前端「设置」页面配置。"
+                "_init_llm: API Key 为空 — 请在服务器 harness/.env 配置 OPENAI_API_KEY。"
                 " LLM 将不可用, 系统仍可启动但无法执行任务。"
             )
             return ChatOpenAI(
@@ -729,26 +729,25 @@ class HarnessService(_BaseService):
     # ------------------------------------------------------------------
 
     def _bootstrap_check(self, user_id: str) -> None:
-        """启动预检 — 检查必需配置, 缺失时引导用户到前端设置页面."""
+        """启动预检 — 检查服务器模型配置, 缺失时提示管理员配置 harness/.env."""
         import os as _os
         issues: list[str] = []
 
-        # 检查 L1 用户配置中是否设置了 api_key
-        from harness.config.config_loader import ConfigLoader
-        user_config = ConfigLoader.load_user_global(user_id)
-        user_api_key = (user_config or {}).get("api_key", "") if user_config else ""
+        # 模型 API 由服务器统一提供 (env 注入), 不再读用户 L1
         env_api_key = _os.getenv("OPENAI_API_KEY", "")
-
-        if not user_api_key and not env_api_key:
+        if not env_api_key:
             issues.append(
                 "API Key 未配置 — LLM 调用将失败\n"
-                "  → 请打开前端「设置」页面 → API 配置 → 填入你的 OPENAI_API_KEY"
+                "  → 请在服务器 harness/.env 中配置 OPENAI_API_KEY (或设置同名环境变量)"
             )
 
+        # 检查 L1 用户配置是否存在 (注册时自动创建)
+        from harness.config.config_loader import ConfigLoader
+        user_config = ConfigLoader.load_user_global(user_id)
         if not user_config:
             issues.append(
                 "用户全局配置未创建\n"
-                "  → 系统将在注册时自动创建, 或手动访问「设置」页面初始化"
+                "  → 系统将在注册时自动创建"
             )
 
         if issues:
@@ -756,7 +755,6 @@ class HarnessService(_BaseService):
             logger.warning("配置引导: 检测到 %d 个问题 (用户=%s):", len(issues), user_id)
             for i, msg in enumerate(issues, 1):
                 logger.warning("  [%d] %s", i, msg)
-            logger.warning("  操作: 打开浏览器 → 设置 → 填入 API Key 即可开始使用")
             logger.warning("=" * 60)
 
     def _ensure_default_agent(self, user_id: str) -> None:

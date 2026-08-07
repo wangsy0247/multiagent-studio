@@ -11,11 +11,14 @@ dist/
 build/
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
 
 # Node
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # IDE
 .idea/
@@ -33,6 +36,9 @@ workspace/
 
 # Runtime database (local dev artifacts)
 data/
+
+# Internal design docs (not for public release)
+docs/
 
 # Third-party tool memory
 .workbuddy/

@@ -3,24 +3,27 @@
 三层配置:
   L0: SYSTEM_DEFAULTS     — 系统硬编码默认
   L1: 用户全局 config.yaml — 基础设施覆盖 (sandbox, checkpointer, langfuse, ...)
-  L2: Per-Agent config.yaml — 运行时覆盖 (model, tools, memory, features, ...)
+  L2: Per-Agent config.yaml — 运行时覆盖 (tools, memory, features, ...)
 
-合并后 HARDCODED_OVERRIDES 强制覆盖所有层级.
+合并后 HARDCODED_OVERRIDES 强制覆盖所有层级;
+模型字段 (model/api_key/base_url/辅助模型) 由 ConfigLoader 用 L0 插值结果强制覆盖,
+即只能来自服务器环境变量 (harness/.env), 用户 YAML 中的同名键无效.
 """
 
 SYSTEM_DEFAULTS: dict = {
     # ── 工具 ──
     "tool_groups": ["search", "files", "files_readonly", "mcp"],
 
-    # ── 模型 (用户通过前端设置页配置) ──
-    "api_key": "",
-    "base_url": "https://api.openai.com/v1",
+    # ── 模型 (服务器统一提供 — 由 harness/.env 或进程环境变量注入, 用户不可覆盖) ──
+    "model": "${DEFAULT_MODEL:-gpt-4o}",
+    "api_key": "${OPENAI_API_KEY:-}",
+    "base_url": "${OPENAI_BASE_URL:-https://api.openai.com/v1}",
     "temperature": 0.3,
     "max_tokens": 4096,
-    # 辅助模型 — 空字符串表示回退到 default_model
-    "summary_model": "",
-    "title_model": "",
-    "memory_model": "",
+    # 辅助模型 — 空字符串表示回退到主模型
+    "summary_model": "${SUMMARY_MODEL:-}",
+    "title_model": "${TITLE_MODEL:-}",
+    "memory_model": "${MEMORY_MODEL:-}",
 
     # ── 记忆 ──
     "memory": {

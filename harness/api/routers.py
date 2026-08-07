@@ -135,7 +135,7 @@ async def create_agent(
     request: Request,
     harness: HarnessService = Depends(get_harness),
 ):
-    """Create a new agent (model 必选)."""
+    """Create a new agent (模型由服务器统一配置, 无需指定)."""
     from harness.config.agents_config import (
         AgentConfig, AgentMemoryFields, AgentFeaturesFields,
         AgentLimitsFields, AgentTeamFields,
@@ -146,16 +146,12 @@ async def create_agent(
     name = validate_agent_name(body.get("name", ""))
     soul = body.get("soul", "")
 
-    model = body.get("model", "")
-    if not model:
-        raise HTTPException(status_code=400, detail="'model' 字段为必选项")
-
     cfg = AgentConfig(
         name=name,
         display_name=body.get("display_name", name),
         description=body.get("description", ""),
-        model=model,
         temperature=body.get("temperature", 0.3),
+        max_tokens=body.get("max_tokens", 4096),
         tool_groups=body.get("tool_groups", []),
     )
     user_id = body.get("user_id", "default")
@@ -199,8 +195,8 @@ async def update_agent(
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
 
-    # 只更新传入的字段
-    for field in ("model", "display_name", "description", "temperature",
+    # 只更新传入的字段 (model 由服务器统一配置, 不接受更新)
+    for field in ("display_name", "description", "temperature", "max_tokens",
                   "tool_groups", "skills"):
         if field in body:
             setattr(existing, field, body[field])
@@ -314,16 +310,15 @@ async def get_bootstrap_status(
     issues: list[dict] = []
     ok = True
 
-    # 1. API Key
+    # 1. API Key — 由服务器统一提供 (harness/.env env 注入), 不再检查用户配置
     user_config = ConfigLoader.load_user_global(user_id)
-    user_api_key = (user_config or {}).get("api_key", "") if user_config else ""
     env_api_key = _os.getenv("OPENAI_API_KEY", "")
-    if not user_api_key and not env_api_key:
+    if not env_api_key:
         issues.append({
             "field": "api_key",
             "severity": "error",
-            "message": "API Key 未配置",
-            "fix": "settings",  # 前端跳转到设置页
+            "message": "服务器模型 API 未配置 — 请联系管理员在 harness/.env 中配置 OPENAI_API_KEY",
+            "fix": "server_env",  # 服务器侧问题, 前端仅展示提示
         })
         ok = False
 

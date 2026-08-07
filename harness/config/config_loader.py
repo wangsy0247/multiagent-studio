@@ -22,6 +22,17 @@ GLOBAL_CONFIG_FILENAME = "config.yaml"
 AGENT_CONFIG_FILENAME = "config.yaml"
 AGENT_EXTENSIONS_FILENAME = "extensions_config.yaml"
 
+# 服务器统一管理的模型字段 — merge 完成后用 L0 (env 插值) 的值强制覆盖,
+# 用户全局 / agent YAML 中的同名键一律无效.
+SERVER_FORCED_KEYS = (
+    "model",
+    "api_key",
+    "base_url",
+    "summary_model",
+    "title_model",
+    "memory_model",
+)
+
 # 匹配 $VAR, ${VAR}, ${VAR:-default}, ${VAR-default}
 _env_var_re = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}|\$(\w+)")
 
@@ -100,7 +111,8 @@ class ConfigLoader:
         user_dir = base / "users" / user_id
 
         # L0: 系统默认 (应用 env var 替换)
-        merged = _interpolate_env(deepcopy(SYSTEM_DEFAULTS))
+        l0 = _interpolate_env(deepcopy(SYSTEM_DEFAULTS))
+        merged = l0
 
         # L1: 用户全局 config
         user_global = ConfigLoader._load_yaml(user_dir / GLOBAL_CONFIG_FILENAME)
@@ -131,6 +143,11 @@ class ConfigLoader:
 
         # 强制覆盖不可配置项
         merged = ConfigLoader._apply_hardcoded(merged)
+
+        # 模型字段由服务器统一提供 (L0 env 插值), 用户/agent YAML 中的同名键无效
+        for key in SERVER_FORCED_KEYS:
+            if key in l0:
+                merged[key] = l0[key]
 
         # 加载 SOUL
         agent_soul = ConfigLoader._load_agent_soul(user_dir, agent_name)
@@ -285,14 +302,11 @@ def create_user_configs(user_id: str, *, base_dir: str | Path | None = None) -> 
 
 
 def _write_user_global_config(path: Path) -> None:
-    """生成用户全局 config.yaml (L1)."""
+    """生成用户全局 config.yaml (L1).
+
+    模型 API 由服务器统一提供 (harness/.env), 用户只保留功能开关与记忆策略.
+    """
     content = format_user_global_config_yaml({
-        "api_key": "",
-        "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o",
-        "summary_model": "",
-        "title_model": "",
-        "memory_model": "",
         "summarization": {"enabled": True},
         "title": {"enabled": True},
         "memory": {
@@ -304,8 +318,14 @@ def _write_user_global_config(path: Path) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def format_user_global_config_yaml(config: dict) -> str:
-    """将 L1 用户全局配置 dict 格式化为层级化 YAML 字符串."""
+def format_user_global_config_yaml(config: dict, extra: dict | None = None) -> str:
+    """将 L1 用户全局配置 dict 格式化为层级化 YAML 字符串.
+
+    Args:
+        config: 用户可配置项 (summarization / title / memory / config_version).
+        extra: 需要原样保留的其他字段 (sandbox/checkpointer/database/langfuse 等
+            基础设施配置), 以 yaml.safe_dump 追加到文件末尾, 避免整体重写时丢失.
+    """
     import yaml as _yaml
 
     def _get(key: str, default=None):
@@ -315,23 +335,9 @@ def format_user_global_config_yaml(config: dict) -> str:
     header = "# ════════════════════════════════════════════════════════════════"
     sections.append(header)
     sections.append("# 用户全局配置 (L1) — 通过前端「设置」页面修改")
+    sections.append("# 模型 API 由服务器统一配置 (harness/.env), 此处不出现 api_key/model")
     sections.append(header)
     sections.append(f"config_version: {_get('config_version', 1)}")
-    sections.append("")
-
-    # ── API 配置 ──
-    sections.append("# ── API 配置 (必填) ──")
-    api_key_val = _get("api_key", "")
-    sections.append(f"api_key: {api_key_val}" if api_key_val else 'api_key: ""')
-    sections.append(f"base_url: {_get('base_url', 'https://api.openai.com/v1')}")
-    sections.append("")
-
-    # ── 模型配置 ──
-    sections.append("# ── 模型配置 (空 = 回退到 default_model) ──")
-    sections.append(f"default_model: {_get('default_model', 'gpt-4o')}")
-    for field in ("summary_model", "title_model", "memory_model"):
-        val = _get(field, "")
-        sections.append(f"{field}: {val}" if val else f'{field}: ""')
     sections.append("")
 
     # ── 功能开关 ──
@@ -349,9 +355,17 @@ def format_user_global_config_yaml(config: dict) -> str:
     sections.append("# ── 记忆 ──")
     mem_cfg = _get("memory", {})
     sections.append(f"memory:")
+    sections.append(f"  max_facts: {mem_cfg.get('max_facts', 100)}")
+    sections.append(f"  ttl_days: {mem_cfg.get('ttl_days', 90)}")
     sections.append(f"  debounce_seconds: {mem_cfg.get('debounce_seconds', 120)}")
     sections.append(f"  max_injection_tokens: {mem_cfg.get('max_injection_tokens', 500)}")
     sections.append(f"  fact_confidence_threshold: {mem_cfg.get('fact_confidence_threshold', 0.7)}")
     sections.append("")
+
+    # ── 保留的基础设施字段 (不由前端编辑, 原样回写) ──
+    if extra:
+        sections.append("# ── 基础设施 (系统自动管理, 请勿手动编辑) ──")
+        sections.append(_yaml.safe_dump(extra, default_flow_style=False, allow_unicode=True).strip())
+        sections.append("")
 
     return "\n".join(sections)

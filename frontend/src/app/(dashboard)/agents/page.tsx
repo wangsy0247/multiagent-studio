@@ -233,13 +233,9 @@ export default function AgentsPage() {
                   </Link>
                   <p className="text-xs text-slate-500 mt-1 line-clamp-2">{agent.description || "暂无描述"}</p>
                   <div className="flex items-center gap-2 mt-3 flex-wrap">
-                    <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-600 rounded font-mono">{agent.model}</span>
                     {agent.tool_groups?.map((tg) => (
                       <span key={tg} className="text-[10px] px-2 py-0.5 bg-hermes-50 text-hermes-600 rounded">{tg}</span>
                     ))}
-                    {(!agent.tool_groups || agent.tool_groups.length === 0) && (
-                      <span className="text-[10px] px-2 py-0.5 bg-slate-50 text-slate-400 rounded">系统默认工具</span>
-                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-1 ml-3">
