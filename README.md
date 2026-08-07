@@ -42,7 +42,7 @@
 ### 安装并启动
 
 ```bash
-git clone <repo-url> && cd multiagent-studio
+git clone https://github.com/wangsy0247/multiagent-studio.git && cd multiagent-studio
 
 make setup   # 首次安装: 创建 conda 环境、生成配置、安装依赖 (幂等)
 make run     # 启动全部服务
