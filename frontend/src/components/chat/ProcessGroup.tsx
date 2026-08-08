@@ -62,7 +62,7 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
     setExpanded((e) => !e);
   };
 
-  // 两段式 (对齐 DeerFlow "只展示最新"): 历史步骤默认折叠为 "还有 N 步", 最后一步常驻展示
+  // 两段式 (对齐 DeerFlow "只展示最新"): 历史步骤默认折叠为 "已完成 N 步", 最后一步常驻展示
   const latest = messages[messages.length - 1];
   const history = messages.slice(0, -1);
 
@@ -94,7 +94,7 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
         </button>
         {expanded && (
           <div ref={contentRef} className="ml-[7px] border-l border-slate-200 pl-3 py-1 space-y-3 max-h-[480px] overflow-y-auto">
-            {/* 历史步骤区: 默认折叠为 "还有 N 步", 点击展开/收起 ("只展示最新" 模式) */}
+            {/* 历史步骤区: 默认折叠为 "已完成 N 步", 点击展开/收起 ("只展示最新" 模式) */}
             {history.length > 0 && (
               <button
                 onClick={() => setShowHistory((v) => !v)}
@@ -105,7 +105,7 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
                 ) : (
                   <ChevronRight className="w-3 h-3" />
                 )}
-                <span>{showHistory ? "收起" : `还有 ${history.length} 步`}</span>
+                <span>{showHistory ? "收起" : `已完成 ${history.length} 步`}</span>
               </button>
             )}
             {showHistory &&
