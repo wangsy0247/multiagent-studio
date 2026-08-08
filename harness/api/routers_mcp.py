@@ -3,6 +3,12 @@
 写入走原子写 + mtime 热更新 (cache.py 每次执行前检查), 写后主动 reset
 缓存立即生效。MCP server 是全局配置 (服务器级), per-agent 子集在
 agent 的 extensions_config.yaml 中管理 (agents API)。
+
+安全约束 (公司内部部署):
+  - API 只允许 http/sse 类型 — stdio 等于在宿主机执行任意命令,
+    只能由管理员直接在服务器上编辑 extensions_config.json。
+  - 所有写操作追加审计日志 (harness/audit.py), 操作者经 user_id
+    query param 由 app 代理 (JWT) 透传。
 """
 
 from __future__ import annotations
@@ -13,6 +19,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from harness.audit import log_audit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mcp", tags=["MCP 管理"])
@@ -65,8 +73,15 @@ def _write_config(config: dict[str, Any]) -> None:
 
 
 def _validate_server_cfg(body: McpServerUpsertRequest) -> None:
-    if body.type == "stdio" and not body.command:
-        raise HTTPException(status_code=400, detail="stdio 类型必须提供 command")
+    if body.type == "stdio":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "API 不允许创建 stdio 类型的 MCP 服务 (等价于在服务器上执行任意命令)。"
+                "请使用 http/sse 类型的远程服务; 确需 stdio 时请联系管理员"
+                "在服务器上直接编辑 extensions_config.json。"
+            ),
+        )
     if body.type in ("http", "sse") and not body.url:
         raise HTTPException(status_code=400, detail=f"{body.type} 类型必须提供 url")
 
@@ -80,8 +95,10 @@ async def list_mcp_servers() -> dict[str, Any]:
 
 
 @router.put("/servers/{name}")
-async def upsert_mcp_server(name: str, body: McpServerUpsertRequest) -> dict[str, Any]:
-    """新增或覆盖一个 MCP server."""
+async def upsert_mcp_server(
+    name: str, body: McpServerUpsertRequest, user_id: str = "unknown",
+) -> dict[str, Any]:
+    """新增或覆盖一个 MCP server (仅 http/sse — stdio 见模块 docstring)."""
     _validate_name(name)
     _validate_server_cfg(body)
     config = _read_config()
@@ -91,22 +108,23 @@ async def upsert_mcp_server(name: str, body: McpServerUpsertRequest) -> dict[str
         "enabled": body.enabled,
         "type": body.type,
         "description": body.description,
+        "url": body.url,
+        "headers": body.headers,
     }
-    if body.type == "stdio":
-        entry["command"] = body.command
-        entry["args"] = body.args
-        entry["env"] = body.env
-    else:
-        entry["url"] = body.url
-        entry["headers"] = body.headers
     servers[name] = entry
     _write_config(config)
+    log_audit(
+        "mcp.update" if existed else "mcp.create",
+        user_id=user_id, target=name, detail=entry,
+    )
     logger.info("MCP server '%s' %s via REST API", name, "updated" if existed else "created")
     return {"status": "updated" if existed else "created", "name": name}
 
 
 @router.put("/servers/{name}/enabled")
-async def set_mcp_server_enabled(name: str, body: McpServerEnabledRequest) -> dict[str, Any]:
+async def set_mcp_server_enabled(
+    name: str, body: McpServerEnabledRequest, user_id: str = "unknown",
+) -> dict[str, Any]:
     """快速启停一个 MCP server."""
     _validate_name(name)
     config = _read_config()
@@ -115,19 +133,27 @@ async def set_mcp_server_enabled(name: str, body: McpServerEnabledRequest) -> di
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
     servers[name]["enabled"] = body.enabled
     _write_config(config)
+    log_audit(
+        "mcp.enable" if body.enabled else "mcp.disable",
+        user_id=user_id, target=name,
+    )
     logger.info("MCP server '%s' %s via REST API", name, "enabled" if body.enabled else "disabled")
     return {"status": "ok", "name": name, "enabled": body.enabled}
 
 
 @router.delete("/servers/{name}")
-async def delete_mcp_server(name: str) -> dict[str, Any]:
+async def delete_mcp_server(name: str, user_id: str = "unknown") -> dict[str, Any]:
     """删除一个 MCP server."""
     _validate_name(name)
     config = _read_config()
     servers = config.get("mcpServers", {})
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
-    del servers[name]
+    removed = servers.pop(name)
     _write_config(config)
+    log_audit(
+        "mcp.delete", user_id=user_id, target=name,
+        detail={"removed_type": removed.get("type"), "url": removed.get("url", "")},
+    )
     logger.info("MCP server '%s' deleted via REST API", name)
     return {"status": "deleted", "name": name}

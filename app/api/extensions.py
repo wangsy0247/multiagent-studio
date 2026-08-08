@@ -47,7 +47,10 @@ async def upsert_mcp_server(
     name: str, request: Request, current_user: User = Depends(get_current_user)
 ):
     body = await request.json()
-    return await _proxy("PUT", f"/api/mcp/servers/{name}", json=body)
+    # 操作者身份以 JWT 为准, 透传给 harness 记审计日志
+    return await _proxy(
+        "PUT", f"/api/mcp/servers/{name}?user_id={current_user.username}", json=body,
+    )
 
 
 @router.put("/mcp/servers/{name}/enabled")
@@ -55,12 +58,16 @@ async def set_mcp_server_enabled(
     name: str, request: Request, current_user: User = Depends(get_current_user)
 ):
     body = await request.json()
-    return await _proxy("PUT", f"/api/mcp/servers/{name}/enabled", json=body)
+    return await _proxy(
+        "PUT", f"/api/mcp/servers/{name}/enabled?user_id={current_user.username}", json=body,
+    )
 
 
 @router.delete("/mcp/servers/{name}")
 async def delete_mcp_server(name: str, current_user: User = Depends(get_current_user)):
-    return await _proxy("DELETE", f"/api/mcp/servers/{name}")
+    return await _proxy(
+        "DELETE", f"/api/mcp/servers/{name}?user_id={current_user.username}",
+    )
 
 
 # ── Skills (builtin 全局启停 + 用户私有 CRUD/安装) ────────────────────────

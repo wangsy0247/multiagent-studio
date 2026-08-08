@@ -236,7 +236,7 @@ export default function ExtensionsPage() {
           </button>
         </div>
         <p className="text-xs text-slate-400 mb-6">
-          MCP 服务为全局配置, 保存即热生效; 技能默认对所有 Agent 可用, 可在 Agent 编辑页按 Agent 裁剪
+          MCP 服务为全局配置, 保存即热生效; 仅支持 http/sse 远程类型, stdio 由管理员在服务器维护; 技能可在 Agent 编辑页按 Agent 裁剪
         </p>
 
         {error && (
@@ -460,11 +460,13 @@ function DialogShell({ title, onClose, children, wide }: {
 function McpEditDialog({ initial, onClose, onSaved }: {
   initial: McpEntry | null; onClose: () => void; onSaved: () => void;
 }) {
+  // stdio 服务不允许经 API 创建/修改 (等价于服务器上执行任意命令),
+  // 既有的 stdio 服务由管理员在服务器 extensions_config.json 中维护。
+  const isLegacyStdio = initial?.type === "stdio";
   const [name, setName] = useState(initial?.name || "");
-  const [type, setType] = useState<"stdio" | "http" | "sse">(initial?.type || "stdio");
-  const [command, setCommand] = useState(initial?.command || "");
-  const [argsText, setArgsText] = useState((initial?.args || []).join(" "));
-  const [env, setEnv] = useState<Record<string, string>>(initial?.env || {});
+  const [type, setType] = useState<"http" | "sse">(
+    initial?.type === "sse" ? "sse" : "http"
+  );
   const [url, setUrl] = useState(initial?.url || "");
   const [headers, setHeaders] = useState<Record<string, string>>(initial?.headers || {});
   const [description, setDescription] = useState(initial?.description || "");
@@ -483,9 +485,8 @@ function McpEditDialog({ initial, onClose, onSaved }: {
         enabled: initial?.enabled ?? true,
         type,
         description,
-        ...(type === "stdio"
-          ? { command, args: argsText.split(/\s+/).filter(Boolean), env }
-          : { url, headers }),
+        url,
+        headers,
       };
       await extensionsAPI.upsertMcpServer(name, payload);
       onSaved();
@@ -500,6 +501,12 @@ function McpEditDialog({ initial, onClose, onSaved }: {
     <DialogShell title={initial ? `编辑 MCP 服务: ${initial.name}` : "添加 MCP 服务"} onClose={onClose}>
       <div className="space-y-3">
         {error && <p className="text-xs text-red-500">{error}</p>}
+        {isLegacyStdio && (
+          <p className="text-xs p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-700">
+            这是 stdio (本地进程) 类型的服务, 出于安全考虑不支持在界面编辑 —
+            请联系管理员在服务器上修改 extensions_config.json。
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">名称 *</label>
@@ -509,34 +516,23 @@ function McpEditDialog({ initial, onClose, onSaved }: {
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">类型</label>
-            <select value={type} onChange={(e) => setType(e.target.value as any)}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg input-focus bg-white">
-              <option value="stdio">stdio (本地进程)</option>
+            <select value={isLegacyStdio ? "stdio" : type}
+              onChange={(e) => setType(e.target.value as any)}
+              disabled={isLegacyStdio}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg input-focus bg-white disabled:bg-slate-50">
+              {isLegacyStdio && <option value="stdio">stdio (本地进程)</option>}
               <option value="http">http (远程服务)</option>
               <option value="sse">sse (远程服务)</option>
             </select>
           </div>
         </div>
 
-        {type === "stdio" ? (
-          <>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Command *</label>
-              <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg input-focus font-mono" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Args (空格分隔)</label>
-              <input value={argsText} onChange={(e) => setArgsText(e.target.value)} placeholder="-y @modelcontextprotocol/server-github"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg input-focus font-mono" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                环境变量 <span className="text-slate-400">(值可用 $VAR 引用 harness/.env)</span>
-              </label>
-              <KvEditor value={env} onChange={setEnv} keyPlaceholder="GITHUB_TOKEN" valuePlaceholder="$GITHUB_TOKEN" />
-            </div>
-          </>
+        {isLegacyStdio ? (
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Command</label>
+            <input value={`${initial?.command || ""} ${(initial?.args || []).join(" ")}`.trim()} disabled
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 font-mono text-slate-500" />
+          </div>
         ) : (
           <>
             <div>
@@ -554,15 +550,18 @@ function McpEditDialog({ initial, onClose, onSaved }: {
         <div>
           <label className="block text-xs font-medium text-slate-600 mb-1">描述</label>
           <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="这个服务提供什么能力"
-            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg input-focus" />
+            disabled={isLegacyStdio}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg input-focus disabled:bg-slate-50" />
         </div>
 
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg">取消</button>
-          <button onClick={save} disabled={saving}
-            className="px-4 py-2 text-sm bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50">
-            {saving ? "保存中..." : "保存"}
-          </button>
+          {!isLegacyStdio && (
+            <button onClick={save} disabled={saving}
+              className="px-4 py-2 text-sm bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50">
+              {saving ? "保存中..." : "保存"}
+            </button>
+          )}
         </div>
       </div>
     </DialogShell>
