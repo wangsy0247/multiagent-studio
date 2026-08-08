@@ -531,6 +531,9 @@ class HarnessService(_BaseService):
             "base_url": eff.base_url,
             "model": eff.model,
         })
+        # 请求级 skill 黑名单 — subagent 经 contextvar 继承 per-agent 子集
+        from harness.skills.filter import set_current_enabled_skills
+        set_current_enabled_skills(eff.enabled_skills)
 
         # 5. 设置 skill 操作的当前用户 ID (skill_manage 仅后台 review fork 可用)
         from harness.tools.skill_manage_tool import set_skill_user_id
@@ -546,6 +549,8 @@ class HarnessService(_BaseService):
             agent_name=eff.agent_display_name or agent_name,
             user_id=user_id,
             agent_soul=eff.agent_soul,
+            enabled_mcp_servers=eff.enabled_mcp_servers,
+            enabled_skills=eff.enabled_skills,
         )
 
         # 7. 编译 graph
@@ -609,11 +614,13 @@ class HarnessService(_BaseService):
         api_key: str = "",
         base_url: str = "",
     ) -> BaseChatModel:
-        # 回退到 contextvar 中的 per-user 凭证 (SubagentManager 调用时模型/凭证均为空)
+        # 回退到 contextvar 中的 per-user 凭证 (SubagentManager 调用时模型/凭证均为空),
+        # 再回退到服务器 env (模型由服务器统一配置) — 任何裸调用都不应得到
+        # 与服务器配置不符的模型/空 key。
         creds = _current_req_creds.get()
-        model = model or creds.get("model") or "gpt-4o"
-        api_key = api_key or creds.get("api_key", "")
-        base_url = base_url or creds.get("base_url", "")
+        model = model or creds.get("model") or os.getenv("DEFAULT_MODEL", "") or "gpt-4o"
+        api_key = api_key or creds.get("api_key", "") or os.getenv("OPENAI_API_KEY", "")
+        base_url = base_url or creds.get("base_url", "") or os.getenv("OPENAI_BASE_URL", "")
         effective_base_url = base_url or "https://api.openai.com/v1"
 
         # 端到端调试: 输出实际使用的模型和 API 配置
@@ -1189,6 +1196,9 @@ class HarnessService(_BaseService):
             "base_url": ctx.effective_config.base_url,
             "model": ctx.effective_config.model,
         })
+        # 请求级 skill 黑名单 — subagent 经 contextvar 继承 per-agent 子集
+        from harness.skills.filter import set_current_enabled_skills
+        set_current_enabled_skills(ctx.effective_config.enabled_skills)
         # SubAgent 注册表属主隔离 (防跨用户复用缓存的 LLM 凭证)
         from harness.agents.subagent_manager import set_current_owner
         set_current_owner(user_id)
@@ -1890,6 +1900,19 @@ class HarnessService(_BaseService):
         user_id = run_info.get("user_id", "default")
         agent_name = run_info.get("agent_name", "default")
         ctx = await self._get_or_create_graph_context(user_id, agent_name)
+
+        # 与 execute() 一致: 缓存命中时 _build_graph_context 不会执行,
+        # 必须在这里补设 contextvar — 否则恢复运行中创建 subagent 时
+        # _init_llm 读不到凭证, 落到 gpt-4o + 空 key 的兜底。
+        _current_req_creds.set({
+            "api_key": ctx.effective_config.api_key,
+            "base_url": ctx.effective_config.base_url,
+            "model": ctx.effective_config.model,
+        })
+        from harness.skills.filter import set_current_enabled_skills
+        set_current_enabled_skills(ctx.effective_config.enabled_skills)
+        from harness.agents.subagent_manager import set_current_owner
+        set_current_owner(user_id)
 
         build_config = self._build_config(
             thread_id, public_key=ctx.effective_config.langfuse_public_key,

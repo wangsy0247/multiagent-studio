@@ -168,9 +168,19 @@ async def _pump_run(
                 await _set_thread_status(db, thread, "error")
             except Exception:
                 logger.exception("泵任务异常后更新线程状态失败")
-            hub.publish(rs, json.dumps({'type': 'error', 'content': str(e), 'status': 'error'}))
+            hub.publish(rs, json.dumps({'type': 'error', 'content': _friendly_stream_error(e), 'status': 'error'}))
         finally:
             hub.end_run(rs)
+
+
+def _friendly_stream_error(exc: Exception) -> str:
+    """把底层网络/协议异常映射为用户可读的提示, 避免直接展示 httpx 内部文案."""
+    import httpx
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return "执行中断：与 Harness 服务的连接被意外关闭（可能是服务重启或内部错误），请重试；若反复出现请查看 Harness 服务日志。"
+    if isinstance(exc, (httpx.ReadError, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)):
+        return f"执行中断：与 Harness 服务通信失败（{type(exc).__name__}），请确认服务正常运行后重试。"
+    return str(exc)
 
 
 def _parse_thread_uuid(thread_id: str) -> uuid_mod.UUID:

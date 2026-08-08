@@ -19,7 +19,6 @@ lead_agent:
     - search
     - files
     - files_readonly
-    - skills
     - mcp
     - projects
 
@@ -127,6 +126,9 @@ summarization:
   keep:
     type: tokens
     value: 10000
+  # fraction 触发/保留的换算基数: 模型最大输入 token 数
+  # (自定义模型不在 langchain 内置 profile 表, 必须显式给出)
+  max_input_tokens: 128000
 
 # --- Title ---
 title:

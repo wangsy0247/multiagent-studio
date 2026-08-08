@@ -25,7 +25,9 @@ class FakeHarness(HarnessService):
     async def shutdown(self):
         pass
 
-    async def execute(self, thread_id, user_id, message, graph=None, files=None):
+    async def execute(self, thread_id, user_id, message, graph=None, files=None,
+                      project_id=None, agent_name="default", mode="single",
+                      unattended=False):
         yield {"type": "message", "content": "Hello!", "thread_id": thread_id}
         yield {"type": "finished", "thread_id": thread_id}
 
@@ -64,6 +66,26 @@ class TestExecutionAPI:
         assert "Hello!" in body
         assert "finished" in body
 
+    def test_execute_midstream_exception_yields_error_event(self, client):
+        """生成器中途抛异常时, 流必须正常终止并附带可解析的 error 事件
+        (不再以断 TCP / incomplete chunked read 的形式失败)。"""
+        class ExplodingHarness(FakeHarness):
+            async def execute(self, thread_id, user_id, message, **kwargs):
+                yield {"type": "message", "content": "partial", "thread_id": thread_id}
+                raise RuntimeError("boom mid-stream")
+
+        set_harness(ExplodingHarness())
+        response = TestClient(app).post("/api/v1/execute", json={
+            "thread_id": "t2",
+            "user_id": "u1",
+            "message": "Hi",
+        })
+        assert response.status_code == 200
+        body = response.text
+        assert "partial" in body
+        assert '"type": "error"' in body
+        assert "boom mid-stream" in body
+
     def test_stop_execution(self, client):
         response = client.post("/api/v1/stop/t1")
         assert response.status_code == 200
@@ -99,6 +121,9 @@ class TestAgentManagementAPI:
         assert "coder" in data
 
     def test_delete_agent(self, client):
+        # 先创建再删除 (create 写真实用户目录, delete 自清)
+        create = client.post("/api/v1/agents", json={"name": "test-agent"})
+        assert create.status_code == 200
         response = client.delete("/api/v1/agents/test-agent")
         assert response.status_code == 200
         assert response.json()["status"] == "deleted"

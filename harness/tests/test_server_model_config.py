@@ -104,3 +104,58 @@ class TestUserGlobalConfigFormat:
         assert "api_key" not in cfg
         assert "default_model" not in cfg
         assert "memory" in cfg
+
+
+class TestInitLlmFallback:
+    """_init_llm 裸调用 (无参 + contextvar 为空) 必须回退到服务器 env,
+    而不是硬编码 gpt-4o + 空 key — 澄清恢复路径曾是这类裸调用的来源."""
+
+    def test_bare_call_falls_back_to_server_env(self, clean_model_env):
+        clean_model_env.setenv("DEFAULT_MODEL", "qwen3.6-plus")
+        clean_model_env.setenv("OPENAI_API_KEY", "sk-server")
+        clean_model_env.setenv("OPENAI_BASE_URL", "http://dashscope")
+
+        from harness.main import HarnessService, _current_req_creds
+
+        token = _current_req_creds.set({})  # 确保无请求上下文
+        try:
+            svc = HarnessService()
+            llm = svc._init_llm()
+        finally:
+            _current_req_creds.reset(token)
+
+        assert llm.model_name == "qwen3.6-plus"
+        assert llm.openai_api_key.get_secret_value() == "sk-server"
+        assert llm.openai_api_base == "http://dashscope"
+
+    def test_bare_call_without_env_keeps_last_resort(self, clean_model_env):
+        from harness.main import HarnessService, _current_req_creds
+
+        token = _current_req_creds.set({})
+        try:
+            svc = HarnessService()
+            llm = svc._init_llm()
+        finally:
+            _current_req_creds.reset(token)
+
+        # env 全空时的最后兜底: 占位 key + gpt-4o (仅提示作用, 不会误连真模型)
+        assert llm.model_name == "gpt-4o"
+        assert llm.openai_api_key.get_secret_value() == "MISSING_API_KEY_CONFIGURED"
+
+    def test_contextvar_takes_precedence_over_env(self, clean_model_env):
+        clean_model_env.setenv("DEFAULT_MODEL", "qwen3.6-plus")
+        clean_model_env.setenv("OPENAI_API_KEY", "sk-server")
+
+        from harness.main import HarnessService, _current_req_creds
+
+        token = _current_req_creds.set({
+            "model": "ctx-model", "api_key": "sk-ctx", "base_url": "http://ctx",
+        })
+        try:
+            svc = HarnessService()
+            llm = svc._init_llm()
+        finally:
+            _current_req_creds.reset(token)
+
+        assert llm.model_name == "ctx-model"
+        assert llm.openai_api_key.get_secret_value() == "sk-ctx"

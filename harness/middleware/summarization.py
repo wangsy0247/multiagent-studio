@@ -708,6 +708,23 @@ def create_summarization_middleware(
     if effective_model:
         try:
             from langchain_openai import ChatOpenAI
+
+            # langchain 新版对 fraction 类型的 trigger/keep 强制要求模型 profile
+            # (max_input_tokens)。自定义模型 (qwen/dashscope 等) 不在其内置
+            # profile 表中, 构造时会抛 ValueError — 显式注入配置的基数。
+            trigger_raw = cfg.trigger
+            trigger_list = (
+                trigger_raw if isinstance(trigger_raw, list)
+                else [trigger_raw] if trigger_raw else []
+            )
+            uses_fraction = (
+                any(t.type == "fraction" for t in trigger_list)
+                or (cfg.keep is not None and cfg.keep.type == "fraction")
+            )
+            chat_kwargs: dict[str, Any] = {}
+            if uses_fraction and cfg.max_input_tokens:
+                chat_kwargs["profile"] = {"max_input_tokens": cfg.max_input_tokens}
+
             model = ChatOpenAI(
                 model=effective_model,
                 api_key=effective_api_key,
@@ -715,6 +732,7 @@ def create_summarization_middleware(
                 temperature=0,
                 request_timeout=60,
                 max_retries=1,
+                **chat_kwargs,
             )
             logger.info(
                 "Summarization LLM: model=%s",
@@ -737,17 +755,26 @@ def create_summarization_middleware(
 
     keep = cfg.keep.to_tuple() if cfg.keep else ("messages", 20)
 
-    return SummarizationMiddleware(
-        trigger=trigger,
-        keep=keep,
-        trim_tokens_to_summarize=cfg.trim_tokens_to_summarize,
-        summary_prompt=cfg.summary_prompt,
-        model=model,
-        before_summarization=before_summarization,
-        preserve_dynamic_context_reminders=cfg.preserve_dynamic_context_reminders,
-        skills_container_path=VIRTUAL_SKILLS_PATH,
-        skill_file_read_tool_names=cfg.skill_file_read_tool_names,
-        preserve_recent_skill_count=cfg.preserve_recent_skill_count,
-        preserve_recent_skill_tokens=cfg.preserve_recent_skill_tokens,
-        preserve_recent_skill_tokens_per_skill=cfg.preserve_recent_skill_tokens_per_skill,
-    )
+    # 构造失败 (如 langchain 版本行为变化) 不能拖垮整个运行 — 压缩只是
+    # 优化项, 降级为禁用即可。
+    try:
+        return SummarizationMiddleware(
+            trigger=trigger,
+            keep=keep,
+            trim_tokens_to_summarize=cfg.trim_tokens_to_summarize,
+            summary_prompt=cfg.summary_prompt,
+            model=model,
+            before_summarization=before_summarization,
+            preserve_dynamic_context_reminders=cfg.preserve_dynamic_context_reminders,
+            skills_container_path=VIRTUAL_SKILLS_PATH,
+            skill_file_read_tool_names=cfg.skill_file_read_tool_names,
+            preserve_recent_skill_count=cfg.preserve_recent_skill_count,
+            preserve_recent_skill_tokens=cfg.preserve_recent_skill_tokens,
+            preserve_recent_skill_tokens_per_skill=cfg.preserve_recent_skill_tokens_per_skill,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to build SummarizationMiddleware — summarization disabled "
+            "for this run (check trigger/keep config vs langchain version)"
+        )
+        return None

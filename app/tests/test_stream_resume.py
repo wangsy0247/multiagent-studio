@@ -449,3 +449,30 @@ async def test_pump_does_not_hold_db_connection(tmp_path):
         await rs.pump_task
     finally:
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# _friendly_stream_error — 底层网络异常映射为用户可读提示
+# ---------------------------------------------------------------------------
+
+
+class TestFriendlyStreamError:
+    def test_remote_protocol_error_mapped(self):
+        import httpx
+        exc = httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body "
+            "(incomplete chunked read)"
+        )
+        msg = execute_module._friendly_stream_error(exc)
+        assert "incomplete chunked read" not in msg
+        assert "连接被意外关闭" in msg
+
+    def test_read_timeout_mapped(self):
+        import httpx
+        msg = execute_module._friendly_stream_error(httpx.ReadTimeout("timed out"))
+        assert "通信失败" in msg
+        assert "ReadTimeout" in msg
+
+    def test_generic_exception_passthrough(self):
+        msg = execute_module._friendly_stream_error(ValueError("some real error"))
+        assert msg == "some real error"

@@ -26,6 +26,16 @@ def _make_clarification_tool_message(question: str) -> ToolMessage:
     )
 
 
+def _install_mock_ctx(service: HarnessService, mock_graph) -> None:
+    """respond_to_clarification 经 _get_or_create_graph_context 取 graph —
+    测试用 mock ctx 替换 (service.graph 直连的时代已过去)."""
+    ctx = MagicMock()
+    ctx.graph = mock_graph
+    ctx.effective_config = MagicMock()
+    service._initialized = True
+    service._get_or_create_graph_context = AsyncMock(return_value=ctx)
+
+
 @pytest.mark.asyncio
 async def test_respond_to_clarification_injects_answer_and_resumes():
     """When the user answers a clarification, the answer must appear in the
@@ -62,7 +72,7 @@ async def test_respond_to_clarification_injects_answer_and_resumes():
         yield {"event": "on_chain_end", "name": "LangGraph", "data": {"output": {}}}
 
     mock_graph.astream_events = mock_astream_events
-    service.graph = mock_graph
+    _install_mock_ctx(service, mock_graph)
 
     events = []
     async for event in service.respond_to_clarification("t1", "Python"):
@@ -92,7 +102,7 @@ async def test_respond_to_clarification_rejects_when_no_pending_question():
 
     mock_graph = MagicMock()
     mock_graph.aget_state = AsyncMock(return_value=state_snapshot)
-    service.graph = mock_graph
+    _install_mock_ctx(service, mock_graph)
 
     events = []
     async for event in service.respond_to_clarification("t1", "Python"):

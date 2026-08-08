@@ -36,6 +36,14 @@ class SummarizationConfig(BaseModel):
         default=4000,
         description="Max tokens when preparing messages for summarization (None = skip trimming)",
     )
+    max_input_tokens: int = Field(
+        default=128_000,
+        description=(
+            "模型最大输入 token 数 — fraction 类型的 trigger/keep 以此为基数换算。"
+            "langchain 新版对 fraction 限制强制要求模型 profile, 自定义模型 "
+            "(如 qwen/dashscope) 不在内置 profile 表中, 必须显式注入。"
+        ),
+    )
     summary_prompt: str | None = Field(default=None, description="Custom prompt for summaries")
     preserve_dynamic_context_reminders: bool = Field(
         default=True,

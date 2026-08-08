@@ -26,29 +26,50 @@ router = APIRouter(prefix="/api/v1")
 # ---------------------------------------------------------------------------
 
 
+async def _safe_event_stream(event_source, *, thread_id: str):
+    """消费事件迭代器并编码为 SSE 帧, 逃逸异常兜底为正常终止的 error 事件.
+
+    响应头发出后无法再改状态码: 若生成器抛出未捕获异常, starlette 只能
+    直接断 TCP (无终止 chunk), 下游 httpx 会收到 "incomplete chunked read"
+    而看不到真实错误。这里统一捕获, 让客户端总能拿到可解析的终态事件。
+    """
+    try:
+        async for event in event_source:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+    except Exception as exc:
+        logger.exception("SSE event stream escaped exception (thread=%s)", thread_id)
+        # 带完整异常信息 (多行异常只取最后一行会截成无意义片段),
+        # 截断防止超长; json.dumps 会把换行转义, SSE 帧仍是单行。
+        detail = str(exc).strip().replace("\r", "")[:400]
+        error_event = {
+            "type": "error",
+            "thread_id": thread_id,
+            "content": f"执行中断: {detail or '服务内部错误（详见服务端日志）'}",
+        }
+        yield f"data: {json.dumps(error_event, default=str)}\n\n"
+
+
 @router.post("/execute")
 async def execute(
     request: ExecuteRequest,
     harness: HarnessService = Depends(get_harness),
 ):
     """Execute an agent task with SSE streaming output."""
-
-    async def event_stream():
-        async for event in harness.execute(
-            thread_id=request.thread_id,
-            user_id=request.user_id,
-            message=request.message,
-            graph=request.execution_graph,
-            files=request.files,
-            project_id=request.project_id,
-            agent_name=request.agent_name,
-            mode=request.mode,
-            unattended=request.unattended,
-        ):
-            yield f"data: {json.dumps(event, default=str)}\n\n"
-
     return StreamingResponse(
-        event_stream(),
+        _safe_event_stream(
+            harness.execute(
+                thread_id=request.thread_id,
+                user_id=request.user_id,
+                message=request.message,
+                graph=request.execution_graph,
+                files=request.files,
+                project_id=request.project_id,
+                agent_name=request.agent_name,
+                mode=request.mode,
+                unattended=request.unattended,
+            ),
+            thread_id=request.thread_id,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -64,16 +85,14 @@ async def respond_clarification(
     harness: HarnessService = Depends(get_harness),
 ):
     """Respond to a pending clarification request — streams resumed execution."""
-
-    async def event_stream():
-        async for event in harness.respond_to_clarification(
-            thread_id=thread_id,
-            answer=request.answer,
-        ):
-            yield f"data: {json.dumps(event, default=str)}\n\n"
-
     return StreamingResponse(
-        event_stream(),
+        _safe_event_stream(
+            harness.respond_to_clarification(
+                thread_id=thread_id,
+                answer=request.answer,
+            ),
+            thread_id=thread_id,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -158,7 +177,24 @@ async def create_agent(
     save_agent_config(name, cfg, user_id=user_id)
     if soul:
         save_agent_soul(name, soul, user_id=user_id)
+    # per-agent 扩展子集 (extensions_config.yaml 黑名单)
+    save_agent_extensions(
+        name,
+        mcp_servers=body.get("mcp_servers", {}) or {},
+        user_id=user_id,
+        skills=body.get("skills_enabled", None),
+    )
     return {"status": "created", "name": name}
+
+
+@router.get("/agents/presets")
+async def get_preset_agents():
+    """Return predefined SubAgent templates.
+
+    必须注册在 /agents/{name} 之前 — FastAPI 按注册顺序匹配,
+    否则 "presets" 会被 {name} 吞掉返回 404。
+    """
+    return PRESET_SUBAGENTS
 
 
 @router.get("/agents/{name}")
@@ -204,6 +240,15 @@ async def update_agent(
     save_agent_config(name, existing, user_id=user_id)
     if "soul" in body:
         save_agent_soul(name, body["soul"], user_id=user_id)
+
+    # per-agent 扩展子集 (extensions_config.yaml): 与现有内容合并后写回
+    if "mcp_servers" in body or "skills_enabled" in body:
+        from harness.config.agents_config import save_agent_extensions
+        from harness.config.config_loader import ConfigLoader
+        ext = ConfigLoader.load_agent_extensions(user_id, name) or {}
+        mcp = body.get("mcp_servers", ext.get("mcp_servers", {})) or {}
+        skl = body.get("skills_enabled", ext.get("skills", {})) or {}
+        save_agent_extensions(name, mcp_servers=mcp, user_id=user_id, skills=skl)
     return {"status": "updated", "name": name}
 
 
@@ -254,17 +299,6 @@ async def clear_agent_memory(
 # 重复且已腐化 (任务存错路径、默认状态非法、项目写旧格式)。前端 /api 全走 app:8000,
 # harness 侧端点无人调用, 故删除。团队运行时读写项目/任务请用 harness/team/ 下的
 # TeamTaskStore / agent_card 等模块。
-
-
-# ---------------------------------------------------------------------------
-# Preset agents (read-only templates)
-# ---------------------------------------------------------------------------
-
-
-@router.get("/agents/presets")
-async def get_preset_agents():
-    """Return predefined SubAgent templates."""
-    return PRESET_SUBAGENTS
 
 
 # ---------------------------------------------------------------------------

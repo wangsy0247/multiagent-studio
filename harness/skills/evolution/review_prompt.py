@@ -35,17 +35,33 @@ Signals to look for (any one of these warrants action):
   • A skill that got loaded or consulted this session turned out to be
     wrong, missing a step, or outdated. Patch it NOW.
 
-Preference order — prefer the earliest action that fits, but do pick one
-when a signal above fired:
-  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the conversation
-     for skills the agent read via file_read on /mnt/skills/builtin/... or
-     /mnt/skills/my/... paths. If any of them covers the territory of the
-     new learning, PATCH that one first. It was in play; it's the right
-     place to extend.
-  2. UPDATE AN EXISTING SKILL. If no loaded skill fits but an existing one
-     does, patch it. Add a subsection, a pitfall, or broaden a trigger.
-  3. ADD A SUPPORT FILE under an existing skill. Skills can be packaged
-     with three kinds of support files — use the right directory:
+Choosing WHERE an update goes — the domain-match rule decides FIRST:
+  • An existing skill is a valid home ONLY when the new lesson falls
+    squarely inside that skill's stated domain (check its description).
+    "It involves the same system" or "it happened in the same session"
+    is NOT a domain match — a lesson about search-query analysis does
+    not belong in a skill about subagent orchestration just because a
+    subagent did the analysis.
+  • NEVER broaden a skill's description or scope just to absorb an
+    unrelated lesson. Scope creep turns one skill into a junk drawer:
+    the description stops matching its content, and future sessions can
+    no longer tell when to load it.
+  • If no existing skill's domain covers the lesson, CREATE a new
+    class-level skill. Creating a well-scoped new skill is a first-class
+    outcome — the library is healthiest as a set of focused skills, not
+    one bloated catch-all.
+
+Preference order — after the domain-match rule, prefer the earliest
+action that fits, but do pick one when a signal above fired:
+  1. UPDATE A CURRENTLY-LOADED SKILL whose domain matches. Look back
+     through the conversation for skills the agent read via file_read on
+     /mnt/skills/builtin/... or /mnt/skills/my/... paths. If one covers
+     the territory of the new learning, PATCH that one first. It was in
+     play; it's the right place to extend.
+  2. UPDATE AN EXISTING SKILL whose domain matches. Add a subsection, a
+     pitfall, or broaden a trigger.
+  3. ADD A SUPPORT FILE under a domain-matching skill. Skills can be
+     packaged with three kinds of support files — use the right directory:
        • `references/<topic>.md` — session-specific detail (error
          transcripts, reproduction recipes, provider quirks) AND condensed
          knowledge banks (quoted research, API excerpts, domain notes).
@@ -56,10 +72,17 @@ when a signal above fired:
      Add support files via skill_manage action=write_file. The skill's
      SKILL.md should gain a one-line pointer to any new support file so
      future agents know it exists.
-  4. CREATE A NEW CLASS-LEVEL SKILL when no existing skill covers the
-     domain. The name MUST be at the class level — NOT a specific PR
-     number, error string, codename, or "fix-X / debug-Y" session artifact.
-     If the name only fits today's task, fall back to (1), (2), or (3).
+  4. CREATE A NEW CLASS-LEVEL SKILL when no existing skill's domain
+     covers the lesson. The name MUST be at the class level — NOT a
+     specific PR number, error string, codename, or "fix-X / debug-Y"
+     session artifact. If the name only fits today's task, fall back to
+     (1), (2), or (3).
+
+Keep SKILL.md organized: prefer integrating new content into the right
+section (replace_section) over blind appends, and every append must go
+under a fitting heading. If a skill's body has degenerated into a pile
+of disjoint session notes, restructure it with edit instead of appending
+yet another blob.
 
 User-preference embedding (important): when the user expressed a style /
 format / workflow preference, the update belongs in the SKILL.md body,
