@@ -576,7 +576,7 @@ class HarnessService(_BaseService):
         """根据 EffectiveConfig 构建中间件列表 (per-user + per-agent)."""
         config = RunnableConfig(configurable={
             "workspace_root": self.config.workspace_root,
-            "is_plan_mode": eff.subagent_enabled,
+            "is_plan_mode": True,  # TodoMiddleware 常驻挂载; 行为由 state.plan_mode 按请求门控
             "subagent_enabled": eff.subagent_enabled,
             "max_concurrent_subagents": eff.max_concurrent_subagents,
             "memory_enabled": eff.memory_injection_enabled,
@@ -1144,6 +1144,7 @@ class HarnessService(_BaseService):
         agent_name: str = "default",
         mode: str = "single",
         unattended: bool = False,
+        plan_mode: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Execute the agent pipeline and stream SSE events in real time.
 
@@ -1152,6 +1153,7 @@ class HarnessService(_BaseService):
 
         Args:
             agent_name: 使用的 Agent 配置 (default = 系统默认 agent).
+            plan_mode: plan 模式 — 强制 write_todos 规划与完成追踪 (仅 single 生效).
         """
         # ── 校验 agent_name 存在 ──
         agent_name = agent_name or "default"
@@ -1302,6 +1304,11 @@ class HarnessService(_BaseService):
         metadata = dict(current_state.get("metadata") or {})
         metadata["unattended"] = unattended
         current_state["metadata"] = metadata
+
+        # ── plan 模式标记：每次执行显式覆盖 (同 unattended),
+        #    checkpoint 恢复的会话可按请求切换模式且不残留旧值;
+        #    TodoMiddleware 据此注入规划提示并强制 TODO 完成 (仅 single 路由到达这里)。
+        current_state["plan_mode"] = plan_mode
 
         # ── 重连检测: 该 thread 是否有后台 agent task 仍在执行 ──
         existing = self._active_runs.get(thread_id)
@@ -1613,6 +1620,26 @@ class HarnessService(_BaseService):
                                     if subagent_result and subagent_result.get("started_at") else None
                                 ),
                             })
+                        elif tool_name == "write_todos":
+                            # plan 模式 TODO 整表推送 — 前端 chips 随状态流转
+                            output_str = ""
+                            if hasattr(tool_output, "content"):
+                                output_str = str(tool_output.content)
+                            await sse_queue.put({
+                                "type": "tool_result", "thread_id": thread_id,
+                                "tool_name": tool_name, "tool_result": output_str[:2000],
+                            })
+                            update = getattr(tool_output, "update", None) or {}
+                            raw_todos = update.get("todos") or []
+                            todo_dicts = [
+                                t.model_dump(mode="json") if hasattr(t, "model_dump") else dict(t)
+                                for t in raw_todos
+                            ]
+                            if todo_dicts:
+                                await sse_queue.put({
+                                    "type": "todo_update", "thread_id": thread_id,
+                                    "todos": todo_dicts,
+                                })
                         elif tool_name not in ("task", "Agent"):
                             output_str = ""
                             if hasattr(tool_output, "content"):

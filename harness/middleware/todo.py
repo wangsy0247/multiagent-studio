@@ -17,6 +17,13 @@ Adapted from the reference TodoMiddleware, extended for HarnessState/TodoItem:
 - ``awrap_model_call``: injects queued completion reminders into the next
   model request — they are intentionally **not** persisted into the message
   history, so control prompts never leak into user-visible transcripts.
+  Also injects a kickoff reminder when ``plan_mode`` is on and no *active*
+  todo list exists (empty or all-terminal from a previous turn), so each
+  new user turn in plan mode starts with fresh ``write_todos`` planning.
+
+All todo-tracking hooks are gated on ``state.plan_mode`` — in normal mode
+the middleware is fully inert, so stale todos left by an interrupted plan
+run can never hijack a normal-mode turn.
 """
 from __future__ import annotations
 
@@ -71,6 +78,14 @@ def _reminder_in_messages(messages: list[Any]) -> bool:
     """Return True if a todo_reminder HumanMessage is already present in *messages*."""
     for msg in messages:
         if isinstance(msg, HumanMessage) and getattr(msg, "name", None) == "todo_reminder":
+            return True
+    return False
+
+
+def _plan_reminder_in_messages(messages: list[Any]) -> bool:
+    """Return True if a plan-mode kickoff reminder is already present in *messages*."""
+    for msg in messages:
+        if isinstance(msg, HumanMessage) and getattr(msg, "name", None) == "todo_plan_reminder":
             return True
     return False
 
@@ -139,21 +154,45 @@ class TodoMiddleware(HarnessAgentMiddleware):
     # ── per-run bookkeeping (same convention as LoopDetectionMiddleware) ──
 
     @staticmethod
-    def _get_thread_id(state: HarnessState, runtime: Runtime) -> str:
+    def _get_thread_id(runtime: Runtime) -> str:
+        """thread_id 解析链: runtime.context → LangGraph config configurable → "default".
+
+        与 LoopDetectionMiddleware 同一约定 — 实测 create_agent 的
+        runtime.context 为 None (main.py 只传 configurable), 只读 context
+        会让所有 run 落到 ("default","default") 共享提醒队列/计数器。
+        """
         context = getattr(runtime, "context", None)
-        thread_id = context.get("thread_id") if context else None
-        if not thread_id:
-            thread_id = state.get("thread_id")
-        return str(thread_id) if thread_id else "default"
+        if context:
+            return str(context.get("thread_id", "default"))
+        try:
+            from langgraph.config import get_config
+
+            tid = get_config().get("configurable", {}).get("thread_id")
+            if tid:
+                return str(tid)
+        except RuntimeError:
+            pass
+        return "default"
 
     @staticmethod
     def _get_run_id(runtime: Runtime) -> str:
+        """run_id 解析链: runtime.context → LangGraph config configurable → "default"."""
         context = getattr(runtime, "context", None)
-        run_id = context.get("run_id") if context else None
-        return str(run_id) if run_id else "default"
+        if context:
+            return str(context.get("run_id", "default"))
+        try:
+            from langgraph.config import get_config
 
-    def _pending_key(self, state: HarnessState, runtime: Runtime) -> tuple[str, str]:
-        return self._get_thread_id(state, runtime), self._get_run_id(runtime)
+            configurable = get_config().get("configurable", {})
+            rid = configurable.get("run_id") or configurable.get("thread_id")
+            if rid:
+                return str(rid)
+        except RuntimeError:
+            pass
+        return "default"
+
+    def _pending_key(self, runtime: Runtime) -> tuple[str, str]:
+        return self._get_thread_id(runtime), self._get_run_id(runtime)
 
     def _touch_completion_reminder_key_locked(self, key: tuple[str, str]) -> None:
         self._completion_reminder_next_order += 1
@@ -181,27 +220,24 @@ class TodoMiddleware(HarnessAgentMiddleware):
             self._drop_completion_reminder_key_locked(key)
 
     def _queue_completion_reminder(
-        self, state: HarnessState, runtime: Runtime, reminder: str
+        self, runtime: Runtime, reminder: str
     ) -> None:
-        key = self._pending_key(state, runtime)
+        key = self._pending_key(runtime)
         with self._lock:
             self._pending_completion_reminders.setdefault(key, []).append(reminder)
             self._completion_reminder_counts[key] = self._completion_reminder_counts.get(key, 0) + 1
             self._touch_completion_reminder_key_locked(key)
             self._prune_completion_reminder_state_locked(protected_key=key)
 
-    def _completion_reminder_count_for_runtime(
-        self, state: HarnessState, runtime: Runtime
-    ) -> int:
-        key = self._pending_key(state, runtime)
+    def _completion_reminder_count_for_runtime(self, runtime: Runtime) -> int:
+        key = self._pending_key(runtime)
         with self._lock:
             return self._completion_reminder_counts.get(key, 0)
 
     def _drain_completion_reminders(self, runtime: Runtime) -> list[str]:
-        context = getattr(runtime, "context", None)
-        thread_id = str(context.get("thread_id")) if context and context.get("thread_id") else "default"
-        run_id = str(context.get("run_id")) if context and context.get("run_id") else "default"
-        key = (thread_id, run_id)
+        # 与 _queue_completion_reminder 共用同一解析链 — 之前此处只读
+        # runtime.context (生产为 None) 导致键失配, 提醒永远 drain 不到
+        key = self._pending_key(runtime)
         with self._lock:
             reminders = self._pending_completion_reminders.pop(key, [])
             if reminders or key in self._completion_reminder_counts:
@@ -211,7 +247,7 @@ class TodoMiddleware(HarnessAgentMiddleware):
     def _clear_other_run_completion_reminders(
         self, state: HarnessState, runtime: Runtime
     ) -> None:
-        thread_id, current_run_id = self._pending_key(state, runtime)
+        thread_id, current_run_id = self._pending_key(runtime)
         with self._lock:
             for key in self._completion_reminder_keys_locked():
                 if key[0] == thread_id and key[1] != current_run_id:
@@ -220,7 +256,7 @@ class TodoMiddleware(HarnessAgentMiddleware):
     def _clear_current_run_completion_reminders(
         self, state: HarnessState, runtime: Runtime
     ) -> None:
-        key = self._pending_key(state, runtime)
+        key = self._pending_key(runtime)
         with self._lock:
             self._drop_completion_reminder_key_locked(key)
 
@@ -245,6 +281,8 @@ class TodoMiddleware(HarnessAgentMiddleware):
         runtime: Runtime,
     ) -> dict | None:
         """Inject a todo-list reminder when the todo-write call has left the context window."""
+        if not state.get("plan_mode"):
+            return None
         todos = state.get("todos") or []
         if not todos:
             return None
@@ -281,6 +319,10 @@ class TodoMiddleware(HarnessAgentMiddleware):
         state: HarnessState,
         runtime: Runtime,
     ) -> dict | None:
+        if not state.get("plan_mode"):
+            # 非 plan 模式完全惰性 — 上次 plan run 残留的未完成 todos
+            # 不能劫持正常模式的退出
+            return None
         todos = state.get("todos") or []
         if not todos:
             return None
@@ -298,16 +340,13 @@ class TodoMiddleware(HarnessAgentMiddleware):
             return None
 
         # Enforce a reminder cap to prevent infinite re-engagement loops.
-        if (
-            self._completion_reminder_count_for_runtime(state, runtime)
-            >= self._MAX_COMPLETION_REMINDERS
-        ):
+        if self._completion_reminder_count_for_runtime(runtime) >= self._MAX_COMPLETION_REMINDERS:
             return None
 
         # Queue a reminder for the next model request and jump back. The
         # reminder is delivered via awrap_model_call instead of being
         # persisted into graph state, so it never leaks into transcripts.
-        self._queue_completion_reminder(state, runtime, _format_completion_reminder(todos))
+        self._queue_completion_reminder(runtime, _format_completion_reminder(todos))
         return {"jump_to": "model"}
 
     @override
@@ -317,16 +356,47 @@ class TodoMiddleware(HarnessAgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
         reminders = self._drain_completion_reminders(request.runtime)
-        if not reminders:
+        extra_messages: list[HumanMessage] = []
+
+        # ── plan 模式首步提示: 规划先于执行 (不持久化进历史) ──
+        # todos 为空 OR 全部终态 (上一轮遗留) 都视为需要重新规划;
+        # 轮次中间不会误触发 — 完成最后一项时 write_todos 调用必在消息历史里
+        state = getattr(request, "state", None) or {}
+        todos = state.get("todos") or []
+        messages = state.get("messages") or []
+        needs_plan = not todos or all(_todo_status(t) in _TERMINAL_STATUSES for t in todos)
+        if (
+            state.get("plan_mode")
+            and needs_plan
+            and not _todos_in_messages(messages, self._todo_write_tool_name)
+            and not _plan_reminder_in_messages(messages)
+        ):
+            extra_messages.append(
+                HumanMessage(
+                    name="todo_plan_reminder",
+                    additional_kwargs={"hide_from_ui": True},
+                    content=(
+                        "<system_reminder>\n"
+                        "Plan mode is active. Before doing anything else, break the user's "
+                        "request down with the write_todos tool, then execute the items one "
+                        "by one, updating their status as you go. Do not give your final "
+                        "response until every todo item is completed or failed.\n"
+                        "</system_reminder>"
+                    ),
+                )
+            )
+
+        if reminders:
+            extra_messages.append(
+                HumanMessage(
+                    content="\n\n".join(dict.fromkeys(reminders)),
+                    name="todo_completion_reminder",
+                    additional_kwargs={"hide_from_ui": True},
+                )
+            )
+        if not extra_messages:
             return await handler(request)
-        new_messages = [
-            *request.messages,
-            HumanMessage(
-                content="\n\n".join(dict.fromkeys(reminders)),
-                name="todo_completion_reminder",
-                additional_kwargs={"hide_from_ui": True},
-            ),
-        ]
+        new_messages = [*request.messages, *extra_messages]
         return await handler(request.override(messages=new_messages))
 
     @override

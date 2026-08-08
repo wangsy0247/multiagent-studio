@@ -21,6 +21,9 @@ interface InputBarProps {
   // ── Agent 选择 ──
   selectedAgent?: string;
   onAgentChange?: (agentName: string) => void;
+  // ── Plan 模式 (仅 single) ──
+  planMode?: boolean;
+  onPlanModeChange?: (v: boolean) => void;
 }
 
 export default function InputBar({
@@ -34,6 +37,8 @@ export default function InputBar({
   mode,
   selectedAgent,
   onAgentChange,
+  planMode = false,
+  onPlanModeChange,
 }: InputBarProps) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -163,24 +168,55 @@ export default function InputBar({
         </div>
       )}
       {todos.length > 0 && (
-        <div className="flex items-center gap-2 px-1">
-          <ListTodo className="w-3.5 h-3.5 text-slate-400" />
-          <div className="flex gap-1.5 overflow-x-auto">
-            {todos.map((todo) => (
-              <span
-                key={todo.id}
-                className={cn(
-                  "px-2 py-0.5 rounded-md text-[10px] font-medium whitespace-nowrap",
-                  todo.status === "completed" && "bg-emerald-50 text-emerald-700",
-                  todo.status === "in_progress" && "bg-hermes-50 text-hermes-700",
-                  todo.status === "failed" && "bg-red-50 text-red-700",
-                  todo.status === "pending" && "bg-slate-100 text-slate-600",
-                )}
-              >
-                {todo.description}
-              </span>
-            ))}
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-100 bg-slate-50/80">
+            <ListTodo className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-xs font-medium text-slate-600">任务清单</span>
+            <span className="text-[10px] text-slate-400 ml-auto">
+              {todos.filter((t) => t.status === "completed" || t.status === "failed").length}/{todos.length}
+            </span>
           </div>
+          <ol className="divide-y divide-slate-100 max-h-48 overflow-y-auto">
+            {todos.map((todo, index) => (
+              <li key={todo.id} className="flex items-center gap-2.5 px-3 py-2">
+                <span
+                  className={cn(
+                    "w-[18px] h-[18px] rounded-full text-[10px] font-semibold flex items-center justify-center flex-shrink-0",
+                    todo.status === "completed" && "bg-emerald-100 text-emerald-700",
+                    todo.status === "in_progress" && "bg-hermes-100 text-hermes-700",
+                    todo.status === "failed" && "bg-red-100 text-red-700",
+                    todo.status === "pending" && "bg-slate-100 text-slate-500",
+                  )}
+                >
+                  {index + 1}
+                </span>
+                <span
+                  className={cn(
+                    "flex-1 text-xs leading-5",
+                    todo.status === "completed" && "line-through text-slate-400",
+                    todo.status === "failed" && "text-red-500",
+                    todo.status === "pending" && "text-slate-600",
+                    todo.status === "in_progress" && "text-slate-800 font-medium",
+                  )}
+                >
+                  {todo.description}
+                </span>
+                <span
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap",
+                    todo.status === "completed" && "bg-emerald-50 text-emerald-700",
+                    todo.status === "in_progress" && "bg-hermes-50 text-hermes-700",
+                    todo.status === "failed" && "bg-red-50 text-red-700",
+                    todo.status === "pending" && "bg-slate-100 text-slate-500",
+                  )}
+                >
+                  {todo.status === "completed" ? "已完成"
+                    : todo.status === "in_progress" ? "进行中"
+                    : todo.status === "failed" ? "失败" : "待处理"}
+                </span>
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 
@@ -250,6 +286,24 @@ export default function InputBar({
           }`}>
             {mode === "team" ? "Team" : "Single"}
           </span>
+        )}
+
+        {/* ── Plan 模式切换 (仅 single 模式; team 由 Lead 任务系统拆解) ── */}
+        {mode !== "team" && onPlanModeChange && (
+          <button
+            onClick={() => onPlanModeChange(!planMode)}
+            disabled={isStreaming}
+            title={planMode ? "Plan 模式：先规划再执行（点击切回正常模式）" : "正常模式（点击切换到 Plan 模式）"}
+            className={cn(
+              "flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium transition-colors disabled:opacity-50",
+              planMode
+                ? "bg-hermes-600 text-white hover:bg-hermes-700"
+                : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+            )}
+          >
+            <ListTodo className="w-3 h-3" />
+            {planMode ? "Plan" : "正常"}
+          </button>
         )}
 
         {/* ── @mention 补全 ── */}

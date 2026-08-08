@@ -99,6 +99,8 @@ export interface SSEEvent {
   instruction?: string;
   request?: ClarificationRequest;
   todo?: TodoItem;
+  /** plan 模式整表替换 (todo_update 事件, 优先于单条 todo) */
+  todos?: TodoItem[];
   title?: string;
   tokens?: TokenUsage;
   trace_id?: string;

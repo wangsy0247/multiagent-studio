@@ -249,6 +249,7 @@ async def execute(
             project_id=req.project_id,
             agent_name=req.agent_name,
             mode=req.mode,
+            plan_mode=req.plan_mode,
         ),
     ))
     # 泵任务尚未被调度 (本函数内无 await), 此刻订阅必成功

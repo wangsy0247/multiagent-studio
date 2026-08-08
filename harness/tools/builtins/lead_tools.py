@@ -16,6 +16,7 @@ from harness.tools.builtins.view_image_tool import (
     list_uploaded_files_tool,
     view_image_tool,
 )
+from harness.tools.builtins.write_todos_tool import write_todos_tool
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,7 @@ def build_lead_tools(
     - session_search: Search the user's historical session messages (FTS5)
     - view_image: View an image (pairs with ViewImageMiddleware for injection)
     - list_uploaded_files: List files the user uploaded in this thread
+    - write_todos: Plan-mode TODO tracking (writes HarnessState.todos)
     """
     tools: list[BaseTool] = [
         Agent_tool(manager, parent_skills=parent_skills),
@@ -224,6 +226,7 @@ def build_lead_tools(
         present_files_tool(),
         view_image_tool(),
         list_uploaded_files_tool(),
+        write_todos_tool(),
     ]
 
     # session_search：搜索用户历史会话消息（FTS5 全文检索，App 侧内部 API）。

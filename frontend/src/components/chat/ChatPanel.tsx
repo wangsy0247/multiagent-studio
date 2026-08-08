@@ -67,6 +67,9 @@ export default function ChatPanel({
     if (agentName) setSelectedAgent(agentName);
   }, [agentName]);
 
+  // ── Plan 模式开关 (仅 single 模式生效; team 由 Lead 任务系统拆解) ──
+  const [planMode, setPlanMode] = useState(false);
+
   const handleAttachFiles = useCallback((fileList: FileList | File[] | null) => {
     if (!fileList) return;
     const incoming: File[] = Array.from(fileList);
@@ -229,6 +232,8 @@ export default function ChatPanel({
         project_id: projectId || undefined,
         agent_name: selectedAgent,
         mode: resolvedMode,
+        // plan 模式: 强制 write_todos 规划 + 完成追踪 (仅 single 生效)
+        plan_mode: resolvedMode === "single" ? planMode : undefined,
         // @点名成员 → 后端注入"优先安排"指令给 Lead
         mentions: targetAgents.length > 0 ? targetAgents : undefined,
       });
@@ -584,6 +589,8 @@ export default function ChatPanel({
             mode={propMode}
             selectedAgent={selectedAgent}
             onAgentChange={setSelectedAgent}
+            planMode={planMode}
+            onPlanModeChange={setPlanMode}
           />
         )}
 

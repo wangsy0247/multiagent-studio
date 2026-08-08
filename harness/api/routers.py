@@ -67,6 +67,7 @@ async def execute(
                 agent_name=request.agent_name,
                 mode=request.mode,
                 unattended=request.unattended,
+                plan_mode=request.plan_mode,
             ),
             thread_id=request.thread_id,
         ),

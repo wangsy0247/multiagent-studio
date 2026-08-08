@@ -433,6 +433,7 @@ class ExecuteRequest(BaseModel):
     agent_name: str = "default"   # 单 Agent 模式指定 Agent
     mode: str = "single"            # "single" | "team"
     unattended: bool = False        # 定时任务等无人值守执行（禁用 cron/澄清等交互工具）
+    plan_mode: bool = False         # plan 模式：强制 write_todos 规划 + 完成追踪（仅 single 生效）
 
 
 class ClarificationResponse(BaseModel):

@@ -94,6 +94,9 @@ function _updateMessageMeta(
 const _pendingAppends = new Map<string, string>();
 let _flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** 不进消息流的内部工具 (tool_call/tool_result 直接吞掉, 状态另有呈现渠道) */
+const HIDDEN_TOOLS = new Set(["write_todos"]);
+
 /** 把增量文本写入缓冲并调度 50ms 批量 flush。 */
 function _bufferAppend(messageId: string, content: string) {
   _pendingAppends.set(messageId, (_pendingAppends.get(messageId) || "") + content);
@@ -293,6 +296,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         // thinking 阶段同时结束, 记录结束时间
         _markThinkingEnd();
         set({ _streamingMessageId: null, _streamingThinkingId: null });
+        // 内部跟踪类工具不进消息流 (TODO 状态由 todo_update 的 chips/卡片呈现)
+        if (HIDDEN_TOOLS.has(event.tool_name || "")) break;
         get().addMessage({
           role: "tool",
           content: event.tool_name || "unknown",
@@ -303,6 +308,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break;
 
       case "tool_result":
+        if (HIDDEN_TOOLS.has(event.tool_name || "")) break;
         get().addMessage({
           role: "tool",
           content: event.tool_result || "",
@@ -613,7 +619,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       // ── TODO / Title / Token ─────────────────────────────────────
       case "todo_update":
-        if (event.todo) {
+        if (event.todos) {
+          // 整表替换 (harness write_todos 工具推送的全量列表)
+          set({ todos: event.todos });
+        } else if (event.todo) {
           set((s) => ({
             todos: s.todos.some((t) => t.id === event.todo!.id)
               ? s.todos.map((t) => (t.id === event.todo!.id ? event.todo! : t))
