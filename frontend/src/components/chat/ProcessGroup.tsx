@@ -68,10 +68,10 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
 
   return (
     <div className="pl-11 animate-fade-in">
-      <div className="max-w-[80%] rounded-xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+      <div className="max-w-[80%]">
         <button
           onClick={toggle}
-          className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-100/70 transition-colors"
+          className="flex items-center gap-1.5 py-1 text-left text-slate-500 hover:text-slate-700 transition-colors"
         >
           {expanded ? (
             <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
@@ -83,18 +83,18 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
           ) : (
             <Settings2 className="w-3.5 h-3.5 text-slate-400" />
           )}
-          <span className="text-xs font-medium text-slate-600">
+          <span className="text-xs font-medium">
             {isLive ? "执行中" : "执行过程"} · {messages.length} 步
           </span>
           {!expanded && (
-            <span className="ml-auto text-[10px] text-slate-400 truncate max-w-[40%]">
+            <span className="text-[10px] text-slate-400 truncate max-w-[40%]">
               {summarize(messages[messages.length - 1])}
             </span>
           )}
         </button>
         {expanded && (
-          <div ref={contentRef} className="px-3 py-2 space-y-3 border-t border-slate-200 bg-white/60 max-h-[480px] overflow-y-auto">
-            {/* 历史步骤区: 默认折叠为 "还有 N 步", 点击展开/收起 (DeerFlow "只展示最新" 模式) */}
+          <div ref={contentRef} className="ml-[7px] border-l border-slate-200 pl-3 py-1 space-y-3 max-h-[480px] overflow-y-auto">
+            {/* 历史步骤区: 默认折叠为 "还有 N 步", 点击展开/收起 ("只展示最新" 模式) */}
             {history.length > 0 && (
               <button
                 onClick={() => setShowHistory((v) => !v)}
