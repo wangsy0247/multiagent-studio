@@ -95,6 +95,27 @@ async def test_create_agent_ignores_model_in_body(db, temp_data_root):
 
 
 @pytest.mark.asyncio
+async def test_agent_extensions_roundtrip(db, temp_data_root):
+    """create/update agent 写 extensions_config.yaml, GET 返回 extensions."""
+    alice = await _make_user(db, "alice")
+    body = {"name": "coder", "mcp_servers": {"github": False},
+            "skills_enabled": {"deep-research": False}}
+    result = await agents_api.create_agent(_Req(body), db, alice)
+    assert result["status"] == "created"
+
+    got = await agents_api.get_agent("coder", db, alice)
+    assert got["extensions"]["mcp_servers"] == {"github": False}
+    assert got["extensions"]["skills"] == {"deep-research": False}
+
+    # update: 只改 mcp_servers, skills 保留
+    upd = {"mcp_servers": {"github": False, "filesystem": False}}
+    await agents_api.update_agent("coder", _Req(upd), db, alice)
+    got = await agents_api.get_agent("coder", db, alice)
+    assert got["extensions"]["mcp_servers"] == {"github": False, "filesystem": False}
+    assert got["extensions"]["skills"] == {"deep-research": False}
+
+
+@pytest.mark.asyncio
 async def test_put_global_config_whitelist_and_preserve_infra(db, temp_data_root):
     """PUT config/global: 白名单外字段拒绝写入, 基础设施字段原样保留."""
     alice = await _make_user(db, "alice")

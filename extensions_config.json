@@ -5,15 +5,24 @@
       "enabled": true,
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" },
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "$GITHUB_TOKEN"
+      },
       "description": "GitHub MCP server for repository operations"
     },
     "postgres": {
       "enabled": false,
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://localhost/mydb"
+      ],
       "env": {},
       "description": "PostgreSQL database access"
     },
@@ -21,7 +30,11 @@
       "enabled": false,
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/workspace"
+      ],
       "env": {},
       "description": "Filesystem access"
     },
@@ -29,10 +42,28 @@
       "enabled": false,
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@anthropic-ai/mcp-server-brave-search"],
-      "env": { "BRAVE_API_KEY": "$BRAVE_API_KEY" },
+      "args": [
+        "-y",
+        "@anthropic-ai/mcp-server-brave-search"
+      ],
+      "env": {
+        "BRAVE_API_KEY": "$BRAVE_API_KEY"
+      },
       "description": "Brave search API"
     }
   },
-  "skills": {}
+  "skills": {
+    "my-workflow": {
+      "enabled": true
+    },
+    "find-skill": {
+      "enabled": true
+    },
+    "deployment-checklist": {
+      "enabled": true
+    },
+    "code-reviewer": {
+      "enabled": true
+    }
+  }
 }

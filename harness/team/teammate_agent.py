@@ -360,6 +360,13 @@ class TeammateAgent:
             if whitelist is not None:
                 skills = [s for s in skills if s.name in whitelist]
 
+            # per-agent skill 开关 (extensions_config.yaml 黑名单)
+            if self._effective_config is not None:
+                from harness.skills.filter import filter_skills_by_agent
+                skills = filter_skills_by_agent(
+                    skills, self._effective_config.enabled_skills,
+                )
+
             self._skills_stats = {
                 "loaded": loaded_count,
                 "after_whitelist": len(skills),

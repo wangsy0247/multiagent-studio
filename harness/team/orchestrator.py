@@ -466,7 +466,14 @@ class TeamOrchestrator:
             tools: list = []
             if self._tool_registry:
                 for group in member_eff.tool_groups:
-                    tools.extend(self._tool_registry.get_tools_by_category(group))
+                    group_tools = self._tool_registry.get_tools_by_category(group)
+                    if group == "mcp":
+                        # per-agent MCP 子集 (extensions_config.yaml 黑名单)
+                        from harness.mcp_integration.filter import filter_mcp_tools_by_agent
+                        group_tools = filter_mcp_tools_by_agent(
+                            group_tools, member_eff.enabled_mcp_servers,
+                        )
+                    tools.extend(group_tools)
 
             # tool_search 延迟加载: MCP 工具被 defer 时, 注入搜索工具
             # (member 的 MCP schema 由 DeferredToolFilterMiddleware 按需隐藏)
@@ -593,7 +600,14 @@ class TeamOrchestrator:
             if self._tool_registry:
                 for group in lead_eff.tool_groups:
                     if group in LEAD_ALLOWED_TOOL_GROUPS:
-                        tools.extend(self._tool_registry.get_tools_by_category(group))
+                        group_tools = self._tool_registry.get_tools_by_category(group)
+                        if group == "mcp":
+                            # per-agent MCP 子集 (extensions_config.yaml 黑名单)
+                            from harness.mcp_integration.filter import filter_mcp_tools_by_agent
+                            group_tools = filter_mcp_tools_by_agent(
+                                group_tools, lead_eff.enabled_mcp_servers,
+                            )
+                        tools.extend(group_tools)
                     else:
                         logger.info(
                             "Lead: tool_group '%s' excluded by whitelist", group,
@@ -764,7 +778,14 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
             if self._tool_registry:
                 for group in eff.tool_groups:
                     if group in VERIFIER_ALLOWED_TOOL_GROUPS:
-                        tools.extend(self._tool_registry.get_tools_by_category(group))
+                        group_tools = self._tool_registry.get_tools_by_category(group)
+                        if group == "mcp":
+                            # per-agent MCP 子集 (extensions_config.yaml 黑名单)
+                            from harness.mcp_integration.filter import filter_mcp_tools_by_agent
+                            group_tools = filter_mcp_tools_by_agent(
+                                group_tools, eff.enabled_mcp_servers,
+                            )
+                        tools.extend(group_tools)
                     else:
                         logger.info("Verifier: tool_group '%s' excluded by whitelist", group)
 

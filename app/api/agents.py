@@ -96,12 +96,14 @@ async def create_agent(request: Request, db: AsyncSession = Depends(get_db), cur
     if soul:
         save_agent_soul(name, soul, user_id=user_id)
 
-    # 自动生成 extensions_config.yaml 模板
+    # 自动生成 extensions_config.yaml (per-agent MCP/skill 子集黑名单)
     mcp_servers_data = body.get("mcp_servers", {})
+    skills_data = body.get("skills_enabled", None)
     save_agent_extensions(
         name,
         mcp_servers=mcp_servers_data if mcp_servers_data else {},
         user_id=user_id,
+        skills=skills_data,
     )
     return {"status": "created", "name": name}
 
@@ -113,11 +115,21 @@ async def get_agent(
     current_user: User = Depends(get_current_user),
 ):
     from harness.config.agents_config import load_agent_config, load_agent_soul
+    from harness.config.config_loader import ConfigLoader
     _validate_name(name)
     uid = current_user.username
     cfg = load_agent_config(name, user_id=uid)
     if cfg is None: raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-    return {"agent": cfg.model_dump(), "soul": load_agent_soul(name, user_id=uid)}
+    # per-agent 扩展子集 (extensions_config.yaml; 不存在返回空)
+    ext = ConfigLoader.load_agent_extensions(uid, name) or {}
+    return {
+        "agent": cfg.model_dump(),
+        "soul": load_agent_soul(name, user_id=uid),
+        "extensions": {
+            "mcp_servers": ext.get("mcp_servers", {}),
+            "skills": ext.get("skills", {}),
+        },
+    }
 
 
 @router.put("/{name}")
@@ -179,6 +191,19 @@ async def update_agent(name: str, request: Request, db: AsyncSession = Depends(g
     save_agent_config(name, cfg, user_id=user_id)
     if "soul" in body:
         save_agent_soul(name, body["soul"], user_id=user_id)
+
+    # per-agent 扩展子集 (extensions_config.yaml): 与现有内容合并后写回
+    if "mcp_servers" in body or "skills_enabled" in body:
+        from harness.config.agents_config import save_agent_extensions
+        from harness.config.config_loader import ConfigLoader
+        ext = ConfigLoader.load_agent_extensions(user_id, name) or {}
+        mcp = ext.get("mcp_servers", {})
+        skl = ext.get("skills", {})
+        if "mcp_servers" in body:
+            mcp = body["mcp_servers"] or {}
+        if "skills_enabled" in body:
+            skl = body["skills_enabled"] or {}
+        save_agent_extensions(name, mcp_servers=mcp, user_id=user_id, skills=skl)
     return {"status": "updated", "name": name}
 
 

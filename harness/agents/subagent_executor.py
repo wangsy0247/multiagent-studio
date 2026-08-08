@@ -349,6 +349,10 @@ class SubagentExecutor:
 
             all_enabled = self._skill_storage.load_skills(enabled_only=True)
 
+            # per-agent skill 黑名单 — 经 contextvar 继承 parent agent 的子集
+            from harness.skills.filter import filter_skills_by_current_context
+            all_enabled = filter_skills_by_current_context(all_enabled)
+
             if merged is not None:
                 if len(merged) == 0:
                     return []

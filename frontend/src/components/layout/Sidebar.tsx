@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban, CalendarClock } from "lucide-react";
+import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban, CalendarClock, Puzzle } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { useChatStore } from "@/lib/chat-store";
 import { useUnreadStore } from "@/lib/unread-store";
@@ -153,6 +153,11 @@ export default function Sidebar() {
           className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
             pathname.startsWith("/agents") ? "bg-hermes-50 text-hermes-700 font-medium" : "text-slate-600 hover:bg-slate-50")}>
           <Bot className="w-4 h-4 text-slate-400" /> Agent
+        </button>
+        <button onClick={() => router.push("/extensions")}
+          className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+            pathname.startsWith("/extensions") ? "bg-hermes-50 text-hermes-700 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+          <Puzzle className="w-4 h-4 text-slate-400" /> 扩展
         </button>
         <button onClick={() => router.push("/scheduled-tasks")}
           className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",

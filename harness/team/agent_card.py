@@ -245,11 +245,17 @@ def generate_agent_card(
         else:
             tool_groups = []
 
-    # ── 工具: 从 tool_groups 展开 ──
+    # ── 工具: 从 tool_groups 展开 (per-agent MCP 子集过滤, 与实际装配一致) ──
     tools: list[str] = []
     if tool_registry is not None:
+        _enabled_mcp = (
+            effective_config.enabled_mcp_servers if effective_config is not None else {}
+        )
         for group in tool_groups:
             group_tools = tool_registry.get_tools_by_category(group)
+            if group == "mcp" and _enabled_mcp:
+                from harness.mcp_integration.filter import filter_mcp_tools_by_agent
+                group_tools = filter_mcp_tools_by_agent(group_tools, _enabled_mcp)
             for t in group_tools:
                 name = getattr(t, "name", str(t))
                 if name not in tools:

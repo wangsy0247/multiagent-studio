@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Save, Trash2, Brain, Shield } from "lucide-react";
-import { agentsAPI } from "@/lib/api-client";
+import { agentsAPI, extensionsAPI } from "@/lib/api-client";
+
+interface ExtRow { name: string; description: string; enabled: boolean; }
 
 export default function AgentEditPage() {
   const { name } = useParams<{ name: string }>();
@@ -28,8 +30,35 @@ export default function AgentEditPage() {
   // ── Features ──
   const [featureSummarization, setFeatureSummarization] = useState(true);
   const [featureSubagent, setFeatureSubagent] = useState(true);
+  // ── 扩展能力 (per-agent 黑名单: 勾选=继承全局, 取消=此 agent 禁用) ──
+  const [mcpRows, setMcpRows] = useState<ExtRow[]>([]);
+  const [skillRows, setSkillRows] = useState<ExtRow[]>([]);
+  const [mcpDisabled, setMcpDisabled] = useState<Set<string>>(new Set());
+  const [skillsDisabled, setSkillsDisabled] = useState<Set<string>>(new Set());
 
   useEffect(() => {
+    // 全局 MCP server 和 skill 列表 (新旧 agent 都需要, 用于扩展能力区块)
+    (async () => {
+      try {
+        const [mcpResp, skillResp] = await Promise.all([
+          extensionsAPI.listMcpServers(),
+          extensionsAPI.listSkills(),
+        ]);
+        const srv = mcpResp.data.servers || {};
+        setMcpRows(
+          Object.entries(srv).map(([n, cfg]: [string, any]) => ({
+            name: n, description: cfg.description || "", enabled: cfg.enabled !== false,
+          }))
+        );
+        setSkillRows(
+          (skillResp.data.skills || []).map((s: any) => ({
+            name: s.name, description: s.description || "", enabled: s.enabled !== false,
+          }))
+        );
+      } catch (err) {
+        console.warn("加载全局扩展列表失败:", err);
+      }
+    })();
     if (!isNew) loadAgent();
   }, [name]);
 
@@ -54,6 +83,14 @@ export default function AgentEditPage() {
       const feat = agent.features || {};
       setFeatureSummarization(feat.summarization ?? true);
       setFeatureSubagent(feat.subagent ?? true);
+      // per-agent 扩展黑名单 (extensions_config.yaml)
+      const ext = data.extensions || {};
+      setMcpDisabled(new Set(
+        Object.entries(ext.mcp_servers || {}).filter(([, v]) => v === false).map(([k]) => k)
+      ));
+      setSkillsDisabled(new Set(
+        Object.entries(ext.skills || {}).filter(([, v]) => v === false).map(([k]) => k)
+      ));
       // Load memory
       const memResp = await agentsAPI.getMemory(name);
       setMemoryData(memResp.data.memory);
@@ -82,6 +119,9 @@ export default function AgentEditPage() {
         features: { summarization: featureSummarization, subagent: featureSubagent, langfuse: true, guardrail: false },
         limits: { max_turns: maxTurns, timeout_seconds: timeoutSeconds },
         subagents: { max_concurrent: subagentMaxConcurrent, timeout_seconds: 900 },
+        // per-agent 扩展黑名单 (false=此 agent 禁用; 不传的 key = 继承全局)
+        mcp_servers: Object.fromEntries([...mcpDisabled].map((n) => [n, false])),
+        skills_enabled: Object.fromEntries([...skillsDisabled].map((n) => [n, false])),
       };
       if (isNew) {
         await agentsAPI.create(payload as any);
@@ -265,6 +305,70 @@ export default function AgentEditPage() {
                 className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-slate-200" />
             </div>
           </div>
+        </div>
+
+        {/* ── 扩展能力 (per-agent 黑名单) ── */}
+        <div className="border border-slate-200 rounded-xl p-4">
+          <h3 className="text-sm font-medium text-slate-700 mb-1">扩展能力</h3>
+          <p className="text-[10px] text-slate-400 mb-3">
+            勾选 = 继承全局 (允许); 取消勾选 = 此 Agent 禁用。全局已禁用的项不可在此覆盖,
+            全局管理在「扩展」页。
+          </p>
+          {mcpRows.length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs font-medium text-slate-600 mb-1.5">MCP 服务</p>
+              <div className="space-y-1.5">
+                {mcpRows.map((row) => {
+                  const globallyOff = !row.enabled;
+                  const checked = globallyOff ? false : !mcpDisabled.has(row.name);
+                  return (
+                    <label key={row.name} className={`flex items-center gap-2 ${globallyOff ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
+                      <input type="checkbox" checked={checked} disabled={globallyOff}
+                        onChange={(e) => {
+                          const next = new Set(mcpDisabled);
+                          if (e.target.checked) next.delete(row.name);
+                          else next.add(row.name);
+                          setMcpDisabled(next);
+                        }}
+                        className="w-3.5 h-3.5 rounded border-slate-300" />
+                      <span className="text-xs text-slate-600 font-mono">{row.name}</span>
+                      {row.description && <span className="text-[10px] text-slate-400 truncate">{row.description}</span>}
+                      {globallyOff && <span className="text-[10px] text-slate-400">(全局已禁用)</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {skillRows.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-slate-600 mb-1.5">技能</p>
+              <div className="space-y-1.5">
+                {skillRows.map((row) => {
+                  const globallyOff = !row.enabled;
+                  const checked = globallyOff ? false : !skillsDisabled.has(row.name);
+                  return (
+                    <label key={row.name} className={`flex items-center gap-2 ${globallyOff ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
+                      <input type="checkbox" checked={checked} disabled={globallyOff}
+                        onChange={(e) => {
+                          const next = new Set(skillsDisabled);
+                          if (e.target.checked) next.delete(row.name);
+                          else next.add(row.name);
+                          setSkillsDisabled(next);
+                        }}
+                        className="w-3.5 h-3.5 rounded border-slate-300" />
+                      <span className="text-xs text-slate-600">{row.name}</span>
+                      {row.description && <span className="text-[10px] text-slate-400 truncate">{row.description}</span>}
+                      {globallyOff && <span className="text-[10px] text-slate-400">(全局已禁用)</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {mcpRows.length === 0 && skillRows.length === 0 && (
+            <p className="text-xs text-slate-400">暂无全局 MCP 服务或技能, 可先在「扩展」页添加</p>
+          )}
         </div>
 
         {/* ── 功能开关 ── */}

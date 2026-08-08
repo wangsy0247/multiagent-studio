@@ -103,9 +103,11 @@ def create_app() -> FastAPI:
 
     from harness.api.routers import router
     from harness.api.routers_skills import router as skills_router
+    from harness.api.routers_mcp import router as mcp_router
 
     app.include_router(router)
     app.include_router(skills_router)
+    app.include_router(mcp_router)
 
     return app
 

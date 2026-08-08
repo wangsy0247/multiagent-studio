@@ -206,7 +206,8 @@ def _make_session_pool_tool(
         args_schema=tool.args_schema,
         coroutine=call_with_persistent_session,
         response_format="content_and_artifact",
-        metadata=tool.metadata,
+        # 记录来源 server — per-agent MCP 子集过滤 (filter_mcp_tools_by_agent) 用
+        metadata={**(tool.metadata or {}), "mcp_server": server_name},
     )
 
 

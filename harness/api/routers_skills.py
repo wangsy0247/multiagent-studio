@@ -127,6 +127,7 @@ class SkillSummary(BaseModel):
     enabled: bool
     allowed_tools: list[str] | None = None
     license: str | None = None
+    user_id: str | None = None  # 非空 = 用户私有 skill
 
 
 class SkillDetail(BaseModel):
@@ -155,10 +156,12 @@ class SkillContentRequest(BaseModel):
 
 
 class SkillInstallRequest(BaseModel):
-    """Install a skill from a .skill archive path."""
+    """Install a skill from a .skill archive path or a URL."""
 
-    archive_path: str = Field(..., description="Path to the .skill ZIP file")
+    archive_path: str = Field(default="", description="Path to the .skill ZIP file")
+    url: str = Field(default="", description="URL to a SKILL.md (raw markdown) to install")
     force: bool = False
+    user_id: str = "default"
 
 
 class SkillRollbackRequest(BaseModel):
@@ -180,6 +183,7 @@ def _skill_summary(skill: Any) -> SkillSummary:
         enabled=skill.enabled,
         allowed_tools=skill.allowed_tools,
         license=skill.license,
+        user_id=getattr(skill, "user_id", None),
     )
 
 
@@ -213,11 +217,12 @@ def _skill_detail(skill: Any) -> SkillDetail:
 @router.get("")
 async def list_skills(
     enabled_only: bool = Query(False, description="Only return enabled skills"),
+    user_id: str = Query("default", description="User ID — 同时列出该用户的私有 skill"),
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
     """List all skills with optional enabled-only filter."""
     try:
-        skills = storage.load_skills(enabled_only=enabled_only)
+        skills = storage.load_skills(enabled_only=enabled_only, user_id=user_id)
     except Exception as exc:
         logger.exception("Failed to load skills")
         raise HTTPException(status_code=500, detail=f"Failed to load skills: {exc}")
@@ -226,6 +231,44 @@ async def list_skills(
         "skills": [_skill_summary(s) for s in skills],
         "count": len(skills),
     }
+
+
+@router.get("/agent-skills")
+async def list_agent_skills(
+    user_id: str = Query("default"),
+) -> dict[str, Any]:
+    """按 agent 聚合列出成员私有进化技能 (probation + active).
+
+    返回 {agents: [{agent, skills: [...]}]}, 只包含有技能的 agent。
+    """
+    from harness.config.agents_config import list_custom_agents
+    from harness.skills.evolution.member import MemberSkillEvolutionStore
+
+    try:
+        store = MemberSkillEvolutionStore(user_id=user_id)
+        agents: list[dict[str, Any]] = []
+        for cfg in list_custom_agents(user_id=user_id):
+            records = store.list_skills(cfg.name)
+            if not records:
+                continue
+            agents.append({
+                "agent": cfg.name,
+                "display_name": cfg.display_name or cfg.name,
+                "skills": [
+                    {
+                        "name": r["name"],
+                        "description": r["description"],
+                        "state": r["state"],
+                        "success_uses": r["success_uses"],
+                        "fail_uses": r["fail_uses"],
+                    }
+                    for r in records
+                ],
+            })
+        return {"agents": agents, "count": len(agents)}
+    except Exception as exc:
+        logger.exception("Failed to list agent skills")
+        raise HTTPException(status_code=500, detail=f"Failed to list agent skills: {exc}")
 
 
 @router.get("/{name}")
@@ -287,7 +330,12 @@ async def install_skill(
     body: SkillInstallRequest,
     storage: Any = Depends(_get_skill_storage),
 ) -> dict[str, Any]:
-    """Install a skill from a .skill ZIP archive."""
+    """Install a skill from a .skill ZIP archive, or from a URL (SKILL.md)."""
+    if body.url:
+        return await _install_skill_from_url(body, storage)
+    if not body.archive_path:
+        raise HTTPException(status_code=400, detail="archive_path 或 url 必须提供其一")
+
     archive_path = Path(body.archive_path)
     if not archive_path.exists():
         raise HTTPException(status_code=400, detail=f"Archive not found: {archive_path}")
@@ -319,6 +367,68 @@ async def install_skill(
     except Exception as exc:
         logger.exception("Skill installation failed")
         raise HTTPException(status_code=500, detail=f"Installation failed: {exc}")
+
+
+async def _install_skill_from_url(
+    body: SkillInstallRequest, storage: Any
+) -> dict[str, Any]:
+    """从 URL 安装 skill — 服务端下载 SKILL.md, 校验后写入用户技能目录.
+
+    v1 仅支持单个 SKILL.md (markdown); .skill/.zip 压缩包请下载后用
+    archive_path 本地安装。
+    """
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url 必须是 http/https 链接")
+    if url.lower().endswith((".zip", ".skill")):
+        raise HTTPException(
+            status_code=400,
+            detail="暂不支持 URL 安装压缩包 — 请下载后用 archive_path 本地安装",
+        )
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            content = resp.text
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"下载失败: {exc}")
+    if len(content) > 1_000_000:
+        raise HTTPException(status_code=400, detail="SKILL.md 超过 1MB 上限")
+
+    # frontmatter 校验 (拿到规范化的 skill 名)
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+    try:
+        from harness.skills.validation import _validate_skill_frontmatter
+
+        is_valid, msg, validated_name = _validate_skill_frontmatter(tmp_path)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"SKILL.md 校验失败: {msg}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if storage.custom_skill_exists(validated_name, user_id=body.user_id) and not body.force:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Skill '{validated_name}' 已存在 — 使用 force=true 覆盖",
+        )
+    storage.write_custom_skill(
+        validated_name, "SKILL.md", content, user_id=body.user_id,
+    )
+    _refresh_cache()
+    _invalidate_graph_cache()
+    logger.info(
+        "Skill '%s' installed from URL for user '%s'", validated_name, body.user_id,
+    )
+    return {"status": "installed", "name": validated_name, "source": url}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

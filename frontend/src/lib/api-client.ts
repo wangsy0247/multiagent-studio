@@ -182,7 +182,7 @@ export const agentsAPI = {
   list: () => apiClient.get(`/v1/agents?user_id=${getCurrentUserId()}`),
   get: (name: string) => apiClient.get(`/v1/agents/${name}?user_id=${getCurrentUserId()}`),
   create: (data: {
-    name: string; model: string;  // model 必选
+    name: string;  // 模型由服务器统一配置, 无需 model 字段
     display_name?: string; description?: string;
     soul?: string; tool_groups?: string[];
     skills?: string[]; user_id?: string;
@@ -191,12 +191,56 @@ export const agentsAPI = {
     features?: { summarization?: boolean; subagent?: boolean; langfuse?: boolean; };
     limits?: { max_turns?: number; timeout_seconds?: number; };
     team?: { can_delegate?: boolean; memory_scope?: string; };
-    mcp_servers?: Record<string, boolean>;
+    mcp_servers?: Record<string, boolean>;      // per-agent MCP 黑名单 (false=禁用)
+    skills_enabled?: Record<string, boolean>;   // per-agent skill 黑名单 (false=禁用)
   }) => apiClient.post("/v1/agents", { ...data, user_id: data.user_id || getCurrentUserId() }),
   update: (name: string, data: object) => apiClient.put(`/v1/agents/${name}`, { ...data, user_id: getCurrentUserId() }),
   delete: (name: string) => apiClient.delete(`/v1/agents/${name}?user_id=${getCurrentUserId()}`),
   getMemory: (name: string) => apiClient.get(`/v1/agents/${name}/memory?user_id=${getCurrentUserId()}`),
   clearMemory: (name: string) => apiClient.delete(`/v1/agents/${name}/memory?user_id=${getCurrentUserId()}`),
+};
+
+// ===== Extensions API (MCP 服务 + 技能, 代理到 harness) =====
+export interface McpServerConfig {
+  enabled: boolean;
+  type: "stdio" | "http" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  description?: string;
+}
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  category: string;
+  enabled: boolean;
+  allowed_tools?: string[] | null;
+  license?: string | null;
+  user_id?: string | null;  // 非空 = 用户私有 skill
+}
+
+export const extensionsAPI = {
+  // ── MCP servers (全局) ──
+  listMcpServers: () => apiClient.get("/extensions/mcp/servers"),
+  upsertMcpServer: (name: string, data: McpServerConfig) =>
+    apiClient.put(`/extensions/mcp/servers/${name}`, data),
+  setMcpServerEnabled: (name: string, enabled: boolean) =>
+    apiClient.put(`/extensions/mcp/servers/${name}/enabled`, { enabled }),
+  deleteMcpServer: (name: string) => apiClient.delete(`/extensions/mcp/servers/${name}`),
+  // ── Skills ──
+  listSkills: () => apiClient.get("/extensions/skills"),
+  listAgentSkills: () => apiClient.get("/extensions/skills/agent-skills"),
+  toggleSkill: (name: string, enabled: boolean) =>
+    apiClient.put(`/extensions/skills/${name}/enabled`, { enabled }),
+  getCustomSkill: (name: string) => apiClient.get(`/extensions/skills/custom/${name}`),
+  writeCustomSkill: (name: string, content: string) =>
+    apiClient.put(`/extensions/skills/custom/${name}`, { content }),
+  deleteCustomSkill: (name: string) => apiClient.delete(`/extensions/skills/custom/${name}`),
+  installSkillFromUrl: (url: string, force = false) =>
+    apiClient.post("/extensions/skills/install", { url, force }),
 };
 
 // ===== Projects API =====

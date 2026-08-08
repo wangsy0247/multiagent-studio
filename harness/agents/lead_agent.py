@@ -484,6 +484,8 @@ class LeadAgent:
         agent_config: Any | None = None,
         user_id: str | None = None,
         agent_soul: str = "",
+        enabled_mcp_servers: dict[str, bool] | None = None,
+        enabled_skills: dict[str, bool] | None = None,
     ):
         self.tool_registry = tool_registry
         self.subagent_manager = subagent_manager
@@ -494,6 +496,9 @@ class LeadAgent:
         self.agent_config = agent_config
         self._user_id = user_id
         self._agent_soul = agent_soul
+        # per-agent 扩展子集 (extensions_config.yaml 黑名单; 空/None = 全放行)
+        self._enabled_mcp_servers = enabled_mcp_servers or {}
+        self._enabled_skills = enabled_skills or {}
         # build_tools() 时置位: 本 agent 是否持有 deferred MCP 工具 (tool_search)
         self._has_deferred_tools = False
 
@@ -533,6 +538,12 @@ class LeadAgent:
                     enabled_skills = [
                         s for s in enabled_skills if s.name in whitelist
                     ]
+
+                # per-agent skill 开关 (extensions_config.yaml 黑名单)
+                from harness.skills.filter import filter_skills_by_agent
+                enabled_skills = filter_skills_by_agent(
+                    enabled_skills, self._enabled_skills,
+                )
 
                 if enabled_skills:
                     # Try cache first
@@ -634,6 +645,12 @@ class LeadAgent:
                     else:
                         # ── might be a group name ──
                         group_tools = self.tool_registry.get_tools_by_category(entry)
+                        if entry == "mcp" and group_tools:
+                            # per-agent MCP 子集 (extensions_config.yaml 黑名单)
+                            from harness.mcp_integration.filter import filter_mcp_tools_by_agent
+                            group_tools = filter_mcp_tools_by_agent(
+                                group_tools, self._enabled_mcp_servers,
+                            )
                         if group_tools:
                             for t in group_tools:
                                 if t.name not in seen:
@@ -658,6 +675,12 @@ class LeadAgent:
                     enabled_skills = [
                         s for s in enabled_skills if s.name in whitelist
                     ]
+
+                # per-agent skill 开关 (extensions_config.yaml 黑名单)
+                from harness.skills.filter import filter_skills_by_agent
+                enabled_skills = filter_skills_by_agent(
+                    enabled_skills, self._enabled_skills,
+                )
 
                 if enabled_skills:
                     from harness.skills.tool_policy import filter_tools_by_skill_allowed_tools

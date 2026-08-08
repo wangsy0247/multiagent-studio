@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.db.engine import init_db
-from app.api import auth, threads, execute, files, configs, monitoring, agents, projects, scheduled_tasks, internal
+from app.api import auth, threads, execute, files, configs, monitoring, agents, projects, scheduled_tasks, internal, extensions
 from app.services.scheduler import get_scheduler
 
 logging.basicConfig(
@@ -79,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["项目管理"])
     app.include_router(scheduled_tasks.router, prefix="/api/scheduled-tasks", tags=["定时任务"])
     app.include_router(internal.router, prefix="/api/internal", tags=["内部接口"])
+    app.include_router(extensions.router, prefix="/api/extensions", tags=["扩展管理"])
 
     # 健康检查
     @app.get("/health")
