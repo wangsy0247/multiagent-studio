@@ -11,13 +11,22 @@ interface ProcessGroupProps {
   isLive: boolean;
 }
 
-/** 组内单条: 系统消息渲染为紧凑行, 其余复用 MessageItem (工具/SubAgent/思考卡片) */
+/** 组内单条: 系统消息/过渡正文渲染为紧凑行, 其余复用 MessageItem (工具/SubAgent/思考卡片) */
 function GroupItem({ msg }: { msg: ChatMessage }) {
   if (msg.role === "system") {
     return (
       <div className="flex gap-1.5 py-0.5 text-xs text-slate-500">
         <span className="flex-shrink-0 text-slate-300">•</span>
         <span className="whitespace-pre-wrap break-words">{msg.content}</span>
+      </div>
+    );
+  }
+  // 轮内过渡正文: 折叠组内渲染为紧凑引用行, 不再占一个完整气泡
+  if (msg.role === "ai" && (msg.msgType === "text" || msg.msgType === "message")) {
+    return (
+      <div className="flex gap-1.5 py-0.5 text-xs text-slate-500">
+        <span className="flex-shrink-0 text-slate-300">💬</span>
+        <span className="whitespace-pre-wrap break-words italic">{msg.content}</span>
       </div>
     );
   }

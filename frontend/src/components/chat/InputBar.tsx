@@ -167,7 +167,8 @@ export default function InputBar({
           <span className="text-xs font-medium text-hermes-600">松开以上传文件</span>
         </div>
       )}
-      {todos.length > 0 && (
+      {/* 任务全部完成/失败后隐藏清单卡片 */}
+      {todos.length > 0 && todos.some((t) => t.status !== "completed" && t.status !== "failed") && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex items-center gap-1.5 px-3 py-2 border-b border-slate-100 bg-slate-50/80">
             <ListTodo className="w-3.5 h-3.5 text-slate-500" />

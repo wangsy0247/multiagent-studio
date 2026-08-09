@@ -15,7 +15,7 @@ type MsgGroup =
   | { kind: "single"; msg: ChatMessage }
   | { kind: "process"; msgs: ChatMessage[] };
 
-/** 是否为"过程消息" (折叠进执行过程组) — 正文/里程碑/错误保持可见 */
+/** 是否为"过程消息" (折叠进执行过程组) — 最终正文/里程碑/错误保持可见 */
 function isProcessMessage(msg: ChatMessage): boolean {
   if (msg.msgType === "task_boundary") return false; // 任务分隔条
   if (msg.role === "human") return false;
@@ -33,14 +33,41 @@ function isProcessMessage(msg: ChatMessage): boolean {
     const et = (msg.metadata as Record<string, unknown> | undefined)?.event_type;
     return et !== "team_degrade";
   }
-  return false; // ai 正文 (text/message/clarification 等) — 全部保持可见
+  return false; // ai 正文 (text/message/clarification) — 默认可见, 过渡正文由下方标记
+}
+
+/**
+ * 标记"轮内过渡正文": 同一轮 (human 消息之间) 里被后续工具调用/正文接替的
+ * AI 正文 (如 "找到了更多工具, 我测试一下:" 这类两次工具调用之间的文本)。
+ * 每轮最后一条 AI 正文/澄清是最终回答, 保持可见; 之前的正文全部折叠。
+ */
+function computeTransitionalIds(messages: ChatMessage[]): Set<string> {
+  const ids = new Set<string>();
+  let turnBodyIds: string[] = [];
+  const flush = () => {
+    for (let i = 0; i < turnBodyIds.length - 1; i++) ids.add(turnBodyIds[i]);
+    turnBodyIds = [];
+  };
+  for (const m of messages) {
+    if (m.role === "human") {
+      flush();
+    } else if (
+      m.role === "ai" &&
+      (m.msgType === "text" || m.msgType === "message" || m.msgType === "clarification")
+    ) {
+      turnBodyIds.push(m.id);
+    }
+  }
+  flush();
+  return ids;
 }
 
 /** 把连续的过程消息聚合成折叠组 ("执行过程 · N 步" 分组) */
 function groupMessages(messages: ChatMessage[]): MsgGroup[] {
+  const transitional = computeTransitionalIds(messages);
   const groups: MsgGroup[] = [];
   for (const msg of messages) {
-    if (isProcessMessage(msg)) {
+    if (isProcessMessage(msg) || transitional.has(msg.id)) {
       const last = groups[groups.length - 1];
       if (last && last.kind === "process") last.msgs.push(msg);
       else groups.push({ kind: "process", msgs: [msg] });

@@ -14,22 +14,7 @@ import {
 import { ChatMessage } from "@/lib/types";
 import { filesAPI, downloadWithAuth } from "@/lib/api-client";
 import { useChatStore } from "@/lib/chat-store";
-
-/** 从 tool_args 解析 present_files 的文件清单 (兼容字符串化 JSON) */
-export function parsePresentedFilepaths(toolArgs: unknown): string[] {
-  let args = toolArgs;
-  if (typeof args === "string") {
-    try {
-      args = JSON.parse(args);
-    } catch {
-      return [];
-    }
-  }
-  if (!args || typeof args !== "object") return [];
-  const fps = (args as Record<string, unknown>).filepaths;
-  if (!Array.isArray(fps)) return [];
-  return fps.filter((p): p is string => typeof p === "string" && p.length > 0);
-}
+import { parsePresentedFilepaths } from "@/lib/artifacts";
 
 /** 按扩展名选图标 (保持简单, 与现有卡片风格一致) */
 function fileIcon(path: string) {

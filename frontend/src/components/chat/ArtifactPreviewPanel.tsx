@@ -31,7 +31,7 @@ import rehypeKatex from "rehype-katex";
 import { useChatStore } from "@/lib/chat-store";
 import { filesAPI, authFetch, fetchFileObjectUrl, downloadWithAuth } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { parsePresentedFilepaths } from "./ArtifactFileList";
+import { parsePresentedFilepaths } from "@/lib/artifacts";
 import { markdownComponents } from "./MessageItem";
 import { SyntaxHighlighter, oneDark, REGISTERED_LANGUAGES } from "./syntax-highlighter";
 

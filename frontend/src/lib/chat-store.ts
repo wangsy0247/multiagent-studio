@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { ChatMessage, SSEEvent, TodoItem, TokenUsage, ClarificationRequest, TeamMemberRuntimeStatus } from "./types";
 import { generateId } from "./utils";
+import { parsePresentedFilepaths } from "./artifacts";
 import { useTeamStore } from "./team-store";
 import { useProjectStore } from "./project-store";
 
@@ -383,6 +384,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           metadata: { tool_name: event.tool_name, tool_args: event.tool_args },
           tokenCount: 0,
         });
+        // 交付文件产生 → 自动展开右侧 Artifact 预览面板 (选中本次第一个产物)
+        if (event.tool_name === "present_files") {
+          const paths = parsePresentedFilepaths(event.tool_args);
+          if (paths.length > 0) get().selectArtifact(paths[0]);
+        }
         break;
 
       case "tool_result":
