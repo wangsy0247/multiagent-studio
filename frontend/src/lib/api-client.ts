@@ -150,7 +150,7 @@ export const filesAPI = {
     apiClient.get(`/files${threadId ? `?thread_id=${threadId}` : ""}`),
   download: (fileId: string) => apiClient.get(`/files/${fileId}`, { responseType: "blob" }),
   delete: (fileId: string) => apiClient.delete(`/files/${fileId}`),
-  // ── outputs 产物 (agent 交付物, 对齐 DeerFlow artifacts) ──
+  // ── outputs 产物 (agent 交付物 artifacts) ──
   listOutputs: (threadId: string) => apiClient.get(`/files/outputs/${threadId}`),
   /**
    * 构造 outputs 产物的下载/预览 URL。
@@ -278,7 +278,9 @@ export const configsAPI = {
 
 export const monitoringAPI = {
   getTrace: (threadId: string) => apiClient.get(`/monitoring/traces/${threadId}`),
-  getTokenUsage: (params?: object) => apiClient.get("/monitoring/token-usage", { params }),
+  /** thread_id 可选: 带则为当前会话统计, 不带为全部会话 */
+  getTokenUsage: (params?: { thread_id?: string }) =>
+    apiClient.get("/monitoring/token-usage", { params }),
 };
 
 // ===== Scheduled Tasks API (定时任务) =====

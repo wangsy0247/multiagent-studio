@@ -74,7 +74,7 @@ class TestSubagentManager:
     async def test_create_duplicate_raises(self, manager):
         config = build_subagent_config("dup-agent", "coder")
         await manager.create(config)
-        with pytest.raises(ValueError, match="已存在"):
+        with pytest.raises(ValueError, match="already exists"):
             await manager.create(config)
 
     @pytest.mark.asyncio

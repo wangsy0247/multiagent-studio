@@ -56,21 +56,21 @@ def _format_memory_detail(memory) -> str:
     """
     lines = [
         f"## [{memory.task_id}] {memory.task_title}",
-        f"执行者: {memory.assigned_agent or '未知'} | 状态: {memory.status}",
+        f"Executor: {memory.assigned_agent or 'unknown'} | Status: {memory.status}",
     ]
     if memory.summary:
-        lines.append(f"摘要: {memory.summary}")
+        lines.append(f"Summary: {memory.summary}")
     if memory.decisions:
-        lines.append("决策:")
+        lines.append("Decisions:")
         lines.extend(f"  - {d}" for d in memory.decisions)
     if memory.pitfalls:
-        lines.append("踩坑:")
+        lines.append("Pitfalls:")
         lines.extend(f"  - {p}" for p in memory.pitfalls)
     if memory.discoveries:
-        lines.append("发现:")
+        lines.append("Discoveries:")
         lines.extend(f"  - {d}" for d in memory.discoveries)
     if memory.tags:
-        lines.append(f"标签: {', '.join(memory.tags)}")
+        lines.append(f"Tags: {', '.join(memory.tags)}")
     return "\n".join(lines)
 
 
@@ -148,17 +148,17 @@ def _build_spec(
 def _submission_requirement(task_id: str) -> str:
     """提交要求模板 — 引导 member 输出 result JSON."""
     return (
-        f"\n\n[提交要求]\n"
-        f"完成后请用 task_update 提交审查: "
-        f"task_update(task_id=\"{task_id}\", status=\"in_review\", result={{...}})。\n"
-        f"result 为 JSON 对象, 字段:\n"
-        f'- output: 成果总结 (必填)\n'
-        f'- evidence: 证据列表 (文件路径/命令/链接, 可空)\n'
-        f'- uncertainty: 自评不确定性 "low"|"medium"|"high" (默认 low, 仅供参考)\n'
-        f'- failure_reason: 失败原因 (status="failed" 时必填)\n'
-        f"轻任务可只填 output; 失败时 status=\"failed\" 并填 failure_reason。\n"
-        f"[验收路径] 低风险任务: 证据校验通过即直接完成 (免审查); "
-        f"高风险任务: 由独立 Verifier 或 Lead 审查, 不通过会打回返工。"
+        f"\n\n[Submission Requirement]\n"
+        f"When done, submit for review with task_update: "
+        f"task_update(task_id=\"{task_id}\", status=\"in_review\", result={{...}}).\n"
+        f"result is a JSON object with fields:\n"
+        f'- output: outcome summary (required)\n'
+        f'- evidence: evidence list (file paths/commands/links, optional)\n'
+        f'- uncertainty: self-assessed uncertainty "low"|"medium"|"high" (default low, informational only)\n'
+        f'- failure_reason: failure reason (required when status="failed")\n'
+        f"Light tasks may fill only output; on failure use status=\"failed\" and fill failure_reason.\n"
+        f"[Acceptance Path] Low-risk tasks: completed directly once evidence validation passes (no review); "
+        f"high-risk tasks: reviewed by an independent Verifier or the Lead; failure sends the task back for rework."
     )
 
 
@@ -299,11 +299,11 @@ def create_team_tools(
         for dep_id in dep_list:
             dep_task = task_map.get(dep_id)
             if dep_task is None:
-                dep_warnings.append(f"⚠️ 依赖 '{dep_id}' 不存在")
+                dep_warnings.append(f"⚠️ Dependency '{dep_id}' does not exist")
             elif dep_task.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED):
                 dep_warnings.append(
-                    f"⚠️ 依赖 '{dep_id}' ({dep_task.title}) 已处于终态 "
-                    f"'{dep_task.status.value}', 当前任务将永远被阻塞"
+                    f"⚠️ Dependency '{dep_id}' ({dep_task.title}) is already in terminal state "
+                    f"'{dep_task.status.value}'; the current task will be blocked forever"
                 )
         return dep_warnings
 
@@ -321,7 +321,7 @@ def create_team_tools(
                 await task_store.update_task(task.id, risk="low", risk_locked=True)
                 return "low"
             await task_store.update_task(task.id, risk="high")
-            return "high (程序复核: Lead 标记 low 但命中写操作信号, 已升级)"
+            return "high (program review: Lead marked low but write-operation signals matched; upgraded)"
         await task_store.update_task(task.id, risk=inferred)
         return inferred
 
@@ -355,30 +355,30 @@ def create_team_tools(
         priority: str = "medium",
         risk: str = "",
     ) -> str:
-        """创建任务并委派给指定 Team Member Agent 执行 (Lead 专属, 一步完成).
+        """Create a task and delegate it to the given Team Member Agent (Lead only, one step).
 
-        任务创建后立即分配给目标成员, orchestrator 的 dispatch 循环会自动派单。
-        任务必须自包含: 成员看不到你的对话历史, 请把背景/目标/约束写全。
-        只提供 description 纯文本也可以 (轻任务降级路径), 但复杂任务建议填结构化字段。
+        The task is assigned to the target member immediately after creation; the orchestrator's dispatch loop picks it up automatically.
+        The task must be self-contained: members cannot see your conversation history, so write the background/goal/constraints in full.
+        Providing only a plain-text description also works (light-task fallback path), but complex tasks should use the structured fields.
 
-        验收路径按风险分级 (Phase 3):
-        - 低风险 (只读/探索/查询): 成员提交后程序校验证据, 通过即直接完成 (免审查)
-        - 高风险 (写操作/有验收标准/有下游依赖): 强制验收 — 团队有 Verifier 成员时
-          自动创建独立验收子任务; 无 Verifier 时由你用 task_review 审查。
-        可用 risk 参数显式指定等级; 不指定则由系统按规则推断。
+        Acceptance path by risk level (Phase 3):
+        - Low risk (read-only/exploration/query): after the member submits, evidence is validated programmatically; pass → completed directly (no review)
+        - High risk (write operations/acceptance criteria/downstream dependents): mandatory acceptance — when the team has a Verifier member,
+          an independent acceptance sub-task is created automatically; without a Verifier, you review it with task_review.
+        Use the risk parameter to set the level explicitly; otherwise the system infers it by rules.
 
         Args:
-            agent_name: 目标 Member Agent 名称
-            title: 任务标题
-            goal: 目标 (交付什么)
-            background: 背景 (为什么做, 必要的上下文原文)
-            description: 详细描述 (未填结构化字段时作为纯文本任务描述)
-            constraints: 约束/注意事项列表 (技术栈/边界/禁止事项)
-            format: 输出格式要求
-            acceptance_criteria: 验收标准列表
-            dependencies: 依赖的任务 ID 列表 (依赖完成后才派单)
+            agent_name: target Member Agent name
+            title: task title
+            goal: goal (what to deliver)
+            background: background (why, necessary verbatim context)
+            description: detailed description (used as the plain-text task description when structured fields are empty)
+            constraints: list of constraints/caveats (tech stack/boundaries/forbidden items)
+            format: output format requirements
+            acceptance_criteria: list of acceptance criteria
+            dependencies: list of task IDs this task depends on (dispatched only after dependencies complete)
             priority: "low"|"medium"|"high"|"critical"
-            risk: 风险等级 "low"|"high" (留空=系统推断: 写操作/验收标准/下游依赖 → high)
+            risk: risk level "low"|"high" (empty = system-inferred: write operations/acceptance criteria/downstream dependents → high)
         """
         if task_store is None:
             return "Error: Task store not available"
@@ -388,9 +388,9 @@ def create_team_tools(
         known = set(teammates.keys() if teammates else ()) | set(member_names or ())
         if known and agent_name not in known:
             member_warning = (
-                f"\n⚠️ 警告: 成员 '{agent_name}' 不在当前团队中。"
-                f"可用成员: {', '.join(sorted(known))}"
-                f"\n任务仍会创建, 但需要手动调整分配或等成员加入。"
+                f"\n⚠️ Warning: member '{agent_name}' is not in the current team."
+                f"Available members: {', '.join(sorted(known))}"
+                f"\nThe task will still be created, but needs manual reassignment or waiting for the member to join."
             )
 
         # ── 组装结构化 spec (缺字段/纯文本时降级: spec=None, 只用 description) ──
@@ -428,27 +428,27 @@ def create_team_tools(
         _wake()
 
         result = (
-            f"已创建并委派任务 [{task.id}] 给 '{agent_name}'。\n"
-            f"任务标题: {title}\n"
-            f"优先级: {priority}\n"
-            f"风险等级: {final_risk} ({'低风险: 证据校验通过即直通' if final_risk == 'low' else '高风险: 强制独立验收'})"
+            f"Created and delegated task [{task.id}] to '{agent_name}'.\n"
+            f"Title: {title}\n"
+            f"Priority: {priority}\n"
+            f"Risk level: {final_risk} ({'low risk: completed directly once evidence validation passes' if final_risk == 'low' else 'high risk: mandatory independent acceptance'})"
         )
         if spec is not None and spec.goal:
-            result += f"\n目标: {spec.goal[:200]}"
+            result += f"\nGoal: {spec.goal[:200]}"
         if dep_list:
-            result += f"\n依赖: {', '.join(dep_list)}"
+            result += f"\nDependencies: {', '.join(dep_list)}"
         if dep_warnings:
             result += "\n\n" + "\n".join(dep_warnings)
         return result + member_warning
 
     @tool
     async def list_teammates() -> str:
-        """查看 Team 中所有 Member 的当前状态 (Lead 专属).
+        """Show the current status of all Members in the Team (Lead only).
 
-        只列出 Member Agent, 不包含 Lead 自身。
+        Lists Member Agents only, not the Lead itself.
         """
         if teammates is None:
-            return "Teammate 列表不可用."
+            return "Teammate list unavailable."
         members = {
             name: tm for name, tm in teammates.items()
             if getattr(tm, "_role", "") != "lead"
@@ -456,20 +456,20 @@ def create_team_tools(
         # ── 懒加载: 名册中未 spawn 的成员也列出 (语义上可用, 派单时自动拉起) ──
         standby = [n for n in (member_names or []) if n not in members]
         if not members and not standby:
-            return "当前 Team 中没有 Member (仅 Lead)。"
-        lines = [f"共 {len(members) + len(standby)} 个 Member:\n"]
+            return "The current Team has no Members (Lead only)."
+        lines = [f"Total {len(members) + len(standby)} Members:\n"]
         for name, tm in members.items():
             icon = {"idle": "🟢", "working": "🔵", "failed": "❌"}.get(
                 tm.status.value if hasattr(tm.status, 'value') else str(tm.status), "❓")
-            task_info = f" (任务: {tm.current_task_id})" if tm.current_task_id else ""
-            lines.append(f"- {icon} **{name}** [{tm.status}] — 完成 {tm.completed_tasks}{task_info}")
+            task_info = f" (task: {tm.current_task_id})" if tm.current_task_id else ""
+            lines.append(f"- {icon} **{name}** [{tm.status}] — completed {tm.completed_tasks}{task_info}")
         for name in standby:
-            lines.append(f"- ⚪ **{name}** [standby] — 待拉起 (派单时自动启动)")
+            lines.append(f"- ⚪ **{name}** [standby] — pending spawn (auto-started on dispatch)")
         return "\n".join(lines)
 
     @tool
     async def shutdown_teammate(agent_name: str) -> str:
-        """ 请求关闭指定 teammate (Lead 专属)."""
+        """ Request to shut down the given teammate (Lead only)."""
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import RequestStatus, TeamMessage, TeamMessageType
@@ -488,27 +488,27 @@ def create_team_tools(
                     "status": RequestStatus.PENDING,
                     "target": agent_name,
                 }
-        return f"已向 '{agent_name}' 发送关闭请求 (req_id={req_id})"
+        return f"Shutdown request sent to '{agent_name}' (req_id={req_id})"
 
     @tool
     async def approve_plan(request_id: str, requester: str, approve: bool, feedback: str = "") -> str:
-        """审批 Teammate 提交的计划 —  结构化审批 (Lead 专属).
+        """Approve a plan submitted by a Teammate — structured approval (Lead only).
 
-        收到 plan_approval_request 后, 审阅计划内容并用此工具回复:
-        - approve=True: 批准计划, Teammate 将继续执行
-        - approve=False: 拒绝计划, Teammate 需要调整后重新提交
+        After receiving a plan_approval_request, review the plan content and reply with this tool:
+        - approve=True: approve the plan; the Teammate will continue execution
+        - approve=False: reject the plan; the Teammate must adjust and resubmit
 
         Args:
-            request_id: 计划审批请求的 ID (必须与收到的请求匹配)
-            requester: 提交计划的 Agent 名称
-            approve: 是否批准计划
-            feedback: 审批反馈 (批准时可提供补充建议, 拒绝时必须说明原因)
+            request_id: ID of the plan approval request (must match the received request)
+            requester: name of the Agent that submitted the plan
+            approve: whether to approve the plan
+            feedback: approval feedback (optional suggestions when approving; required reason when rejecting)
         """
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import TeamMessage, TeamMessageType
 
-        status_text = f"approved. {feedback}" if approve else f"rejected: {feedback or '计划未通过审批'}"
+        status_text = f"approved. {feedback}" if approve else f"rejected: {feedback or 'plan not approved'}"
         msg = TeamMessage(
             from_agent=get_current_agent(), to_agent=requester,
             msg_type=TeamMessageType.PLAN_APPROVAL_RESPONSE,
@@ -528,20 +528,20 @@ def create_team_tools(
                     "feedback": feedback,
                 }
 
-        action = "批准" if approve else "拒绝"
-        return f"已{action}来自 '{requester}' 的计划 (req_id={request_id})。"
+        action = "Approved" if approve else "Rejected"
+        return f"{action} the plan from '{requester}' (req_id={request_id})."
 
     @tool
     async def spawn_teammate(agent_name: str) -> str:
-        """动态创建并启动一个新的 Teammate Agent (Lead 专属).
+        """Dynamically create and start a new Teammate Agent (Lead only).
 
-        当你需要扩充团队时调用此工具。新 teammate 将:
-        1. 使用其预配置的 SOUL.md 作为 system prompt
-        2. 自动进入 IDLE 状态, 等待任务分配
-        3. 支持  自主认领任务板上的未分配任务
+        Call this tool when you need to expand the team. The new teammate will:
+        1. Use its preconfigured SOUL.md as system prompt
+        2. Automatically enter IDLE state, waiting for task assignment
+        3. Support  self-claiming unassigned tasks on the task board
 
         Args:
-            agent_name: 要创建的 Agent 名称 (必须在 agents 配置中存在)
+            agent_name: name of the Agent to create (must exist in the agents config)
         """
         if spawn_callback is None:
             return "Error: Spawn not available (no orchestrator callback)"
@@ -553,16 +553,16 @@ def create_team_tools(
 
     @tool
     async def task_review(task_id: str, approve: bool, feedback: str = "") -> str:
-        """审查成员提交的任务 (Lead 专属).
+        """Review a task submitted by a member (Lead only).
 
-        当成员完成任务并调用 task_update(status="in_review") 提交审查后,
-        你应审阅其 output 并决定通过还是要求修改。
+        After a member finishes a task and submits it for review via task_update(status="in_review"),
+        you should review its output and decide to approve or request changes.
 
         Args:
-            task_id: 要审查的任务 ID
-            approve: True=通过, 任务变为 approved (终态)
-            feedback: 审查意见。通过时可附简要评价; 要求修改时必须写清具体的修改要求,
-                      让成员明确知道要改什么。
+            task_id: ID of the task to review
+            approve: True = approve; the task becomes approved (terminal)
+            feedback: review comments. Optional brief remarks when approving; when requesting changes,
+                      you must specify exactly what to change so the member knows what to fix.
         """
         if task_store is None:
             return "Error: Task store not available"
@@ -572,16 +572,16 @@ def create_team_tools(
             return f"Error: Task '{task_id}' not found"
         if task.status != TeamTaskStatus.IN_REVIEW:
             return (
-                f"Error: Task '{task_id}' 当前状态为 '{task.status.value}', "
-                f"不是 'in_review', 无法审查。只有成员通过 task_update(status=\"in_review\") "
-                f"提交的任务才能审查。"
+                f"Error: Task '{task_id}' is currently '{task.status.value}', "
+                f"not 'in_review', so it cannot be reviewed. Only tasks submitted by a member "
+                f"via task_update(status=\"in_review\") can be reviewed."
             )
 
         if approve:
             await task_store.update_task(
                 task_id,
                 status=TeamTaskStatus.APPROVED,
-                review_feedback=feedback or "已通过",
+                review_feedback=feedback or "Approved",
             )
             # ── SSE: 推送任务状态变更 ──
             updated = await task_store.get_task(task_id)
@@ -597,20 +597,20 @@ def create_team_tools(
                     to_agent=task.assigned_agent,
                     msg_type=TeamMessageType.TEXT,
                     content=(
-                        f"任务 [{task_id}] '{task.title}' 审查通过 ✅"
+                        f"Task [{task_id}] '{task.title}' approved ✅"
                         + (f" — {feedback}" if feedback else "")
                     ),
                     task_id=task_id,
                 )
                 await message_bus.send(msg)
             return (
-                f"已通过任务 [{task_id}] '{task.title}'。"
-                + (f" 评价: {feedback}" if feedback else "")
+                f"Approved task [{task_id}] '{task.title}'."
+                + (f" Comments: {feedback}" if feedback else "")
             )
 
         # ── 要求修改 ──
         if not feedback:
-            return "Error: 要求修改时必须提供 feedback 说明具体需要修改什么。"
+            return "Error: feedback is required when requesting changes — specify exactly what needs to be changed."
         new_revision = task.revision_count + 1
         await task_store.update_task(
             task_id,
@@ -630,17 +630,17 @@ def create_team_tools(
                 to_agent=task.assigned_agent,
                 msg_type=TeamMessageType.TEXT,
                 content=(
-                    f"任务 [{task_id}] '{task.title}' 第 {new_revision} 次审查不通过。\n"
-                    f"反馈: {feedback}\n"
-                    f"请修改后重新提交审查: task_update(task_id=\"{task_id}\", "
+                    f"Task [{task_id}] '{task.title}' failed review #{new_revision}.\n"
+                    f"Feedback: {feedback}\n"
+                    f"Revise and resubmit for review: task_update(task_id=\"{task_id}\", "
                     f"status=\"in_review\", output=\"...\")"
                 ),
                 task_id=task_id,
             )
             await message_bus.send(msg)
         return (
-            f"已要求修改任务 [{task_id}] '{task.title}' (第 {new_revision} 次)。\n"
-            f"反馈: {feedback}"
+            f"Requested changes on task [{task_id}] '{task.title}' (revision #{new_revision}).\n"
+            f"Feedback: {feedback}"
         )
 
     # ═════════════════════════════════════════════════════════════════
@@ -656,18 +656,18 @@ def create_team_tools(
         acceptance_criteria: Any = None,
         risk: str = "",
     ) -> str:
-        """在 Team 任务板上创建新任务.
+        """Create a new task on the Team task board.
 
-        可选填结构化字段 (goal/background/constraints/format/acceptance_criteria),
-        不填则按纯文本 description 处理 (轻任务降级路径)。
+        Optionally fill structured fields (goal/background/constraints/format/acceptance_criteria);
+        otherwise the plain-text description is used (light-task fallback path).
 
         Args:
-            title: 任务标题; description: 详细描述
-            assigned_agent: 分配给谁 (留空=自动分配); dependencies: 依赖的任务 ID
+            title: task title; description: detailed description
+            assigned_agent: who to assign (empty = auto-assign); dependencies: task IDs to depend on
             priority: "low"|"medium"|"high"|"critical"
-            goal: 目标; background: 背景; constraints: 约束列表
-            format: 输出格式要求; acceptance_criteria: 验收标准列表
-            risk: 风险等级 "low"|"high" (留空=系统推断: 写操作/验收标准/下游依赖 → high)
+            goal: goal; background: background; constraints: list of constraints
+            format: output format requirements; acceptance_criteria: list of acceptance criteria
+            risk: risk level "low"|"high" (empty = system-inferred: write operations/acceptance criteria/downstream dependents → high)
         """
         if task_store is None:
             return "Error: Task store not available"
@@ -699,30 +699,30 @@ def create_team_tools(
         # ── 唤醒 dispatch 循环 ──
         _wake()
 
-        result = (f"任务已创建:\n- ID: {task.id}\n- 标题: {task.title}\n"
-                  f"- 状态: {task.status}\n- 分配: {task.assigned_agent or '待分配'}"
-                  f"\n- 风险等级: {final_risk}")
+        result = (f"Task created:\n- ID: {task.id}\n- Title: {task.title}\n"
+                  f"- Status: {task.status}\n- Assigned: {task.assigned_agent or 'unassigned'}"
+                  f"\n- Risk level: {final_risk}")
         if dep_list:
-            result += f"\n- 依赖: {', '.join(dep_list)}"
+            result += f"\n- Dependencies: {', '.join(dep_list)}"
         if dep_warnings:
             result += "\n\n" + "\n".join(dep_warnings)
         return result
 
     @tool
     async def task_list(status: str = "", assigned_agent: str = "") -> str:
-        """查询 Team 任务板，含依赖阻塞状态。
+        """Query the Team task board, including dependency blocking status.
 
-        默认只显示活跃任务 (pending/in_progress/in_review/revision_needed),
-        隐藏已完成/失败/取消的任务。
-        使用 status="all" 查看全部任务。
-        使用 status="completed" 只查看已完成的任务。
+        By default only active tasks are shown (pending/in_progress/in_review/revision_needed);
+        completed/failed/cancelled tasks are hidden.
+        Use status="all" to see all tasks.
+        Use status="completed" to see only completed tasks.
 
-        每个任务会显示:
-        - 状态图标 + [ID] 标题 → 分配对象
-        - 依赖状态: 🔒 阻塞中 (依赖未完成) 或 ✅ 依赖已满足
-        - 阻塞详情: 每个依赖任务的当前状态
+        Each task shows:
+        - status icon + [ID] title → assignee
+        - dependency status: 🔒 blocked (dependencies incomplete) or ✅ dependencies satisfied
+        - blocking details: current status of each dependency task
 
-        status 过滤: pending|in_progress|in_review|completed|failed|cancelled|all
+        status filter: pending|in_progress|in_review|completed|failed|cancelled|all
         """
         if task_store is None:
             return "Error: Task store not available"
@@ -745,9 +745,9 @@ def create_team_tools(
 
         if not tasks:
             terminal_count = sum(1 for t in all_tasks if t.status.is_terminal)
-            msg = "任务板无活跃任务。"
+            msg = "No active tasks on the task board."
             if terminal_count > 0:
-                msg += f" ({terminal_count} 个已完成/失败的任务已隐藏, 用 status=\"all\" 查看)"
+                msg += f" ({terminal_count} completed/failed task(s) hidden; use status=\"all\" to view)"
             return msg
 
         # ── 解析依赖状态 ──
@@ -760,7 +760,7 @@ def create_team_tools(
             "failed": "❌", "cancelled": "🚫",
         }
 
-        lines = [f"共 {len(tasks)} 个任务:\n"]
+        lines = [f"Total {len(tasks)} tasks:\n"]
         for t in tasks:
             # ── 依赖解析 ──
             blocked = False
@@ -769,7 +769,7 @@ def create_team_tools(
                 for dep_id in t.dependencies:
                     dep_task = task_map.get(dep_id)
                     if dep_task is None:
-                        dep_statuses.append(f"{dep_id}=不存在")
+                        dep_statuses.append(f"{dep_id}=missing")
                         blocked = True
                     elif not dep_task.status.is_success:
                         dep_statuses.append(f"{dep_id}={dep_task.status.value}")
@@ -779,19 +779,19 @@ def create_team_tools(
 
             # ── 阻塞状态标记 ──
             if t.status == TeamTaskStatus.PENDING and blocked:
-                blocker = "🔒 阻塞中"
+                blocker = "🔒 Blocked"
             elif t.status == TeamTaskStatus.PENDING and t.dependencies:
-                blocker = "✅ 依赖就绪"
+                blocker = "✅ Dependencies ready"
             elif t.status == TeamTaskStatus.IN_PROGRESS:
-                blocker = "🔄 执行中"
+                blocker = "🔄 In progress"
             elif t.status == TeamTaskStatus.IN_REVIEW:
-                blocker = "👁️ 审查中"
+                blocker = "👁️ In review"
             elif t.status == TeamTaskStatus.REVISION_NEEDED:
-                blocker = "↩️ 需修改"
+                blocker = "↩️ Revision needed"
             elif t.status.is_success:
-                blocker = "✅ 已完成"
+                blocker = "✅ Completed"
             elif t.status in (TeamTaskStatus.FAILED, TeamTaskStatus.CANCELLED):
-                blocker = "❌ 已终止"
+                blocker = "❌ Terminated"
             else:
                 blocker = ""
 
@@ -802,18 +802,18 @@ def create_team_tools(
                 try:
                     started = run_started_at()
                     if started and t.created_at and t.created_at < started:
-                        history_tag = " (历史)"
+                        history_tag = " (history)"
                 except Exception:
                     pass
 
             line = (
                 f"- {icons.get(t.status.value, '❓')} [{t.id}] {t.title}"
-                f" → {t.assigned_agent or '未分配'} | {blocker}{history_tag}"
+                f" → {t.assigned_agent or 'unassigned'} | {blocker}{history_tag}"
             )
             lines.append(line)
 
             if dep_statuses:
-                lines.append(f"  依赖: {', '.join(dep_statuses)}")
+                lines.append(f"  Dependencies: {', '.join(dep_statuses)}")
 
         # ── 汇总 ──
         pending = sum(1 for t in tasks if t.status == TeamTaskStatus.PENDING)
@@ -825,36 +825,36 @@ def create_team_tools(
 
         if blocked_count > 0:
             lines.append(
-                f"\n⚠️ {blocked_count} 个任务正在等待依赖完成 (🔒 阻塞中)"
+                f"\n⚠️ {blocked_count} task(s) waiting on dependencies (🔒 blocked)"
             )
         ready = pending - blocked_count
         if ready > 0:
-            lines.append(f"   {ready} 个任务依赖已就绪, 等待分配/执行")
+            lines.append(f"   {ready} task(s) have dependencies ready, awaiting assignment/execution")
 
         return "\n".join(lines)
 
     @tool
     async def task_update(task_id: str, status: str = "", output: str = "", assigned_agent: str = "", result: str = "") -> str:
-        """更新你当前执行的任务状态 (Member 专属).
+        """Update the status of the task you are currently executing (Member only).
 
-        只能更新你正在执行的任务 (assigned_agent == 你)。
-        状态流转: in_progress → in_review (推荐, 提交验收) 或 completed (直接完成).
-        失败时使用 status="failed" 并说明原因.
+        You can only update tasks assigned to you (assigned_agent == you).
+        Status flow: in_progress → in_review (recommended, submit for acceptance) or completed (finish directly).
+        Use status="failed" with a reason on failure.
 
-        提交 in_review/completed/failed 时建议附带 result JSON:
-          {"output": "成果总结", "evidence": ["证据: 文件路径/命令/链接"],
-           "uncertainty": "low|medium|high", "failure_reason": "失败原因(仅失败时)",
-           "skill_feedback": [{"name": "试验性技能名", "success": true}]}
-        skill_feedback 仅在使用了试验性进化技能时上报 (可选)。
-        轻任务可只用 output 纯文本; result 不是合法 JSON 时按纯文本 output 处理。
+        When submitting in_review/completed/failed, attach a result JSON:
+          {"output": "outcome summary", "evidence": ["evidence: file path/command/link"],
+           "uncertainty": "low|medium|high", "failure_reason": "failure reason (only on failure)",
+           "skill_feedback": [{"name": "experimental skill name", "success": true}]}
+        skill_feedback is reported only when experimental evolution skills were used (optional).
+        Light tasks may use output as plain text only; if result is not valid JSON it is treated as plain-text output.
 
-        验收路径按任务风险分级 (Phase 3):
-        - 低风险任务: 提交 in_review 时程序自动校验证据 (文件存在性),
-          无证据或校验通过 → 直接 completed 免审查; 校验失败 → 转 Lead 审查
-        - 高风险任务: 提交 in_review 后由独立 Verifier 或 Lead 验收,
-          不通过会打回 (revision_needed) 并附验收意见
+        Acceptance path by task risk (Phase 3):
+        - Low-risk tasks: on in_review submission, evidence (file existence) is validated programmatically;
+          no evidence or validation passes → completed directly without review; validation fails → Lead review
+        - High-risk tasks: after in_review submission, accepted by an independent Verifier or the Lead;
+          rejection sends the task back (revision_needed) with review comments
 
-        注意: 这是 Member 工具, Lead 不能使用。Lead 请用 task_review 审查任务。
+        Note: this is a Member tool; the Lead cannot use it. Lead: use task_review to review tasks.
         """
         if task_store is None:
             return "Error: Task store not available"
@@ -863,15 +863,15 @@ def create_team_tools(
         task = await task_store.get_task(task_id)
         if task is None:
             return (
-                f"Error: 任务 '{task_id}' 不存在。"
-                f"请用 task_list 查看当前任务板上的任务 ID。"
+                f"Error: Task '{task_id}' does not exist."
+                f"Use task_list to see task IDs on the current task board."
             )
 
         # ── 守卫: 只有被分配的 Member 可以更新 ──
         if task.assigned_agent and task.assigned_agent != caller:
             return (
-                f"Error: 任务 '{task_id}' 分配给了 '{task.assigned_agent}', "
-                f"不是你 ({caller})。你只能更新分配给你自己的任务。"
+                f"Error: Task '{task_id}' is assigned to '{task.assigned_agent}', "
+                f"not you ({caller}). You can only update tasks assigned to yourself."
             )
 
         updates: dict[str, Any] = {}
@@ -880,16 +880,16 @@ def create_team_tools(
                 new_status = TeamTaskStatus(status)
             except ValueError:
                 return (
-                    f"Error: 无效的状态 '{status}'。"
-                    f"有效值: in_progress, in_review, completed, failed"
+                    f"Error: Invalid status '{status}'."
+                    f"Valid values: in_progress, in_review, completed, failed"
                 )
             # ── 守卫: 状态流转校验 ──
             allowed = _allowed_transitions(task.status)
             if new_status not in allowed:
                 allowed_str = ", ".join(s.value for s in allowed)
                 return (
-                    f"Error: 不能从 '{task.status.value}' 直接转到 '{status}'。"
-                    f"允许的状态: {allowed_str}"
+                    f"Error: Cannot transition directly from '{task.status.value}' to '{status}'."
+                    f"Allowed statuses: {allowed_str}"
                 )
             # ── 守卫: 高危任务禁止直达 COMPLETED (E2E 观察到 member 直接提交
             # completed 绕过验收) — 必须经 in_review 由 Verifier/Lead 验收 ──
@@ -897,9 +897,9 @@ def create_team_tools(
                 effective_risk = task.risk or infer_task_risk(task)
                 if effective_risk == "high":
                     return (
-                        "Error: 高风险任务不允许直接标记 completed, 必须先提交 "
-                        "in_review 接受独立验收 (Verifier/Lead)。"
-                        "请用 task_update(status=\"in_review\", result=...) 提交。"
+                        "Error: High-risk tasks cannot be marked completed directly; they must first be "
+                        "submitted as in_review for independent acceptance (Verifier/Lead)."
+                        "Submit with task_update(status=\"in_review\", result=...)."
                     )
             updates["status"] = new_status
         if output:
@@ -918,9 +918,9 @@ def create_team_tools(
                 # 非法 JSON → 整个字符串按纯文本 output 处理 (现状行为)
                 updates["output"] = result
         if assigned_agent:
-            return "Error: 不允许通过 task_update 修改 assigned_agent。请使用 delegate_to_member。"
+            return "Error: task_update cannot modify assigned_agent. Use delegate_to_member instead."
         if not updates:
-            return "未提供任何更新字段。请至少提供 status 或 output。"
+            return "No update fields provided. Provide at least status or output."
 
         # ── Phase 3: 低危任务快速通道 — 提交 in_review 时程序校验证据, 通过即直通 COMPLETED ──
         # fail-safe 方向: 证据缺失/无法校验 → 保持 IN_REVIEW 转 Lead 审查;
@@ -933,18 +933,18 @@ def create_team_tools(
                 evidence = list(submitted.evidence) if submitted is not None else []
                 if not evidence:
                     updates["status"] = TeamTaskStatus.COMPLETED
-                    fast_track_note = "\n低风险任务, 无证据需校验 → 已直接完成 (免审查)。"
+                    fast_track_note = "\nLow-risk task, no evidence to validate → completed directly (no review)."
                 else:
                     ok, missing = _validate_evidence(
                         evidence, _evidence_workspace_roots(caller),
                     )
                     if ok:
                         updates["status"] = TeamTaskStatus.COMPLETED
-                        fast_track_note = "\n低风险任务, 证据校验通过 → 已直接完成 (免审查)。"
+                        fast_track_note = "\nLow-risk task, evidence validation passed → completed directly (no review)."
                     else:
                         fast_track_note = (
-                            f"\n⚠️ 证据校验未通过 (文件不存在: {', '.join(missing)}), "
-                            f"已转 Lead 审查。"
+                            f"\n⚠️ Evidence validation failed (files not found: {', '.join(missing)}), "
+                            f"escalated to Lead review."
                         )
 
         updated = await task_store.update_task(task_id, **updates)
@@ -975,11 +975,11 @@ def create_team_tools(
         await _emit_task_update(updated)
         # ── 唤醒 dispatch 循环 ──
         _wake()
-        return f"任务 [{task_id}] 已更新: {updated.title} → {updated.status.value}{fast_track_note}"
+        return f"Task [{task_id}] updated: {updated.title} → {updated.status.value}{fast_track_note}"
 
     @tool
     async def send_message(to_agent: str, content: str, task_id: str = "") -> str:
-        """向 Team 中的另一个 Agent 发送消息."""
+        """Send a message to another Agent in the Team."""
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import TeamMessage, TeamMessageType
@@ -989,37 +989,37 @@ def create_team_tools(
             task_id=task_id if task_id else None,
         )
         await message_bus.send(msg)
-        return f"消息已发送给 '{to_agent}'"
+        return f"Message sent to '{to_agent}'"
 
     @tool
     async def read_inbox() -> str:
-        """读取自己的收件箱 (drain-on-read)."""
+        """Read your own inbox (drain-on-read)."""
         if message_bus is None:
             return "Error: Message bus not available"
         messages = await message_bus.read_inbox(get_current_agent())
         if not messages:
-            return "收件箱为空."
+            return "Inbox is empty."
         # 协议消息必须与 InboxDrainMiddleware 走同一条结构化路由 — 否则 request_id 丢失,
         # 协议状态机不登记, LLM 无法正确调用 shutdown_response/approve_plan
         instance = get_current_agent_instance()
-        lines = [f"共 {len(messages)} 条新消息:\n"]
+        lines = [f"Total {len(messages)} new messages:\n"]
         for msg in messages:
             if msg.msg_type in _PROTOCOL_MESSAGE_TYPES and instance is not None:
                 await instance._handle_inbox_message(msg)
                 # 附上类型/request_id/内容摘要 — 否则当前轮 LLM 看不到计划内容,
                 # 也拿不到 request_id, 无法本轮调用 approve_plan/shutdown_response
                 lines.append(
-                    f"- [协议:{msg.msg_type.value}] 来自 **{msg.from_agent}** "
-                    f"(request_id={msg.request_id or '无'}): {msg.content[:300]}\n"
-                    f"  → 已按协议处理, 注入的上下文将在下一轮生效。"
+                    f"- [protocol:{msg.msg_type.value}] from **{msg.from_agent}** "
+                    f"(request_id={msg.request_id or 'none'}): {msg.content[:300]}\n"
+                    f"  → handled per protocol; injected context takes effect next turn."
                 )
             else:
-                lines.append(f"- [{msg.msg_type.value}] 来自 **{msg.from_agent}**: {msg.content[:200]}")
+                lines.append(f"- [{msg.msg_type.value}] from **{msg.from_agent}**: {msg.content[:200]}")
         return "\n".join(lines)
 
     @tool
     async def broadcast(content: str, task_id: str = "") -> str:
-        """向 Team 全体成员广播消息."""
+        """Broadcast a message to all Team members."""
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import TeamMessage, TeamMessageType
@@ -1029,7 +1029,7 @@ def create_team_tools(
             task_id=task_id if task_id else None,
         )
         await message_bus.send(msg)
-        return "广播消息已发送给全体成员。"
+        return "Broadcast message sent to all members."
 
     # ═════════════════════════════════════════════════════════════════
     # Member 专属工具
@@ -1037,14 +1037,14 @@ def create_team_tools(
 
     @tool
     async def request_plan_approval(plan_description: str) -> str:
-        """ 向 Lead 请求审批高风险操作计划."""
+        """ Request approval from the Lead for a high-risk operation plan."""
         if message_bus is None:
             return "Error: Message bus not available"
         from harness.team.models import RequestStatus, TeamMessage, TeamMessageType
         # 定向发给 Lead — to_agent=None 是广播语义, 会唤醒所有 member 空转 (他们没有 approve_plan 工具)
         target = lead_name or getattr(get_current_agent_instance(), "_lead_name", None)
         if not target:
-            return "Error: 无法确定 Lead Agent, 审批请求未发送。"
+            return "Error: Cannot determine the Lead Agent; approval request not sent."
         req_id = str(_uuid.uuid4())[:8]
         msg = TeamMessage(
             from_agent=get_current_agent(), to_agent=target,
@@ -1063,24 +1063,24 @@ def create_team_tools(
                     "plan": plan_description,
                 }
         return (
-            f"审批请求已发送给 Lead '{target}' (req_id={req_id})。\n"
-            f"**立即停止本轮工作**: 不要执行任何待审批操作, "
-            f"等待 Lead 的审批回复 (plan_approval_response) 唤醒你后再继续。"
+            f"Approval request sent to Lead '{target}' (req_id={req_id}).\n"
+            f"**Stop this turn immediately**: do not perform any pending operations; "
+            f"wait for the Lead's approval reply (plan_approval_response) to wake you before continuing."
         )
 
     @tool
     async def shutdown_response(request_id: str, requester: str, approve: bool, reason: str = "") -> str:
-        """响应关机请求 —  结构化握手.
+        """Respond to a shutdown request — structured handshake.
 
-        收到 shutdown_request 后, 由 LLM 决策是否批准关机:
-        - approve=True: 批准关机, Agent 将在当前轮次结束后优雅退出
-        - approve=False: 拒绝关机, 继续执行当前任务
+        After receiving a shutdown_request, the LLM decides whether to approve the shutdown:
+        - approve=True: approve; the Agent exits gracefully after the current turn
+        - approve=False: reject; continue the current task
 
         Args:
-            request_id: 关机请求的 ID (必须与收到的请求匹配)
-            requester: 发起关机请求的 Agent 名称
-            approve: 是否批准关机
-            reason: 拒绝原因 (approve=False 时建议提供)
+            request_id: ID of the shutdown request (must match the received request)
+            requester: name of the Agent that initiated the shutdown request
+            approve: whether to approve the shutdown
+            reason: rejection reason (recommended when approve=False)
         """
         if message_bus is None:
             return "Error: Message bus not available"
@@ -1103,7 +1103,7 @@ def create_team_tools(
                     agent._pending_requests[request_id] = {
                         "type": "shutdown", "status": "approved", "from": requester,
                     }
-            return f"已批准关机请求 (req_id={request_id})。Agent 将在当前任务完成后退出。"
+            return f"Shutdown request approved (req_id={request_id}). The Agent will exit after the current task completes."
 
         # 拒绝: 更新追踪器 (加锁, 与 _handle_inbox_message 的加锁写对齐)
         agent = get_current_agent_instance()
@@ -1112,7 +1112,7 @@ def create_team_tools(
                 agent._pending_requests[request_id] = {
                     "type": "shutdown", "status": "rejected", "from": requester, "reason": reason,
                 }
-        return f"已拒绝关机请求 (req_id={request_id})。继续执行当前任务。"
+        return f"Shutdown request rejected (req_id={request_id}). Continuing the current task."
 
     # ═════════════════════════════════════════════════════════════════
     # memory_search — 按需查询任务记忆详情
@@ -1124,31 +1124,32 @@ def create_team_tools(
         task_id: str = "",
         max_results: int = 5,
     ) -> str:
-        """搜索已完成任务的记忆（决策、踩坑、发现），使用关键词或任务ID查询。
+        """Search memories of completed tasks (decisions, pitfalls, discoveries) by keyword or task ID.
 
-        当注入到 prompt 的 `<task_memory>` 压缩摘要不足以理解完整背景时，
-        使用此工具获取详细内容。每个任务记忆包含:摘要、决策、踩坑、发现、标签。
+        When the `<task_memory>` compressed digest injected into the prompt is not enough to
+        understand the full background, use this tool to get the details.
+        Each task memory contains: summary, decisions, pitfalls, discoveries, tags.
 
         —— WHEN TO USE ——
-        - 压缩摘要中提到了一个相关任务，但需要看具体决策/踩坑的细节
-        - 当前任务遇到一个错误，想查历史任务是否也遇到过
-        - 想了解某个技术方案在历史任务中是怎么决策的
+        - A compressed digest mentions a relevant task, but you need the details of its decisions/pitfalls
+        - The current task hit an error and you want to check whether past tasks hit it too
+        - You want to know how a technical approach was decided in past tasks
 
         Args:
-            query: 搜索关键词（匹配摘要、标签、标题）。为空时返回最近完成的任务。
-            task_id: 指定任务ID精确查询。与query同时提供时，task_id优先。
-            max_results: 最多返回几条结果 (1-10, 默认5)
+            query: search keywords (matched against summary, tags, title). Empty returns the most recent completed tasks.
+            task_id: exact lookup by task ID. Takes precedence over query when both are provided.
+            max_results: maximum number of results (1-10, default 5)
         """
         # 获取当前 agent 实例以访问 project_id / user_id
         agent = get_current_agent_instance()
         if agent is None:
-            return "Error: 无法获取当前 Agent 上下文"
+            return "Error: Cannot get the current Agent context"
 
         project_id = agent._project_id if hasattr(agent, "_project_id") else ""
         user_id = agent._user_id if hasattr(agent, "_user_id") else "default"
 
         if not project_id:
-            return "Error: 未设置 project_id，无法访问任务记忆"
+            return "Error: project_id is not set; cannot access task memories"
 
         from harness.memory.task_memory import TaskMemoryStore
 
@@ -1158,7 +1159,7 @@ def create_team_tools(
         if task_id:
             memory = await store.load(task_id)
             if memory is None:
-                return f"未找到任务 '{task_id}' 的记忆。该任务可能尚未提取记忆，或任务ID不存在。"
+                return f"No memory found for task '{task_id}'. The task may not have extracted memory yet, or the task ID does not exist."
             return _format_memory_detail(memory)
 
         max_results = max(1, min(max_results, 10))
@@ -1166,7 +1167,7 @@ def create_team_tools(
         # 关键词搜索
         all_memories = await store.list_all()
         if not all_memories:
-            return "暂无已提取的任务记忆。当任务完成后，系统会自动提取记忆。"
+            return "No task memories extracted yet. Memories are extracted automatically when tasks complete."
 
         results: list = []
         if query:
@@ -1193,11 +1194,11 @@ def create_team_tools(
 
         if not results:
             return (
-                f"未找到与 '{query}' 相关的任务记忆。"
-                f"可尝试不同关键词，或等更多任务完成后系统自动提取记忆。"
+                f"No task memories related to '{query}' found."
+                f"Try different keywords, or wait for more tasks to complete so memories are extracted automatically."
             )
 
-        parts = [f"找到 {len(results)} 条相关任务记忆:\n"]
+        parts = [f"Found {len(results)} related task memories:\n"]
         for m in results:
             parts.append(_format_memory_detail(m))
             parts.append("")

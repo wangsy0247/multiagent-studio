@@ -248,7 +248,7 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
         回调, 导致 Langfuse (CallbackHandler 走 RunnableConfig.callbacks)
         追踪不到摘要调用。这里从 langgraph 的运行时 config 中取回 callbacks.
         """
-        config: dict = {"metadata": {"lc_source": "summarization"}}
+        config: dict = {"metadata": {"lc_source": "summarization"}, "run_name": "summary_gen"}
         try:
             rc = get_config()
             callbacks = rc.get("callbacks") if rc else None
@@ -272,10 +272,13 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
             return "Previous conversation was too long to summarize."
         formatted = get_buffer_string(trimmed, format="xml")
         try:
-            response = self.model.invoke(
-                self.summary_prompt.format(messages=formatted).rstrip(),
-                config=self._summary_call_config(),
-            )
+            from harness.observability.usage_ledger import usage_context
+
+            with usage_context(source="summary"):
+                response = self.model.invoke(
+                    self.summary_prompt.format(messages=formatted).rstrip(),
+                    config=self._summary_call_config(),
+                )
             return response.text.strip()
         except Exception:
             logger.exception("Summary generation failed — skipping this compression round")
@@ -291,10 +294,13 @@ class SummarizationMiddleware(LangChainSummarizationMiddleware):
             return "Previous conversation was too long to summarize."
         formatted = get_buffer_string(trimmed, format="xml")
         try:
-            response = await self.model.ainvoke(
-                self.summary_prompt.format(messages=formatted).rstrip(),
-                config=self._summary_call_config(),
-            )
+            from harness.observability.usage_ledger import usage_context
+
+            with usage_context(source="summary"):
+                response = await self.model.ainvoke(
+                    self.summary_prompt.format(messages=formatted).rstrip(),
+                    config=self._summary_call_config(),
+                )
             return response.text.strip()
         except Exception:
             logger.exception("Summary generation failed — skipping this compression round")
@@ -708,6 +714,7 @@ def create_summarization_middleware(
     if effective_model:
         try:
             from langchain_openai import ChatOpenAI
+            from harness.observability.usage_ledger import get_usage_ledger_callback
 
             # langchain 新版对 fraction 类型的 trigger/keep 强制要求模型 profile
             # (max_input_tokens)。自定义模型 (qwen/dashscope 等) 不在其内置
@@ -732,6 +739,7 @@ def create_summarization_middleware(
                 temperature=0,
                 request_timeout=60,
                 max_retries=1,
+                callbacks=[get_usage_ledger_callback()],
                 **chat_kwargs,
             )
             logger.info(

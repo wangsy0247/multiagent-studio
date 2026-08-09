@@ -273,7 +273,7 @@ def test_render_probation_annotated(store):
     store.add_candidate(AGENT, _SAMPLE_SKILL_MD)
     section = render_evolved_skills_section(store.list_skills(AGENT))
     assert "<member_evolved_skills>" in section
-    assert "api-retry-workflow（试验性，谨慎使用）" in section
+    assert "api-retry-workflow (experimental, use with caution)" in section
     assert "skill_feedback" in section  # probation 存在时提示上报
 
 
@@ -282,7 +282,7 @@ def test_render_active_no_probation_tag(store):
     store.promote(AGENT, name)
     section = render_evolved_skills_section(store.list_skills(AGENT))
     assert "api-retry-workflow" in section
-    assert "试验性" not in section
+    assert "experimental" not in section
     assert "skill_feedback" not in section
 
 
@@ -377,16 +377,16 @@ def test_promotion_request_message(store):
     # 内容含技能全文 + 使用统计
     assert "<skill_promotion>" in msg.content
     assert "api-retry-workflow" in msg.content
-    assert "成功 3 次" in msg.content
-    assert "风险标记: low" in msg.content
+    assert "3 succeeded" in msg.content
+    assert "Risk flag: low" in msg.content
 
 
 def test_promotion_request_risky_flag():
     record = {"agent": AGENT, "name": "cleanup-temp-files",
               "success_uses": 3, "fail_uses": 0, "created_at": "2026-07-31"}
     content = render_promotion_request(record, _RISKY_SKILL_MD)
-    assert "风险标记: high" in content
-    assert "需用户确认" in content
+    assert "Risk flag: high" in content
+    assert "requires user confirmation" in content
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ from harness.models import HarnessState
 
 logger = logging.getLogger(__name__)
 
-_TITLE_PROMPT = "基于以下对话，生成一个简短的会话标题（5-15字）：\n\n{context}"
+_TITLE_PROMPT = "Generate a short conversation title (5-15 characters) based on the following conversation:\n\n{context}"
 _SUMMARY_MESSAGE_NAME = "summary"
 _FALLBACK_MAX_CHARS = 20
 
@@ -185,7 +185,7 @@ class TitleMiddleware(HarnessAgentMiddleware):
         assistant_msg = assistant_msgs[-1][:500] if assistant_msgs else ""
 
         prompt = _TITLE_PROMPT.format(
-            context=f"用户: {user_msg}\nAI: {assistant_msg}"
+            context=f"User: {user_msg}\nAI: {assistant_msg}"
         )
         return prompt, user_msg
 
@@ -208,7 +208,13 @@ class TitleMiddleware(HarnessAgentMiddleware):
         )
 
         logger.debug("Title prompt: %s", prompt[:200])
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        from harness.observability.usage_ledger import usage_context
+
+        with usage_context(source="title"):
+            response = await llm.ainvoke(
+                [HumanMessage(content=prompt)],
+                config={"run_name": "title_gen"},
+            )
         t2 = _time.monotonic()
         logger.info("Title ainvoke took %.2fs (total %.2fs)", t2 - t1, t2 - t0)
 
@@ -231,6 +237,8 @@ class TitleMiddleware(HarnessAgentMiddleware):
         """
         config_hash = hash((api_key, base_url, model_name))
         if self._llm is None or self._llm_config_hash != config_hash:
+            from harness.observability.usage_ledger import get_usage_ledger_callback
+
             self._llm = ChatOpenAI(
                 model=model_name,
                 temperature=0.2,
@@ -238,6 +246,7 @@ class TitleMiddleware(HarnessAgentMiddleware):
                 base_url=base_url,
                 request_timeout=30,
                 max_retries=1,
+                callbacks=[get_usage_ledger_callback()],
                 extra_body={
                     "enable_thinking": False,          # DashScope / 通义千问
                     "thinking": {"type": "disabled"},   # DeepSeek / Anthropic / Claude

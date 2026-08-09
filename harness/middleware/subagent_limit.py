@@ -82,9 +82,9 @@ class SubagentLimitMiddleware(HarnessAgentMiddleware):
         # AIMessage so it doesn't break tool-call pairing.
         warning = HumanMessage(
             content=(
-                f"[系统提示] 当前助手一次最多发起 {self._max_concurrent} 个子 Agent 任务，"
-                f"已自动忽略超出的 {blocked} 个任务。"
-                f"请等待这些任务完成后再创建新的子 Agent。"
+                f"[System notice] This assistant can launch at most {self._max_concurrent} sub-agent tasks at a time; "
+                f"the {blocked} excess task(s) were automatically ignored. "
+                f"Wait for these tasks to complete before creating new sub-agents."
             ),
             additional_kwargs={"hide_from_ui": True},
         )

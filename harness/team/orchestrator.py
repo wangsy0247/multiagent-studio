@@ -556,15 +556,15 @@ class TeamOrchestrator:
         """
         return f"""# Lead Agent
 
-你是 **{lead_name}**，本团队的 Lead Agent。你是一个战略思考者:
+You are **{lead_name}**, the Lead Agent of this team. You are a strategic thinker:
 
-1. **先澄清, 后行动**: 如果用户目标模糊、缺少关键信息或有多种合理方案, 使用 ask_clarification 主动提问, 不要猜测。
-2. **思考 → 规划 → 委派**: 先理解用户的真实需求, 再拆解为清晰的子任务, 最后根据成员能力分配到任务板。
-3. **人尽其才**: 每个 Member 有不同的工具和技能 (见 <team_capabilities>), 把任务分配给最合适的人。
-4. **监控与适应**: 定期检查任务进度。如果某任务失败, 决定是重试、重新分配还是换个思路。
-5. **汇总交付**: 所有任务完成后, 将结果整合为条理清晰的最终报告。
+1. **Clarify first, act second**: If the user's goal is vague, missing key information, or has multiple reasonable approaches, use ask_clarification proactively instead of guessing.
+2. **Think → Plan → Delegate**: First understand the user's real need, then break it down into clear sub-tasks, and finally assign them to the task board based on member capabilities.
+3. **Right person for the right job**: Each Member has different tools and skills (see <team_capabilities>); assign tasks to the best fit.
+4. **Monitor and adapt**: Check task progress regularly. If a task fails, decide whether to retry, reassign, or change the approach.
+5. **Synthesize and deliver**: Once all tasks are done, integrate the results into a well-organized final report.
 
-你不只是任务调度员 — 你是解决方案的架构师。团队依赖你来提供方向、判断和清晰度。"""
+You are not just a task dispatcher — you are the architect of the solution. The team relies on you for direction, judgment, and clarity."""
 
     async def _create_lead(self) -> TeammateAgent | None:
         """创建平台内置 Lead Agent — 使用 default 配置 + 系统 Lead SOUL.
@@ -730,29 +730,29 @@ class TeamOrchestrator:
         """生成内置 Verifier 的 SOUL — 系统预置, 独立验收者的行为准则."""
         return f"""# Verifier
 
-你是 **{TEAM_VERIFIER_NAME}**，团队的独立验收专家。你不参与任何实现工作,
-唯一职责是验证其他成员产出的交付物。
+You are **{TEAM_VERIFIER_NAME}**, the team's independent acceptance expert. You take no part in any
+implementation work; your sole responsibility is verifying deliverables produced by other members.
 
-## 核心原则
+## Core Principles
 
-1. **独立性**: 你没有参与任务的实现过程, 不要假设实现者的任何说法为真 — 一切亲自验证。
-2. **证据优先**: 验收结论必须基于你亲自检查到的证据, 不是任务报告里的声称。
-3. **严格但不刁难**: 按验收标准 (acceptance_criteria) 逐条核对, 标准之外不额外发挥。
+1. **Independence**: You were not involved in implementing the task. Do not assume any claim made by the implementer is true — verify everything yourself.
+2. **Evidence first**: Acceptance conclusions must be based on evidence you have personally inspected, not on claims in the task report.
+3. **Strict but fair**: Check each acceptance criterion (acceptance_criteria) one by one; do not invent requirements beyond the stated criteria.
 
-## 验收流程
+## Acceptance Procedure
 
-1. 阅读任务的目标、描述、约束和验收标准
-2. 检查执行者提交的结果和证据:
-   - 文件类证据: 必须亲自读取文件, 确认存在且内容符合要求
-   - 命令类证据: 可行时重新执行 (跑测试/构建), 确认真的通过
-   - 无法验证的证据: 视为未通过该项
-3. 对照验收标准逐条给出结论 (✅/❌ + 实际验证到的证据)
+1. Read the task's goal, description, constraints, and acceptance criteria
+2. Inspect the result and evidence submitted by the executor:
+   - File evidence: read the file yourself; confirm it exists and its content meets the requirement
+   - Command evidence: when feasible, re-run it (tests/builds) to confirm it truly passes
+   - Evidence that cannot be verified: treat as failing that item
+3. Give a conclusion for each criterion (✅/❌ + the evidence you actually verified)
 
-## 输出格式 (必须严格遵守)
+## Output Format (must be followed strictly)
 
-逐条列出检查结果后, 最后一行必须是 `VERDICT: PASS` 或 `VERDICT: FAIL`。
-FAIL 时必须说明哪条标准未满足、实际发现了什么。
-完成后用 task_update 提交结果 (result JSON 的 output 中必须包含 VERDICT 行)。"""
+After listing the per-item check results, the final line must be `VERDICT: PASS` or `VERDICT: FAIL`.
+On FAIL, state which criterion was not met and what you actually found.
+When done, submit the result with task_update (the result JSON's output must contain the VERDICT line)."""
 
     async def _create_verifier(self) -> TeammateAgent | None:
         """创建平台内置 Verifier Agent — default 配置 + 系统 Verifier SOUL.
@@ -970,16 +970,16 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                             assigned_agent=assigned,
                             priority="high",
                         )
-                        plan_summary = f"[自动降级] 将用户目标直接创建为任务，分配给 {assigned}"
+                        plan_summary = f"[Fallback] Created the user goal directly as a task, assigned to {assigned}"
                         has_sub_tasks = True
                     else:
-                        plan_summary = f"[Lead 独立完成, 无可用成员]"
+                        plan_summary = f"[Lead self-solve, no available members]"
                 else:
                     # 自处理模式: Lead 直接回答了用户
                     logger.info("Lead chose self-solve — no sub-tasks created")
-                    plan_summary = "[Lead 独立完成]"
+                    plan_summary = "[Lead self-solve]"
             else:
-                plan_summary = f"[Lead 拆解为 {len(sub_tasks)} 个子任务]"
+                plan_summary = f"[Lead split into {len(sub_tasks)} sub-task(s)]"
                 logger.info("Lead created %d sub-tasks — entering dispatch", len(sub_tasks))
 
             # 创建用户目标根任务 (用于追踪)
@@ -987,7 +987,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                 title=f"用户目标: {message[:100]}",
                 description=(
                     f"{message}\n\n"
-                    + (f"【Lead 决策】\n{plan_summary}" if plan_summary else "")
+                    + (f"[Lead decision]\n{plan_summary}" if plan_summary else "")
                 ),
                 priority="high",
             )
@@ -1027,11 +1027,11 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
             question = (lead.pending_clarification or {}).get("question", "")
             logger.info("Resuming team run after clarification: %s", question[:80])
             resume_msg = (
-                f"[用户澄清回答]\n"
-                f"之前的问题: {question}\n"
-                f"用户的回答: {answer}\n\n"
-                f"请根据用户的回答继续执行。如果需要更多信息，"
-                f"可以再次使用 ask_clarification。"
+                f"[User clarification answer]\n"
+                f"Previous question: {question}\n"
+                f"User's answer: {answer}\n\n"
+                f"Continue execution based on the user's answer. If you need more information, "
+                f"you may use ask_clarification again."
             )
             self._clarification_pending = False
             lead.pending_clarification = None
@@ -1067,8 +1067,8 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                          if not t.title.startswith("用户目标:") and not t.status.is_terminal]
             has_sub_tasks = len(sub_tasks) > 0
             plan_summary = (
-                f"[澄清回答后继续执行, 共 {len(sub_tasks)} 个子任务]"
-                if has_sub_tasks else "[Lead 独立完成]"
+                f"[Resuming after clarification answer, {len(sub_tasks)} sub-task(s)]"
+                if has_sub_tasks else "[Lead self-solve]"
             )
 
             # ── Phase 2+3: Dispatch Loop + Lead Synthesis (与 run() 共用) ──
@@ -1114,8 +1114,8 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                             await self.message_bus.send(TeamMessage(
                                 from_agent="orchestrator", to_agent=lead_notify.name,
                                 msg_type=TeamMessageType.LIFECYCLE,
-                                content=(f"任务 [{ct.id}] {ct.title} "
-                                         f"因依赖失败被取消: {ct.error}"),
+                                content=(f"Task [{ct.id}] {ct.title} "
+                                         f"was cancelled due to dependency failure: {ct.error}"),
                                 task_id=ct.id,
                             ))
                     if propagated:
@@ -1156,7 +1156,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                                 msg = TeamMessage(
                                     from_agent=name, to_agent=lead_notify.name,
                                     msg_type=TeamMessageType.LIFECYCLE,
-                                    content=f"已完成 {tm.completed_tasks} 个任务, 等待新任务",
+                                    content=f"Completed {tm.completed_tasks} task(s), waiting for new tasks",
                                 )
                                 await self.message_bus.send(msg)
                                 # ── SSE: 推送消息事件到前端 ──
@@ -1199,7 +1199,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
 
         # ── Phase 3: Lead LLM Synthesis (自处理 + 拆解模式均执行) ──
         # 自处理模式下 Lead 已在 triage 阶段直接回答了用户, 无任务产出可汇总 → 跳过
-        _self_solve = plan_summary.startswith("[Lead 独立完成")
+        _self_solve = plan_summary.startswith("[Lead self-solve")
         if not _self_solve:
             self.tracer.trace_phase("synthesizing")
             yield await self._emit_team_status("synthesizing", "Lead Agent 正在汇总结果...")
@@ -1229,12 +1229,12 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
             if retry_count < t.max_retries:
                 await self.task_store.update_task(
                     t.id, status=TeamTaskStatus.INTERRUPTED, retry_count=retry_count,
-                    error="团队运行结束 (取消/超时/异常), 任务中断待恢复",
+                    error="Team run ended (cancelled/timeout/error); task interrupted, awaiting recovery",
                 )
             else:
                 await self.task_store.update_task(
                     t.id, status=TeamTaskStatus.CANCELLED, retry_count=retry_count,
-                    error=f"团队运行中断且已达最大重试次数 ({t.max_retries})",
+                    error=f"Team run interrupted and max retries reached ({t.max_retries})",
                 )
 
         # ── Tracing: 记录结束状态 ──
@@ -1312,7 +1312,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                     task.id,
                     assigned_agent=None,
                     status=TeamTaskStatus.PENDING,
-                    error=f"原成员 '{agent_name}' 不可用, 任务回池重新分配",
+                    error=f"Original member '{agent_name}' unavailable; task returned to pool for reassignment",
                 )
                 logger.warning(
                     "Interrupted task '%s' returned to pool (member '%s' unavailable)",
@@ -1347,7 +1347,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                     await self.task_store.update_task(
                         task.id, assigned_agent=None,
                         status=TeamTaskStatus.PENDING,
-                        error=f"成员 '{agent_name}' 拒绝恢复中断任务",
+                        error=f"Member '{agent_name}' rejected resuming the interrupted task",
                     )
                     logger.warning(
                         "Interrupted task '%s': '%s' rejected resume, returned to pool",
@@ -1427,7 +1427,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                         await self.task_store.update_task(
                             task.id,
                             status=TeamTaskStatus.FAILED,
-                            error="Verifier 不可用, 验收终止 — 原任务回退 Lead 审查",
+                            error="Verifier unavailable; verification aborted — original task falls back to Lead review",
                         )
                         continue
                     # 指定成员不可用 → 收回任务到公共池重新分配
@@ -1633,26 +1633,28 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
         if task.spec is not None and not task.spec.is_empty():
             spec_text = task.spec.render()
         result = task.result
-        output = task.effective_output() or "(无输出)"
-        evidence_lines = "\n".join(f"- {e}" for e in result.evidence) if result and result.evidence else "(无证据)"
+        output = task.effective_output() or "(no output)"
+        evidence_lines = "\n".join(f"- {e}" for e in result.evidence) if result and result.evidence else "(no evidence)"
 
         return (
-            f"你是**独立验收者 (Verifier)**，未参与该任务的实现，也看不到实现过程。\n"
-            f"请根据以下任务规格与执行者提交的结果，逐条核对验收标准。\n\n"
-            f"[任务标题]\n{task.title}\n\n"
-            + (f"[任务规格]\n{spec_text}\n\n" if spec_text else f"[任务描述]\n{task.description}\n\n")
-            + f"[执行者提交的结果]\n{output}\n\n"
-            f"[执行者提交的证据]\n{evidence_lines}\n\n"
-            f"[验收要求]\n"
-            f"1. 逐条核对验收标准是否满足 (无验收标准时核对目标是否达成)\n"
-            f"2. 必须验证证据真实性: 文件路径要实际读取确认内容存在且符合描述, "
-            f"命令类证据可复跑验证\n"
-            f"3. 不要修改实现本身, 你只做验收\n"
-            f"4. 完成后用 task_update 提交: "
-            f"task_update(task_id=\"<本任务id>\", status=\"completed\", "
-            f"result={{\"output\": \"...\"}}), output 中必须包含单独一行:\n"
-            f"   VERDICT: PASS  — 验收通过, 后附理由\n"
-            f"   VERDICT: FAIL  — 验收不通过, 后附具体不合格项 (将打回执行者修改)"
+            f"You are the **independent Verifier**. You did not participate in implementing this task "
+            f"and cannot see the implementation process.\n"
+            f"Based on the task specification below and the result submitted by the executor, "
+            f"check each acceptance criterion one by one.\n\n"
+            f"[Task Title]\n{task.title}\n\n"
+            + (f"[Task Spec]\n{spec_text}\n\n" if spec_text else f"[Task Description]\n{task.description}\n\n")
+            + f"[Result Submitted by Executor]\n{output}\n\n"
+            f"[Evidence Submitted by Executor]\n{evidence_lines}\n\n"
+            f"[Acceptance Requirements]\n"
+            f"1. Check each acceptance criterion (if none, check whether the goal was achieved)\n"
+            f"2. You must verify evidence authenticity: actually read file paths to confirm the "
+            f"content exists and matches the description; command evidence may be re-run to verify\n"
+            f"3. Do not modify the implementation itself — you only verify\n"
+            f"4. When done, submit with task_update: "
+            f"task_update(task_id=\"<this task id>\", status=\"completed\", "
+            f"result={{\"output\": \"...\"}}); the output must contain a standalone line:\n"
+            f"   VERDICT: PASS  — accepted, followed by the reason\n"
+            f"   VERDICT: FAIL  — rejected, followed by the specific unmet items (will be sent back to the executor for revision)"
         )
 
     async def _process_verifications(self) -> bool:
@@ -1753,14 +1755,14 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                 await self.task_store.update_task(v.id, status=TeamTaskStatus.COMPLETED)
 
             if verdict == "pass":
-                feedback = f"Verifier 验收通过: {reason or '符合验收标准'}"
+                feedback = f"Verifier accepted: {reason or 'meets acceptance criteria'}"
                 updated = await self.task_store.update_task(
                     orig.id, status=TeamTaskStatus.APPROVED, review_feedback=feedback,
                 )
                 logger.info("Task '%s' APPROVED by verifier: %s", orig.id, reason[:120])
                 if updated:
                     await self._event_queue.put(await self._emit_task_update(updated))
-                await self._notify_executor(orig, f"✅ 验收通过 — {reason or '符合验收标准'}")
+                await self._notify_executor(orig, f"✅ verification passed — {reason or 'meets acceptance criteria'}")
                 progress = True
             elif verdict == "fail":
                 new_revision = orig.revision_count + 1
@@ -1769,16 +1771,16 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                     updated = await self.task_store.update_task(
                         orig.id,
                         status=TeamTaskStatus.FAILED,
-                        review_feedback=f"Verifier 验收不通过已达最大返工次数 ({MAX_TASK_REVISIONS})",
+                        review_feedback=f"Verifier rejected; max revision count reached ({MAX_TASK_REVISIONS})",
                         revision_count=new_revision,
-                        error="验收不通过次数超过上限",
+                        error="Verification rejections exceeded the limit",
                     )
                     logger.warning(
                         "Task '%s' FAILED: verifier rejected %d times (cap=%d)",
                         orig.id, new_revision, MAX_TASK_REVISIONS,
                     )
                 else:
-                    feedback = f"Verifier 验收不通过: {reason or '未说明理由'}"
+                    feedback = f"Verifier rejected: {reason or 'no reason given'}"
                     updated = await self.task_store.update_task(
                         orig.id,
                         status=TeamTaskStatus.REVISION_NEEDED,
@@ -1791,12 +1793,12 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                 if new_revision > MAX_TASK_REVISIONS:
                     await self._notify_executor(
                         orig,
-                        f"❌ 验收不通过已达最大返工次数 ({MAX_TASK_REVISIONS}), 任务终止:\n{reason}",
+                        f"❌ verification rejected; max revision count reached ({MAX_TASK_REVISIONS}), task terminated:\n{reason}",
                     )
                 else:
                     await self._notify_executor(
                         orig,
-                        f"↩️ 验收不通过 (第 {new_revision} 次修改), 请根据验收意见修改后重新提交:\n{reason}",
+                        f"↩️ verification rejected (revision #{new_revision}); please revise according to the review feedback and resubmit:\n{reason}",
                     )
                 progress = True
             else:
@@ -1817,7 +1819,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
             msg = TeamMessage(
                 from_agent="verifier", to_agent=task.assigned_agent,
                 msg_type=TeamMessageType.TEXT,
-                content=f"任务 [{task.id}] '{task.title}' {content}",
+                content=f"Task [{task.id}] '{task.title}' {content}",
                 task_id=task.id,
             )
             await self.message_bus.send(msg)
@@ -1913,32 +1915,33 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
         # ── 构建汇总任务给 Lead ──
         # 产出读取双路径兼容: 有 result 用 result.output, 无则回退旧 output 字段
         completed_summaries = "\n".join(
-            f"- [{t.id}] {t.title} (执行者: {t.assigned_agent or '未知'})\n"
-            f"  输出: {t.effective_output()[:300] if t.effective_output() else '(无输出)'}"
+            f"- [{t.id}] {t.title} (executor: {t.assigned_agent or 'unknown'})\n"
+            f"  output: {t.effective_output()[:300] if t.effective_output() else '(no output)'}"
             # Phase 3: 验收结论 (Verifier/Lead 审查反馈) 一并纳入汇总
-            + (f"\n  验收: {t.review_feedback[:200]}" if t.review_feedback else "")
+            + (f"\n  review: {t.review_feedback[:200]}" if t.review_feedback else "")
             for t in completed
         )
         failed_summaries = "\n".join(
-            f"- [{t.id}] {t.title} (执行者: {t.assigned_agent or '未知'}): "
-            f"{t.effective_failure_reason() or '未知错误'}"
+            f"- [{t.id}] {t.title} (executor: {t.assigned_agent or 'unknown'}): "
+            f"{t.effective_failure_reason() or 'unknown error'}"
             for t in failed
-        ) if failed else "无"
+        ) if failed else "none"
 
         synthesis_task = TeamTask(
             id=str(uuid.uuid4())[:8],
             project_id=self._project_id,
             title=f"汇总: 团队执行结果",
             description=(
-                f"你是一个 Team 的 Lead Agent。请汇总以下团队执行结果, 生成最终报告，用以回答用户问题\n\n"
-                f"【原始目标】\n{plan_summary or '见上文'}\n\n"
-                f"【已完成任务 ({len(completed)} 个)】\n{completed_summaries}\n\n"
-                f"【失败任务 ({len(failed)} 个)】\n{failed_summaries}\n\n"
-                f"请生成汇总报告, 包括:\n"
-                f"1. 目标达成情况\n"
-                f"2. 各任务的结果摘要\n"
-                f"3. 失败任务的原因和建议\n"
-                f"4. 后续建议 (如有)"
+                f"You are the Lead Agent of a team. Summarize the following team execution results "
+                f"into a final report that answers the user's question.\n\n"
+                f"[Original Goal]\n{plan_summary or 'see above'}\n\n"
+                f"[Completed Tasks ({len(completed)})]\n{completed_summaries}\n\n"
+                f"[Failed Tasks ({len(failed)})]\n{failed_summaries}\n\n"
+                f"Generate a summary report including:\n"
+                f"1. Goal achievement status\n"
+                f"2. Result summary of each task\n"
+                f"3. Causes of failed tasks and suggestions\n"
+                f"4. Follow-up suggestions (if any)"
             ),
             priority="high",
         )
@@ -2056,13 +2059,13 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                             await self.task_store.update_task(
                                 crashed_task_id,
                                 status=TeamTaskStatus.FAILED,
-                                error=f"Verifier '{tm.name}' 崩溃, 验收终止 — 原任务回退 Lead 审查",
+                                error=f"Verifier '{tm.name}' crashed; verification aborted — original task falls back to Lead review",
                             )
                         elif crashed.retry_count < crashed.max_retries:
                             # 回收任务到公共池, 让其他成员接手 (有界重试).
                             # 附上前次失败原因 (Prior attempts), 下一个接手的成员不再盲试
-                            note = (f"\n\n[前次执行失败 (第 {crashed.retry_count + 1} 次尝试): "
-                                    f"成员 '{tm.name}' 异常退出 — {tm.last_error or '未知原因'}]")
+                            note = (f"\n\n[Previous attempt failed (attempt {crashed.retry_count + 1}): "
+                                    f"member '{tm.name}' exited unexpectedly — {tm.last_error or 'unknown reason'}]")
                             await self.task_store.update_task(
                                 crashed_task_id, assigned_agent=None,
                                 status=TeamTaskStatus.PENDING,
@@ -2075,7 +2078,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                         else:
                             await self.task_store.update_task(
                                 crashed_task_id, status=TeamTaskStatus.FAILED,
-                                error=f"执行成员 '{tm.name}' 崩溃且已达最大重试次数")
+                                error=f"Executor member '{tm.name}' crashed and max retries reached")
                 await self._event_queue.put(
                     await self._emit_member_status(tm.name, "failed"))
 
@@ -2155,8 +2158,8 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
                             from_agent="orchestrator", to_agent=lead.name,
                             msg_type=TeamMessageType.LIFECYCLE,
                             content=(
-                                f"有 {len(in_review)} 个任务处于 in_review 状态等待你审查, "
-                                f"请使用 task_review 处理 (approved / revision_needed)"
+                                f"{len(in_review)} task(s) are in_review awaiting your review; "
+                                f"please handle them with task_review (approved / revision_needed)"
                             ),
                             task_id=in_review[0].id,
                         ))
@@ -2194,22 +2197,22 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
         active = [t for t in tasks if not t.status.is_terminal]
         terminal_count = len(tasks) - len(active)
 
-        parts = [f"\n\n<existing_tasks>\n任务板上有 {len(active)} 个未完结任务"]
+        parts = [f"\n\n<existing_tasks>\nThe task board has {len(active)} unfinished task(s)"]
         if terminal_count:
             parts.append(
-                f"，另有 {terminal_count} 个历史终态任务 (此前运行已结束, "
-                f"**不属于本次目标, 不要计入进度汇报**)")
+                f", plus {terminal_count} historical terminal task(s) (finished in a previous run; "
+                f"**not part of the current goal — do not count them in progress reports**)")
         parts.append(":")
         for t in active:
             icon = icons.get(t.status.value, "❓")
-            agent = t.assigned_agent or "未分配"
+            agent = t.assigned_agent or "unassigned"
             parts.append(f"- {icon} [{t.id}] {t.title} → {agent} ({t.status.value})")
         parts.append(
-            "\n你可以:\n"
-            "- task_list() 查看任务详情\n"
-            "- task_update(task_id, status=\"cancelled\") 取消不需要的任务\n"
-            "- 直接基于已有任务继续工作 (创建新任务、分配未完成的任务等)\n"
-            "- task_review(task_id, ...) 审查已提交 in_review 的任务\n"
+            "\nYou can:\n"
+            "- task_list() to view task details\n"
+            "- task_update(task_id, status=\"cancelled\") to cancel unneeded tasks\n"
+            "- continue working directly from existing tasks (create new tasks, assign unfinished ones, etc.)\n"
+            "- task_review(task_id, ...) to review tasks submitted as in_review\n"
             "</existing_tasks>")
         return "\n".join(parts)
 
@@ -2268,14 +2271,14 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
 
             # 产出读取双路径兼容: 有 result 用 result 字段, 无则回退旧 output/error
             def _task_line(t: TeamTask) -> str:
-                line = f"- [{t.id}] {t.title} → {t.assigned_agent or '未知'} ({t.status.value})"
+                line = f"- [{t.id}] {t.title} → {t.assigned_agent or 'unknown'} ({t.status.value})"
                 if t.status.is_success:
                     out = t.effective_output()
                     if out:
                         line += f": {out[:200]}"
                     # Phase 3: 验收结论 (Verifier/Lead 审查反馈) 一并纳入记忆原料
                     if t.review_feedback:
-                        line += f" [验收: {t.review_feedback[:120]}]"
+                        line += f" [review: {t.review_feedback[:120]}]"
                 else:
                     reason = t.effective_failure_reason()
                     if reason:
@@ -2285,7 +2288,7 @@ FAIL 时必须说明哪条标准未满足、实际发现了什么。
             tasks_text = "\n".join(_task_line(t) for t in (completed + failed))
 
             # ── lead summary: 根任务 ("用户目标:") 本身无 output, 直接用统计兜底 ──
-            lead_summary = f"完成 {len(completed)} 个任务, 失败 {len(failed)} 个任务"
+            lead_summary = f"Completed {len(completed)} task(s), {len(failed)} failed"
 
             # ── current team memory ──
             import json as _json

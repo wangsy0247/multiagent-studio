@@ -63,6 +63,8 @@ def _create_memory_model(
         "Memory LLM: model=%s",
         name,
     )
+    from harness.observability.usage_ledger import get_usage_ledger_callback
+
     return ChatOpenAI(
         model=name,
         api_key=effective_api_key,
@@ -70,6 +72,7 @@ def _create_memory_model(
         temperature=0.3,
         request_timeout=60,
         max_retries=1,
+        callbacks=[get_usage_ledger_callback()],
     )
 
 

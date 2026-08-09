@@ -55,8 +55,8 @@ async def test_cron_tool_rejects_when_unattended():
         config=None,
         state={"user_id": "tester", "metadata": {"unattended": True}},
     )
-    assert "无人值守" in result
-    assert "递归" in result
+    assert "unattended" in result
+    assert "recursive scheduling" in result
 
 
 @pytest.mark.asyncio
@@ -67,7 +67,7 @@ async def test_cron_tool_rejects_without_user():
         config=None,
         state={"metadata": {}},
     )
-    assert "无法确定任务归属用户" in result
+    assert "owning user" in result
 
 
 @pytest.mark.asyncio
@@ -76,15 +76,15 @@ async def test_cron_tool_create_validation():
     tool = cron_tool()
     state = {"user_id": "tester", "metadata": {}}
     r1 = await tool.coroutine(action="create", cron_expr="0 9 * * *", config=None, state=state)
-    assert "name 和 prompt" in r1
+    assert "name and prompt" in r1
     r2 = await tool.coroutine(action="create", name="n", prompt="p", config=None, state=state)
-    assert "必须且只能提供一个" in r2
+    assert "exactly one of" in r2
     r3 = await tool.coroutine(
         action="create", name="n", prompt="p",
         cron_expr="0 9 * * *", run_at="2026-07-20T09:00:00",
         config=None, state=state,
     )
-    assert "必须且只能提供一个" in r3
+    assert "exactly one of" in r3
 
 
 @pytest.mark.asyncio
@@ -138,7 +138,7 @@ async def test_clarification_unattended_returns_tool_message():
     result = await mw.awrap_tool_call(req, handler)
     assert isinstance(result, ToolMessage)
     assert not isinstance(result, Command)
-    assert "无人值守" in result.content
+    assert "unattended" in result.content
     assert result.tool_call_id == "tc-1"
 
 

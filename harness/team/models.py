@@ -86,18 +86,18 @@ class TaskSpec(BaseModel):
         """渲染为 member 可读文本, 供注入任务描述/prompt 使用."""
         sections: list[str] = []
         if self.background:
-            sections.append(f"[背景]\n{self.background}")
+            sections.append(f"[Background]\n{self.background}")
         if self.goal:
-            sections.append(f"[目标]\n{self.goal}")
+            sections.append(f"[Goal]\n{self.goal}")
         if self.description:
-            sections.append(f"[描述]\n{self.description}")
+            sections.append(f"[Description]\n{self.description}")
         if self.constraints:
-            sections.append("[约束]\n" + "\n".join(f"- {c}" for c in self.constraints))
+            sections.append("[Constraints]\n" + "\n".join(f"- {c}" for c in self.constraints))
         if self.format:
-            sections.append(f"[输出格式]\n{self.format}")
+            sections.append(f"[Output Format]\n{self.format}")
         if self.acceptance_criteria:
             sections.append(
-                "[验收标准]\n" + "\n".join(f"- {c}" for c in self.acceptance_criteria)
+                "[Acceptance Criteria]\n" + "\n".join(f"- {c}" for c in self.acceptance_criteria)
             )
         return "\n\n".join(sections)
 

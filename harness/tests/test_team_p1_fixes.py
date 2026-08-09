@@ -255,7 +255,7 @@ class TestSettlement:
 
             reloaded = await store.get_task(task.id)
             assert reloaded.status == TeamTaskStatus.FAILED
-            assert "协议违规" in (reloaded.error or "")
+            assert "protocol violation" in (reloaded.error or "")
             assert agent.failed_tasks == 1
             assert agent.completed_tasks == 0
 

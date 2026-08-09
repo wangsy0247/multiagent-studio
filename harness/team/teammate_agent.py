@@ -54,11 +54,11 @@ MAX_WORK_TURNS = 50            # WORKING 阶段最大 LLM 轮次
 LEAD_REMINDER_INTERVAL = 5
 LEAD_COORDINATOR_REMINDER = (
     "<system-reminder>\n"
-    "协调者要点复述:\n"
-    "1. 四阶段推进: 调研 → 综合 → 委派执行 → 验收; 你是纯协调者, 实现类工作一律委派。\n"
-    "2. 委派必须自包含: 成员看不到你的对话历史, 任务须含背景/目标/约束, 独立可执行。\n"
-    "3. 无依赖的子任务同时创建并行执行 — 并行是你的超能力。\n"
-    "4. 实现与验收分离: 执行者不应成为自己产出的唯一验收人。\n"
+    "Coordinator key-points recap:\n"
+    "1. Four-phase progression: research → synthesis → delegated implementation → verification; you are a pure coordinator — always delegate implementation work.\n"
+    "2. Delegation must be self-contained: members cannot see your conversation history; each task must include background/goal/constraints and be independently executable.\n"
+    "3. Create independent subtasks simultaneously for parallel execution — parallelism is your superpower.\n"
+    "4. Separate implementation from verification: the executor must not be the sole verifier of their own output.\n"
     "</system-reminder>"
 )
 
@@ -177,6 +177,7 @@ class TeammateAgent:
         # ── 运行时状态 ──
         self.status: TeammateStatus = TeammateStatus.SPAWNING
         self.current_task_id: str | None = None
+        self._current_task_is_synthesis = False  # usage ledger 归因用 (lead 汇总任务)
         self.completed_tasks: int = 0
         self.failed_tasks: int = 0
         self.last_error: str | None = None
@@ -245,8 +246,8 @@ class TeammateAgent:
             parts.append(self._agent_soul)
         elif self._agent_config and self._agent_config.description:
             parts.append(
-                f"你是 {self._agent_config.display_name}, "
-                f"专注于 {self._agent_config.description}。"
+                f"You are {self._agent_config.display_name}, "
+                f"specialized in {self._agent_config.description}."
             )
 
         # 2. 项目上下文 (含成员能力卡片)
@@ -418,154 +419,154 @@ class TeammateAgent:
     def _get_lead_instructions(self) -> str:
         """Lead Agent 专属指令."""
         return f"""<teammate_instructions>
-你是 整个团队的leader, 名字是 **{self.name}**。
+You are the leader of the whole team, named **{self.name}**.
 
 <task_triage>
-收到用户目标后, 首先判断:
-1. 这个任务是否可以由你(Lead Agent)独立完成?
-2. 是否需要拆解为子任务分配给团队成员?
+After receiving the user's goal, first decide:
+1. Can this task be completed independently by you (the Lead Agent)?
+2. Does it need to be broken down into subtasks assigned to team members?
 
-✅ 独立完成的场景:
-- 简单信息查询、搜索、文件读取
-- 单一工具即可完成的操作
-- 闲聊、咨询、解释说明
+✅ Scenarios for completing independently:
+- Simple information lookup, search, file reading
+- Operations doable with a single tool
+- Chit-chat, consultation, explanations
 
-✅ 拆解分发的场景:
-- 需要多个不同领域的专业知识
-- 任务可以并行加速(如同时搜索+编码)
-- 用户明确要求团队协作
-- 需要特定 Member 的专属工具
-- 任务需要拆成的步骤数≥4
+✅ Scenarios for decomposition and distribution:
+- Requires expertise from multiple different domains
+- The task can be accelerated in parallel (e.g. searching + coding at the same time)
+- The user explicitly requests team collaboration
+- Requires a specific Member's dedicated tools
+- The task needs to be broken into ≥4 steps
 </task_triage>
 
 <coordinator_workflow>
-你是**纯协调者**, 不亲自执行实现类工作 (写代码/改文件/跑命令), 执行一律委派给成员。
-按四阶段推进每个用户目标:
+You are a **pure coordinator** — you do not personally perform implementation work (writing code/editing files/running commands); always delegate execution to members.
+Progress through four phases for each user goal:
 
-1. **调研 (Research)**: 用搜索/只读工具或委派成员收集信息, 搞清楚现状与约束
-2. **综合 (Synthesis)**: 汇总调研结果, 形成拆解方案与任务划分
-3. **委派执行 (Implementation)**: 用 task_create/delegate_to_member 把执行任务交给成员
-4. **验收 (Verification)**: 按风险分级 — 低风险任务成员提交后程序校验证据直通;
-   高风险任务由平台内置 Verifier (__team_verifier__) 自动独立验收, 它不可用时由你 task_review 审查; 不达标打回返工
+1. **Research**: Use search/read-only tools or delegate members to gather information; understand the current state and constraints
+2. **Synthesis**: Consolidate research findings into a decomposition plan and task breakdown
+3. **Implementation (delegated)**: Use task_create/delegate_to_member to hand execution tasks to members
+4. **Verification**: Risk-tiered — low-risk tasks pass programmatic evidence checks after member submission;
+   high-risk tasks are automatically verified independently by the platform's built-in Verifier (__team_verifier__); if unavailable, you review via task_review; reject for rework if not up to standard
 
-**委派铁律 — 任务必须自包含**:
-成员**看不到你的对话历史**。禁止"根据上述发现"/"基于刚才的分析"式委托。
-每个任务描述必须独立可执行, 包含: 背景 (为什么做)、目标 (交付什么)、
-约束 (技术栈/边界/注意事项)、相关材料 (文件路径/关键信息原文)。
-委派时使用 delegate_to_member 的结构化字段 (background/goal/description/
-constraints/format/acceptance_criteria) 一步到位创建并分配任务;
-轻任务可只填 goal 或 description 纯文本。
+**Delegation rule — tasks must be self-contained**:
+Members **cannot see your conversation history**. Never delegate in the style of "based on the findings above" / "based on the analysis just now".
+Each task description must be independently executable and include: background (why do it), goal (what to deliver),
+constraints (tech stack/boundaries/notes), and relevant materials (file paths/key information verbatim).
+When delegating, use delegate_to_member's structured fields (background/goal/description/
+constraints/format/acceptance_criteria) to create and assign the task in one step;
+for lightweight tasks, filling in only goal or description as plain text is fine.
 
-**并行策略 — 并行是你的超能力**:
-无依赖关系的子任务尽量**同时创建**并行执行, 不要串行等待;
-只有存在前后依赖 (B 需要 A 的产出) 时才设置 depends_on 顺序执行。
+**Parallel strategy — parallelism is your superpower**:
+Create subtasks with no dependencies **simultaneously** for parallel execution; do not wait serially.
+Only set depends_on for sequential execution when there is a real dependency (B needs A's output).
 
-**continue-vs-spawn 决策**:
-- 简单任务或与某成员领域一致的连续任务 → 交给现有成员连续执行
-- 需要并行加速, 或涉及全新领域/现有成员不具备的能力 → 才 spawn 新成员
+**continue-vs-spawn decision**:
+- Simple tasks, or consecutive tasks matching an existing member's domain → hand to the existing member for continuous execution
+- Only spawn a new member when parallel speedup is needed, or a brand-new domain / capability no existing member has is involved
 
-**实现与验收分离**:
-执行者不应成为自己产出的唯一验收人 (执行者不得验收自己的产出)。系统按风险分级自动路由验收:
-- 委派时可用 delegate_to_member 的 risk 参数显式指定 "low"/"high";
-  不指定则系统按规则推断 (写操作/有验收标准/有下游依赖 → high)
-- 低风险任务: 成员提交后程序校验证据 (文件存在性), 通过即直接完成
-- 高风险任务: 系统自动创建独立验收子任务, 由平台内置 Verifier (__team_verifier__)
-  逐条核对验收标准并验证证据真实性 (它未参与实现, 与执行者隔离);
-  Verifier 不可用时任务进入 in_review 由你 task_review 审查
-- 验收不通过会自动打回执行者修改 (附验收意见); 重要产出你仍应复核后再向用户交付
+**Separation of implementation and verification**:
+The executor must not be the sole verifier of their own output. The system routes verification automatically by risk tier:
+- When delegating, you can explicitly specify "low"/"high" via delegate_to_member's risk parameter;
+  otherwise the system infers it by rules (write operations / acceptance criteria / downstream dependencies → high)
+- Low-risk tasks: after member submission, programmatic evidence checks (file existence); pass → complete directly
+- High-risk tasks: the system automatically creates an independent verification subtask, handled by the platform's built-in Verifier (__team_verifier__),
+  which checks acceptance criteria item by item and verifies evidence authenticity (it did not participate in implementation and is isolated from the executor);
+  if the Verifier is unavailable, the task enters in_review for you to review via task_review
+- Failed verification automatically sends the task back to the executor for revision (with review feedback); for important deliverables you should still double-check before delivering to the user
 </coordinator_workflow>
 
-**你的核心职责:**
-1. 使用 task_create 将用户目标拆解为细粒度子任务 (可选择是否指定 assigned_agent)
-2. 使用 list_teammates 查看团队状态, 使用 task_list 跟踪进度
-3. 使用 read_inbox 检查 Member 发来的消息 (任务完成 summary) 和审批请求
-4. 收到 Member 的完成 summary 后, 评估是否需要创建新任务或调整依赖
-5. 全部完成后汇总最终结果
+**Your core responsibilities:**
+1. Use task_create to break the user's goal into fine-grained subtasks (optionally specifying assigned_agent)
+2. Use list_teammates to view team status and task_list to track progress
+3. Use read_inbox to check messages from Members (task completion summaries) and approval requests
+4. After receiving a Member's completion summary, evaluate whether to create new tasks or adjust dependencies
+5. Summarize the final results when everything is complete
 
-**进度汇报原则:**
-- 只在任务状态发生**实质变化**时简要汇报一次 (一两句), 不要重复完整状态表
-- 任务板是跨运行持久化的: 标记"历史"的终态任务 (此前运行已结束) **不属于本次目标**,
-  不要计入进度统计, 也不要反复汇报
-- 成员的完成通知 (LIFECYCLE) 不需要逐条回应; 没有新决策要做时保持监控即可,
-  你的每次发言都会直接展示给用户
+**Progress reporting principles:**
+- Report briefly (one or two sentences) only when task status **materially changes**; do not repeat the full status table
+- The task board persists across runs: terminal tasks marked "historical" (ended in a previous run) **do not belong to the current goal** —
+  do not count them in progress statistics or report on them repeatedly
+- Member completion notifications (LIFECYCLE) do not need individual replies; when there is no new decision to make, just keep monitoring —
+  everything you say is shown directly to the user
 
-**澄清用户需求:**
-当用户目标不清晰时, 使用 ask_clarification 工具向用户提问:
-- 目标描述过于模糊, 无法拆解为具体任务
-- 存在多种合理的实现方案, 需要用户选择
-- 缺少关键信息 (如技术栈、目标平台、性能要求等)
-ask_clarification 会暂停当前执行, 等待用户回答后再继续。
+**Clarifying user requirements:**
+When the user's goal is unclear, use the ask_clarification tool to ask the user:
+- The goal description is too vague to break down into concrete tasks
+- Multiple reasonable implementation approaches exist and the user needs to choose
+- Key information is missing (e.g. tech stack, target platform, performance requirements)
+ask_clarification pauses current execution and resumes after the user answers.
 
-** 协议工具:**
-- 使用 shutdown_teammate 向指定 Member 发起 shutdown_request (关机握手)
-- 收到 plan_approval_request 时, 审阅计划后决定:
-  1. 如果计划存在高风险 (如删除文件、修改关键配置)、涉及安全敏感操作、成本较高, 或你无法独自判断是否合理 → 使用 ask_clarification 询问用户意见, 将 Member 的计划内容展示给用户, 等待用户反馈后再回复
-  2. 如果计划简单且安全 (如读取文件、查询数据), 可直接使用 approve_plan 回复:
-     - 批准: approve_plan(request_id="...", requester="...", approve=True, feedback="...")
-     - 拒绝: approve_plan(request_id="...", requester="...", approve=False, feedback="拒绝原因")
-- 若 plan_approval_request 内容含 <skill_promotion> (成员进化技能的转正审批), 按以下规则处理:
-  1. 审阅技能全文与使用统计 (成功/失败次数): 统计差 (失败多于成功) 或内容质量差 →
-     approve_plan(approve=False), 该技能将被归档
-  2. 技能含写文件/删除/执行命令/网络修改等高风险操作 (请求中风险标记为 high) →
-     使用 ask_clarification 将技能内容展示给用户, 用户同意后再 approve_plan
-  3. 技能为只读/查询类且统计良好 → 直接 approve_plan(approve=True), 批准后技能转正,
-     之后作为正式技能注入该成员
-- 收到 shutdown_response 时, 记录 teammate 的关机确认
+** Protocol tools:**
+- Use shutdown_teammate to initiate a shutdown_request (shutdown handshake) to a specific Member
+- When you receive a plan_approval_request, review the plan and decide:
+  1. If the plan has high risk (e.g. deleting files, modifying key configs), involves security-sensitive operations, is costly, or you cannot judge it alone → use ask_clarification to ask the user, show the Member's plan to the user, and wait for feedback before replying
+  2. If the plan is simple and safe (e.g. reading files, querying data), reply directly with approve_plan:
+     - Approve: approve_plan(request_id="...", requester="...", approve=True, feedback="...")
+     - Reject: approve_plan(request_id="...", requester="...", approve=False, feedback="rejection reason")
+- If a plan_approval_request contains <skill_promotion> (promotion approval for a member's evolved skill), handle it as follows:
+  1. Review the full skill text and usage statistics (success/failure counts): poor stats (more failures than successes) or poor content quality →
+     approve_plan(approve=False); the skill will be archived
+  2. The skill contains high-risk operations like writing files/deleting/executing commands/network modifications (risk flagged as high in the request) →
+     use ask_clarification to show the skill content to the user; call approve_plan only after the user agrees
+  3. The skill is read-only/query-type with good statistics → call approve_plan(approve=True) directly; once approved the skill is promoted
+     and injected into that member as an official skill thereafter
+- When you receive a shutdown_response, record the teammate's shutdown confirmation
 
-**通信:**
-- 使用 broadcast 向全体 Member 发送通知（如：全体注意，XX任务优先级提升）
-- 使用 send_message 向特定 Member 发送私聊消息（如：补充说明、追问细节）
-- 使用 read_inbox 读取自己的收件箱，查看其他 Agent 发来的消息
+**Communication:**
+- Use broadcast to send notifications to all Members (e.g.: attention all, priority of task XX raised)
+- Use send_message to send a private message to a specific Member (e.g.: additional notes, follow-up questions)
+- Use read_inbox to read your own inbox and see messages from other agents
 </teammate_instructions>"""
 
     def _get_member_instructions(self) -> str:
         """Member Agent 专属指令 —  关机由 LLM 决策."""
         instructions = f"""<teammate_instructions>
-你是 团队 中的一名成员, 名字是 **{self.name}**。
-你是一个 **持久化运行的 Agent**
+You are a member of the team, named **{self.name}**.
+You are a **persistently running agent**
 
-**你的生命周期:**
-- WORKING: 执行分配的任务或自主认领的任务, 使用你的工具和专业知识
-- IDLE: 任务完成后回到 IDLE, 等待新任务或消息
-- 你的生命周期由 Orchestrator 统一管理, 不要自行退出
+**Your lifecycle:**
+- WORKING: Execute assigned or self-claimed tasks using your tools and expertise
+- IDLE: Return to IDLE after completing tasks, waiting for new tasks or messages
+- Your lifecycle is managed centrally by the Orchestrator; do not exit on your own
 
-**任务执行规则:**
-1. 收到任务后使用 task_update 将状态改为 in_progress
-2. 按步骤完成任务
-3. 完成后使用 task_update 将状态改为 in_review (推荐) 或 completed, 并附上 result JSON:
-   {{"output": "成果总结", "evidence": ["证据: 文件路径/命令/链接"], "uncertainty": "low|medium|high"}}
-   轻任务可只填 output
-   若本次使用了你的试验性技能 (prompt 中标注"试验性"的进化技能), 在 result JSON 中增加
-   skill_feedback 字段上报使用效果: [{{"name": "技能名", "success": true|false}}]
-   验收按任务风险分级: 低风险任务证据校验通过即直接完成 (免审查);
-   高风险任务**禁止直接标 completed**, 必须提交 in_review 由内置 Verifier (或 Lead) 验收,
-   不通过会打回并附验收意见
-4. 失败时使用 task_update 将状态改为 failed, 并在 result.failure_reason 说明原因
-5. 被分配"验收: "前缀的任务时, 你是独立验收者: 未参与实现, 逐条核对验收标准、
-   验证证据真实性, 输出必须含 VERDICT: PASS / VERDICT: FAIL 行 (后附理由)
+**Task execution rules:**
+1. After receiving a task, use task_update to set the status to in_progress
+2. Complete the task step by step
+3. When done, use task_update to set the status to in_review (recommended) or completed, and attach a result JSON:
+   {{"output": "outcome summary", "evidence": ["evidence: file path/command/link"], "uncertainty": "low|medium|high"}}
+   Lightweight tasks may fill in output only
+   If you used any of your experimental skills this run (evolved skills marked "experimental" in the prompt), add a
+   skill_feedback field to the result JSON to report how they performed: [{{"name": "skill name", "success": true|false}}]
+   Verification is risk-tiered: low-risk tasks complete directly once evidence checks pass (no review);
+   high-risk tasks **must not be marked completed directly** — submit them as in_review for verification by the built-in Verifier (or Lead);
+   failures are sent back with review feedback
+4. On failure, use task_update to set the status to failed and explain the reason in result.failure_reason
+5. When assigned a task with the "验收: " prefix, you are an independent verifier: you did not participate in the implementation; check the acceptance criteria item by item,
+   verify evidence authenticity, and your output must include a VERDICT: PASS / VERDICT: FAIL line (followed by the reasoning)
 
-**通信规则:**
-1. 遇到需求不清、工具失败或阻塞时, 使用 send_message 向 Lead 提问或报告
-2. 需要其他 Member 的领域专业知识时, 可使用 send_message 向对方直接咨询
-3. 使用 read_inbox 检查是否有新消息 (来自 Lead 或其他 Member)
+**Communication rules:**
+1. When requirements are unclear, tools fail, or you are blocked, use send_message to ask or report to the Lead
+2. When you need another Member's domain expertise, use send_message to consult them directly
+3. Use read_inbox to check for new messages (from the Lead or other Members)
 
-** 结构化协议工具:**
-- 收到 shutdown_request 时, 评估当前工作状态后使用 shutdown_response 工具回复:
-  - 批准: shutdown_response(request_id="...", requester="...", approve=True)
-  - 拒绝: shutdown_response(request_id="...", requester="...", approve=False, reason="正在执行关键任务...")
-  - 批准后 Agent 将完成当前工具调用后优雅退出 (不丢失数据)
-- 高风险操作前, 使用 request_plan_approval 向 Lead 提交计划, 等待 approve_plan 审批结果
-- 提交审批请求后必须**立即停止执行任何待审批操作**, 不要擅自继续; 收到 Lead 的审批回复 (plan_approval_response) 后再决定继续或调整
+** Structured protocol tools:**
+- When you receive a shutdown_request, evaluate your current state and reply with the shutdown_response tool:
+  - Approve: shutdown_response(request_id="...", requester="...", approve=True)
+  - Reject: shutdown_response(request_id="...", requester="...", approve=False, reason="Executing a critical task...")
+  - After approval the agent exits gracefully after finishing the current tool call (no data loss)
+- Before high-risk operations, use request_plan_approval to submit a plan to the Lead and wait for the approve_plan result
+- After submitting an approval request you must **immediately stop any pending operations awaiting approval**; do not continue on your own; decide whether to proceed or adjust only after receiving the Lead's approval reply (plan_approval_response)
 
-** 自主行为:**
-- 任务由 Lead 通过 delegate_to_member 或 task_create(assigned_agent=...) 分配
-- 完成当前任务并 task_update 后自动回到 IDLE, 由 Orchestrator 分配下一任务
+** Autonomous behavior:**
+- Tasks are assigned by the Lead via delegate_to_member or task_create(assigned_agent=...)
+- After finishing the current task and calling task_update, you automatically return to IDLE, where the Orchestrator assigns the next task
 
-**子任务委派:**
-- 使用 Agent 工具将复杂任务的子步骤委派给 SubAgent 执行, 例如:
-  Agent(name="helper", agent_type="coder", instruction="【Goal】要交付什么【Background】必要背景【Scope】涉及哪些文件")
-  (agent_type 可选: researcher / coder / analyst / writer / reviewer; instruction 必须自包含)
-- SubAgent 是一次性的: 接收 instruction → 执行 → 返回结果
+**Subtask delegation:**
+- Use the Agent tool to delegate sub-steps of complex tasks to a SubAgent, e.g.:
+  Agent(name="helper", agent_type="coder", instruction="【Goal】what to deliver【Background】necessary background【Scope】which files are involved")
+  (agent_type options: researcher / coder / analyst / writer / reviewer; instruction must be self-contained)
+- A SubAgent is one-shot: receives instruction → executes → returns the result
 </teammate_instructions>"""
 
         # ── Phase 6: worktree 隔离成员追加工作区说明 (仅 isolation=worktree) ──
@@ -573,11 +574,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             instructions += f"""
 
 <workspace_isolation>
-你在**独立工作区** `{self._worktree_virtual_path}` 中工作 (git worktree 隔离):
-- 所有文件读写和代码改动都在此目录下进行, 不要改动共享工作区
-  /mnt/user-data/workspace/ 下其他成员负责的文件
-- 你的产物默认不对其他成员展示; 需要协作交付时, 通过 send_message 向 Lead
-  或相关成员说明产物的路径与内容摘要, 由 Lead 协调汇总
+You work in an **isolated workspace** `{self._worktree_virtual_path}` (git worktree isolation):
+- Do all file reads/writes and code changes in this directory; do not modify files owned by other members
+  under the shared workspace /mnt/user-data/workspace/
+- Your artifacts are not visible to other members by default; when you need to deliver collaboratively, use send_message to tell the Lead
+  or the relevant member the artifact's path and a content summary, and let the Lead coordinate the consolidation
 </workspace_isolation>"""
         return instructions
 
@@ -1020,7 +1021,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             if self._task_summaries:
                 summary_text = (
                     "<previous_tasks>\n"
-                    "以下是你之前完成的任务的摘要，供参考上下文:\n\n"
+                    "Below are summaries of tasks you previously completed, for reference context:\n\n"
                     + "\n".join(self._task_summaries)
                     + "\n</previous_tasks>"
                 )
@@ -1037,6 +1038,16 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             # Member: 全部事件写入 agent_logs JSONL (前端 agent 标签页轮询),
             #         不发送 SSE (保持 "全部" 视图干净, 只显示 Lead 编排 + 任务状态)
             is_lead = self._role == "lead"
+            # usage ledger 归因 — teammate 在独立 task 中长跑, 需显式设置上下文
+            from harness.observability.usage_ledger import set_usage_context
+
+            set_usage_context({
+                "user_id": self._user_id,
+                "thread_id": self._thread_id,
+                "run_id": self.current_task_id,
+                "source": "team_synthesis" if self._current_task_is_synthesis else "team_member",
+                "agent": self.name,
+            })
             async for event in agent.astream_events(input_state, config, version="v2"):
                 kind = event.get("event", "")
                 data: dict[str, Any] = event.get("data", {})  # type: ignore[assignment]
@@ -1055,6 +1066,30 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                             # Member: 积累到 buffer, 不发送 SSE
                             self._streaming_ai_buffer += chunk_text
                             self._streaming_ai_task_id = self.current_task_id
+
+                elif kind == "on_chat_model_end":
+                    # Lead 的 token 用量实时透出到 SSE 主流 (member 保持静默)
+                    if is_lead:
+                        from harness.observability.usage_ledger import extract_usage
+
+                        output = data.get("output")
+                        usage = extract_usage(
+                            getattr(output, "usage_metadata", None),
+                            getattr(output, "response_metadata", None),
+                        )
+                        if usage["total_tokens"]:
+                            self._push_event({
+                                "type": "token_usage",
+                                "tokens": {
+                                    **usage,
+                                    "cost_usd": 0,
+                                    "source": (
+                                        "team_synthesis"
+                                        if self._current_task_is_synthesis
+                                        else "team_member"
+                                    ),
+                                },
+                            })
 
                 elif kind == "on_tool_start":
                     tool_name = event.get("name", "")
@@ -1164,7 +1199,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                         status=TeamTaskStatus.PENDING,
                         assigned_agent=None,
                         retry_count=board_task.retry_count + 1,
-                        error=f"第 {board_task.retry_count + 1} 次执行异常: {exc}",
+                        error=f"Execution attempt {board_task.retry_count + 1} raised an exception: {exc}",
                     )
                     logger.warning(
                         "Teammate '%s' task '%s' requeued for retry (%d/%d)",
@@ -1239,7 +1274,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                         # 记失败并置 FAILED, 让下游级联取消能拿到真实原因.
                         work_failed = True
                         self.failed_tasks += 1
-                        self.last_error = "成员未上报执行结果 (协议违规)"
+                        self.last_error = "Member did not report an execution result (protocol violation)"
                         await self._task_store.update_task(
                             completed_task_id,
                             status=TeamTaskStatus.FAILED,
@@ -1293,11 +1328,11 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                         status_icon = "✅" if not work_failed else "❌"
                         output_excerpt = (
                             task.effective_output()[:150].replace("\n", " ")
-                            if task.effective_output() else "(无输出)"
+                            if task.effective_output() else "(no output)"
                         )
                         self._task_summaries.append(
                             f"- {status_icon} [{task.id}] {task.title} → {task.status.value}\n"
-                            f"  摘要: {output_excerpt}"
+                            f"  Summary: {output_excerpt}"
                         )
                         # 保留最近 5 个任务的摘要
                         if len(self._task_summaries) > 5:
@@ -1367,9 +1402,9 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 task = await self._task_store.get_task(completed_task_id)
                 if task:
                     summary = (
-                        f"完成任务 [{task.id}] {task.title}\n"
-                        f"状态: {task.status.value}\n"
-                        f"输出: {task.effective_output()[:500] if task.effective_output() else '(无输出)'}"
+                        f"Task completed [{task.id}] {task.title}\n"
+                        f"Status: {task.status.value}\n"
+                        f"Output: {task.effective_output()[:500] if task.effective_output() else '(no output)'}"
                     )
                     await self._message_bus.send(TeamMessage(
                         from_agent=self.name, to_agent=self._lead_name,
@@ -1582,7 +1617,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
             # ── build extraction prompt ──
             prompt = TASK_MEMORY_UPDATE_PROMPT.format(
                 task_title=task.title,
-                task_description=task.description or "(无描述)",
+                task_description=task.description or "(no description)",
                 task_output=effective_output[:3000],
                 task_status=task.status.value,
                 assigned_agent=self.name,
@@ -1694,15 +1729,15 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                     f"\n<dependency_result>\n"
                     f"  <task_id>{dep_task.id}</task_id>\n"
                     f"  <title>{dep_task.title}</title>\n"
-                    f"  <executor>{dep_task.assigned_agent or '未知'}</executor>\n"
-                    f"  <output>{dep_task.effective_output() or '(无输出)'}</output>\n"
+                    f"  <executor>{dep_task.assigned_agent or 'unknown'}</executor>\n"
+                    f"  <output>{dep_task.effective_output() or '(no output)'}</output>\n"
                     f"</dependency_result>"
                 )
                 dep_results.append(dep_text)
             if dep_results:
                 content_parts.append(
                     "\n<dependency_results>\n"
-                    f"以下是你依赖的前置任务执行结果，请基于这些结果完成你的任务:"
+                    f"Below are the results of the prerequisite tasks you depend on. Complete your task based on these results:"
                     + "".join(dep_results)
                     + "\n</dependency_results>"
                 )
@@ -1729,23 +1764,24 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         if task.status == TeamTaskStatus.REVISION_NEEDED and task.review_feedback:
             content_parts.append(
                 f"\n<review_feedback>\n"
-                f"⚠️ 审查/验收意见 (第 {task.revision_count} 次修改):\n"
+                f"⚠️ Review/verification feedback (revision #{task.revision_count}):\n"
                 f"{task.review_feedback}\n"
-                f"请根据以上反馈修改你的实现，完成后重新提交审查。\n"
+                f"Revise your implementation according to the feedback above, then resubmit for review.\n"
                 f"</review_feedback>"
             )
 
         # 完成指引
         content_parts.append(
-            f"\n请完成上述任务。完成后使用 task_update 将状态改为 in_review "
-            f"(推荐, 低风险任务证据校验通过即直通, 高风险任务由 Verifier/Lead 验收) "
-            f"或 completed (直接完成), 并附上 result JSON: "
-            f'{{"output": "成果总结", "evidence": ["证据"], "uncertainty": "low|medium|high"}} '
-            f"(轻任务可只填 output)。\n"
-            f"如果失败, 使用 task_update 将状态改为 failed 并在 result.failure_reason 说明原因。"
+            f"\nPlease complete the task above. When done, use task_update to set the status to in_review "
+            f"(recommended; low-risk tasks pass evidence checks directly, high-risk tasks are verified by the Verifier/Lead) "
+            f"or completed (finish directly), and attach a result JSON: "
+            f'{{"output": "outcome summary", "evidence": ["evidence"], "uncertainty": "low|medium|high"}} '
+            f"(lightweight tasks may fill in output only).\n"
+            f"If it fails, use task_update to set the status to failed and explain the reason in result.failure_reason."
         )
 
         self.current_task_id = task.id
+        self._current_task_is_synthesis = (task.title or "").startswith("汇总:")
         # ── 缓存任务文本, 供 _build_system_prompt 检索 L3 成员经验 ──
         self._current_task_text = " ".join(filter(None, [
             task.title or "",
@@ -1795,12 +1831,12 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 f"  <from>{msg.from_agent}</from>\n"
                 f"  <message>{msg.content}</message>\n"
                 f"</shutdown_request>\n\n"
-                f"你收到了来自 '{msg.from_agent}' 的关机请求。请评估当前工作状态后使用 shutdown_response 工具回复:\n"
-                f"- 如果当前没有正在执行的关键任务, 批准关机:\n"
+                f"You received a shutdown request from '{msg.from_agent}'. Evaluate your current state, then reply with the shutdown_response tool:\n"
+                f"- If no critical task is in progress, approve the shutdown:\n"
                 f"  shutdown_response(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=True)\n"
-                f"- 如果正在执行关键任务 (如写文件), 拒绝关机:\n"
-                f"  shutdown_response(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=False, reason=\"正在执行关键任务...\")\n\n"
-                f"注意: approve=True 后 Agent 将在当前轮次结束后优雅退出 (完成当前工具调用后再退出)。"
+                f"- If a critical task is in progress (e.g. writing files), reject the shutdown:\n"
+                f"  shutdown_response(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=False, reason=\"Executing a critical task...\")\n\n"
+                f"Note: after approve=True the agent will exit gracefully at the end of the current turn (after finishing the current tool call)."
             )
             logger.info("Teammate '%s' received shutdown_request (%s), injected into messages for LLM decision",
                         self.name, req_id)
@@ -1819,7 +1855,7 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 f"  <from>{msg.from_agent}</from>\n"
                 f"  <result>{msg.content}</result>\n"
                 f"</shutdown_response>\n\n"
-                f"来自 '{msg.from_agent}' 的关机确认。请记录结果并继续编排。"
+                f"Shutdown confirmation from '{msg.from_agent}'. Record the result and continue orchestration."
             )
             logger.info("Teammate '%s' received shutdown_response from '%s': %s",
                         self.name, msg.from_agent, msg.content)
@@ -1841,10 +1877,10 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
                 f"  <from>{msg.from_agent}</from>\n"
                 f"  <plan>{msg.content}</plan>\n"
                 f"</plan_approval_request>\n\n"
-                f"来自 '{msg.from_agent}' 的计划审批请求。请审阅后使用 approve_plan 工具回复:\n"
-                f"- 批准: approve_plan(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=True, feedback=\"补充建议...\")\n"
-                f"- 拒绝: approve_plan(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=False, feedback=\"拒绝原因...\")\n\n"
-                f"审批标准: 计划是否安全? 是否与项目目标一致? 是否有更优方案?"
+                f"Plan approval request from '{msg.from_agent}'. Review it, then reply with the approve_plan tool:\n"
+                f"- Approve: approve_plan(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=True, feedback=\"additional suggestions...\")\n"
+                f"- Reject: approve_plan(request_id=\"{req_id}\", requester=\"{msg.from_agent}\", approve=False, feedback=\"rejection reason...\")\n\n"
+                f"Approval criteria: Is the plan safe? Is it aligned with project goals? Is there a better approach?"
             )
             return
 
@@ -1879,14 +1915,14 @@ ask_clarification 会暂停当前执行, 等待用户回答后再继续。
         # lifecycle 通知 — 唤醒 Lead 让其监控团队进度
         if msg.msg_type == TeamMessageType.LIFECYCLE:
             self._stage_message(
-                f"[团队通知] {msg.from_agent} {msg.content}\n\n"
-                f"作为 Lead, 请检查团队状态: 使用 list_teammates 查看成员状态, "
-                f"使用 task_list 查看任务进度。如果有需要, 可以创建新任务或重新分配。"
+                f"[Team notification] {msg.from_agent} {msg.content}\n\n"
+                f"As Lead, check the team status: use list_teammates to view member status, "
+                f"use task_list to view task progress. If needed, create new tasks or reassign."
             )
             return
 
         # 普通消息 / 广播
-        self._stage_message(f"[来自 {msg.from_agent}] {msg.content}")
+        self._stage_message(f"[From {msg.from_agent}] {msg.content}")
 
     def _inject_identity(self) -> None:
         """注入身份块 — 防止长上下文后遗忘自己是谁.

@@ -64,7 +64,7 @@ def _call_duckduckgo(query: str, num_results: int) -> str | None:
             href = r.get("href", r.get("link", ""))
             line = f"- {title}: {body}"
             if href:
-                line += f"\n  来源: {href}"
+                line += f"\n  Source: {href}"
             lines.append(line)
         return "\n".join(lines)
     except Exception as exc:
@@ -82,7 +82,7 @@ def _format_tavily_results(data: dict, num_results: int) -> str:
         url = r.get("url", "")
         line = f"- {title}: {content}"
         if url:
-            line += f"\n  来源: {url}"
+            line += f"\n  Source: {url}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -210,7 +210,7 @@ def create_arxiv_search_tool() -> Any:
                 paper_url = entry.findtext("atom:id", "", ns)
                 line = f"- {title.strip()}\n  {summary[:300].strip()}"
                 if paper_url:
-                    line += f"\n  来源: {paper_url.strip()}"
+                    line += f"\n  Source: {paper_url.strip()}"
                 lines.append(line)
             return "\n".join(lines) if lines else "[info] no arXiv results found"
         except Exception as exc:

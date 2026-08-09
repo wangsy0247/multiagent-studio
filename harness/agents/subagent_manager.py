@@ -126,7 +126,7 @@ class SubagentManager:
         configuration.  Raises ``ValueError`` if the name already exists.
         """
         if _owner_key(config.name) in self._agents:
-            raise ValueError(f"SubAgent '{config.name}' 已存在")
+            raise ValueError(f"SubAgent '{config.name}' already exists")
 
         # Resolve model
         model_name: str | None = config.model
@@ -200,7 +200,7 @@ class SubagentManager:
         if entry is None:
             return SubAgentResult(
                 status=SubagentStatus.ERROR,
-                output=f"SubAgent '{name}' 不存在",
+                output=f"SubAgent '{name}' does not exist",
             )
 
         config, tools, llm = entry
@@ -208,7 +208,7 @@ class SubagentManager:
         # Build instruction with optional context
         full_instruction = instruction
         if context:
-            full_instruction = f"[上下文]\n{context}\n\n[任务]\n{instruction}"
+            full_instruction = f"[Context]\n{context}\n\n[Task]\n{instruction}"
 
         # ── Worktree isolation ──
         worktree_ctx = None
@@ -309,13 +309,13 @@ class SubagentManager:
         """
         entry = self._agents.get(name)
         if entry is None:
-            raise ValueError(f"SubAgent '{name}' 不存在")
+            raise ValueError(f"SubAgent '{name}' does not exist")
 
         config, tools, llm = entry
 
         full_instruction = instruction
         if context:
-            full_instruction = f"[上下文]\n{context}\n\n[任务]\n{instruction}"
+            full_instruction = f"[Context]\n{context}\n\n[Task]\n{instruction}"
 
         async with self._semaphore:
             from harness.agents.subagent_executor import SubagentExecutor

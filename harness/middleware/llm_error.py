@@ -79,9 +79,9 @@ class LLMErrorHandlingMiddleware(HarnessAgentMiddleware):
         )
 
         # Return a synthetic error AIMessage so the agent can recover
-        error_msg = f"抱歉，模型调用暂时失败（已重试 {self.max_retries} 次）。请稍后重试或检查 API 配置。"
+        error_msg = f"Sorry, the model call failed temporarily (retried {self.max_retries} times). Please try again later or check the API configuration."
         if last_error:
-            error_msg += f" 错误详情: {str(last_error)[:200]}"
+            error_msg += f" Error details: {str(last_error)[:200]}"
 
         return AIMessage(content=error_msg, additional_kwargs={"llm_error": True})
 

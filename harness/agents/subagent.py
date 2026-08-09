@@ -59,7 +59,7 @@ class SubAgent:
 
         full_instruction = instruction
         if context:
-            full_instruction = f"[上下文]\n{context}\n\n[任务]\n{instruction}"
+            full_instruction = f"[Context]\n{context}\n\n[Task]\n{instruction}"
 
         executor = SubagentExecutor(
             config=self.config,

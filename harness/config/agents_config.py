@@ -387,7 +387,7 @@ def create_default_agent(user_id: str) -> AgentConfig:
     cfg = AgentConfig(
         name=DEFAULT_AGENT_NAME,
         display_name="Default Agent",
-        description="系统默认 Agent — 用于单 Agent 模式和 Team Lead。",
+        description="System default Agent — used for single-Agent mode and Team Lead.",
         model=default_model,
     )
     save_agent_config(DEFAULT_AGENT_NAME, cfg, user_id=user_id)

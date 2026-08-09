@@ -247,18 +247,27 @@ class MemoryUpdateQueue:
             for context in contexts_to_process:
                 try:
                     logger.info("Updating memory for thread %s (async)", context.thread_id)
-                    success = await updater.aupdate_memory(
-                        messages=context.messages,
+                    # usage ledger 归因 — 队列在 run 结束后异步执行, 需显式补全上下文
+                    from harness.observability.usage_ledger import usage_context
+
+                    with usage_context(
+                        user_id=context.user_id or "",
                         thread_id=context.thread_id,
-                        agent_name=context.agent_name,
-                        correction_detected=context.correction_detected,
-                        reinforcement_detected=context.reinforcement_detected,
-                        user_id=context.user_id,
-                        metadata=context.metadata,
-                        api_key=context.api_key,
-                        base_url=context.base_url,
-                        model_name=context.model_name,
-                    )
+                        source="memory",
+                        model=context.model_name or "",
+                    ):
+                        success = await updater.aupdate_memory(
+                            messages=context.messages,
+                            thread_id=context.thread_id,
+                            agent_name=context.agent_name,
+                            correction_detected=context.correction_detected,
+                            reinforcement_detected=context.reinforcement_detected,
+                            user_id=context.user_id,
+                            metadata=context.metadata,
+                            api_key=context.api_key,
+                            base_url=context.base_url,
+                            model_name=context.model_name,
+                        )
                     if success:
                         logger.info("Memory updated successfully for thread %s", context.thread_id)
                     else:

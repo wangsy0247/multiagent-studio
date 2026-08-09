@@ -474,9 +474,9 @@ class SubagentExecutor:
             wt = self._worktree_ctx
             task = (
                 f"[WORKTREE]\n"
-                f"工作目录: {wt.virtual_path}\n"
-                f"分支: {wt.branch}\n"
-                f"所有文件操作请在此目录下进行，不要修改主 workspace 的文件。\n"
+                f"Working directory: {wt.virtual_path}\n"
+                f"Branch: {wt.branch}\n"
+                f"Perform all file operations in this directory; do not modify files in the main workspace.\n"
                 f"[/WORKTREE]\n\n"
                 f"{task}"
             )
@@ -559,6 +559,18 @@ class SubagentExecutor:
             signalled via ``result_holder.cancel_event``.
         """
         collector: SubagentTokenCollector | None = None
+        # usage ledger 归因 — 本子 agent 内的 LLM 调用标记为 subagent
+        from harness.observability.usage_ledger import (
+            current_usage_context,
+            reset_usage_context,
+            set_usage_context,
+        )
+
+        _usage_token = set_usage_context({
+            **current_usage_context(),
+            "source": "subagent",
+            "agent": self.config.name,
+        })
         try:
             state = self._build_initial_state(task)
             agent = self._create_agent(self._base_tools)
@@ -675,6 +687,8 @@ class SubagentExecutor:
                 output=str(exc),
                 token_usage_records=collector.snapshot_records() if collector is not None else None,
             )
+        finally:
+            reset_usage_context(_usage_token)
 
         return result_holder
 

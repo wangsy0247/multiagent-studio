@@ -103,18 +103,18 @@ class TestLeadInstructions:
 
     def test_covers_four_phase_workflow(self, lead_agent):
         instructions = lead_agent._get_lead_instructions()
-        for keyword in ("调研", "综合", "委派执行", "验收"):
+        for keyword in ("Research", "Synthesis", "Implementation (delegated)", "Verification"):
             assert keyword in instructions
 
     def test_covers_self_contained_delegation(self, lead_agent):
         instructions = lead_agent._get_lead_instructions()
-        assert "自包含" in instructions
-        assert "看不到你的对话历史" in instructions
+        assert "self-contained" in instructions
+        assert "cannot see your conversation history" in instructions
 
     def test_covers_parallel_and_verifier_separation(self, lead_agent):
         instructions = lead_agent._get_lead_instructions()
-        assert "并行" in instructions
-        assert "唯一验收人" in instructions
+        assert "parallel" in instructions
+        assert "sole verifier" in instructions
 
     def test_member_instructions_unaffected(self, member_agent):
         """coordinator_workflow 只出现在 Lead 指令, Member 指令不含."""

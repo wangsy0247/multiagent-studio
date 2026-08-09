@@ -387,16 +387,16 @@ def format_cards_for_prompt(cards: dict[str, AgentCard]) -> str:
     lines: list[str] = []
     for name, card in cards.items():
         role_icon = "⭐" if card.role == "lead" else "👤"
-        tools_str = ", ".join(card.tools[:10]) if card.tools else "无"
+        tools_str = ", ".join(card.tools[:10]) if card.tools else "none"
         if len(card.tools) > 10:
             tools_str += f" …(+{len(card.tools) - 10})"
-        desc = card.description[:120] if card.description else "无描述"
+        desc = card.description[:120] if card.description else "no description"
         model_short = card.model or "?"
 
         lines.append(
             f"{role_icon} **{card.display_name}** (`{name}`) — {card.role}\n"
-            f"  模型: {model_short} | 工具: {tools_str}\n"
-            f"  描述: {desc}"
+            f"  Model: {model_short} | Tools: {tools_str}\n"
+            f"  Description: {desc}"
         )
 
     return "\n".join(lines)

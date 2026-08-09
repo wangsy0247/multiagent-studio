@@ -164,7 +164,7 @@ class TestReadInboxProtocolRouting:
             # 协议状态机已登记 (与 InboxDrainMiddleware 路径一致)
             assert "req_test_1" in agent._pending_requests
             assert agent._pending_requests["req_test_1"]["type"] == "shutdown"
-            assert "协议" in result
+            assert "protocol" in result
 
         asyncio.run(_test())
 

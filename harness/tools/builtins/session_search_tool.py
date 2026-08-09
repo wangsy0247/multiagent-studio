@@ -34,16 +34,16 @@ _HTTP_TIMEOUT = 30.0
 # 并行总结的最大并发（对齐 hermes auxiliary.session_search.max_concurrency 默认值）
 _SUMMARY_MAX_CONCURRENCY = 3
 
-_SUMMARY_PROMPT = """你是历史会话检索助手。用户当前想查找："{query}"
+_SUMMARY_PROMPT = """You are a history-session retrieval assistant. The user is currently looking for: "{query}"
 
-下面是该用户一个历史会话的内容（围绕命中位置裁剪的对话记录）。
-请总结其中与查找目标最相关的内容，保留关键细节（结论、代码、配置、
-报错信息、具体取值等），不要泛泛而谈。若内容与查找目标无关，直接回答
-"无相关内容"。用 3-8 句话，使用与用户相同的语言。
+Below is the content of one of the user's past sessions (a transcript cropped around the matching positions).
+Summarize the parts most relevant to what the user is looking for, keeping key details (conclusions, code,
+configuration, error messages, specific values, etc.) — do not be generic. If the content is unrelated to the
+search target, answer exactly "No relevant content". Use 3-8 sentences, in the same language as the user.
 
-会话标题：{title}
+Session title: {title}
 
-对话记录：
+Transcript:
 {transcript}"""
 
 
@@ -59,7 +59,7 @@ def _extract_context(state: dict | None, config: RunnableConfig | None) -> dict[
 async def _call_app(path: str, payload: dict) -> dict:
     token = os.getenv("INTERNAL_API_TOKEN", "")
     if not token:
-        raise RuntimeError("会话搜索功能未启用（服务未配置 INTERNAL_API_TOKEN）")
+        raise RuntimeError("Session search is not enabled (INTERNAL_API_TOKEN not configured on the server)")
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.post(
             f"{APP_SERVICE_URL}{path}",
@@ -71,7 +71,7 @@ async def _call_app(path: str, payload: dict) -> dict:
             detail = resp.json().get("detail", resp.text[:200])
         except Exception:
             detail = resp.text[:200]
-        raise RuntimeError(f"会话搜索服务错误 ({resp.status_code}): {detail}")
+        raise RuntimeError(f"Session search service error ({resp.status_code}): {detail}")
     return resp.json()
 
 
@@ -153,7 +153,7 @@ async def _summarize_all(
             return None
         async with semaphore:
             prompt = _SUMMARY_PROMPT.format(
-                query=query, title=sess.get("title") or "(无标题)", transcript=transcript,
+                query=query, title=sess.get("title") or "(untitled)", transcript=transcript,
             )
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             return _strip_think_tags(str(response.content)).strip()
@@ -173,8 +173,8 @@ def _format_results(sessions: list[dict], summaries: list[str | None] | None = N
     blocks = []
     for i, s in enumerate(sessions):
         header = (
-            f"## 会话: {s.get('title') or '(无标题)'}"
-            f" (thread_id: {s['thread_id']}, 命中 {len(s.get('matches') or [])} 处)"
+            f"## Session: {s.get('title') or '(untitled)'}"
+            f" (thread_id: {s['thread_id']}, {len(s.get('matches') or [])} match(es))"
         )
         summary = summaries[i] if summaries and i < len(summaries) else None
         body = summary or s.get("transcript") or ""
@@ -192,29 +192,32 @@ def create_session_search_tool() -> BaseTool:
         config: RunnableConfig = None,  # auto-injected by LangChain at call time
         state: Annotated[dict, InjectedState] = None,  # graph state (user_id)
     ) -> str:
-        """搜索用户的历史会话消息（全文关键词检索，支持中英文）。
+        """Search the user's historical session messages (full-text keyword search, supports Chinese and English).
 
-        命中后由小模型总结会话中与 query 最相关的内容（结论、代码、配置、
-        报错等细节）返回；总结不可用时会返回围绕命中裁剪的原始对话记录。
+        On a hit, a small model summarizes the content most relevant to the query (conclusions, code,
+        configuration, error details, etc.) and returns it; when summarization is unavailable, the raw
+        transcript cropped around the matches is returned instead.
 
-        使用场景: 用户引用之前讨论过的内容（"我们之前说的那个方案"、"上次那个报错"），
-        或需要从历史会话中查找结论、代码、配置时。
+        Use cases: the user references something discussed before ("the plan we talked about earlier",
+        "that error from last time"), or you need to find conclusions, code, or configuration from past sessions.
 
-        使用纪律（必须遵守）:
-        - query 用关键词而非整句；中文可用 2 字以上词语，多个词用空格分隔（AND）
-          或用 OR 连接（如 "广西 OR 桂林"）；英文短语可加引号（如 "docker compose"）
-        - 只搜索历史会话，当前会话已被自动排除
-        - 搜不到时换同义词/更短的关键词重试，不要反复用相同 query
-        - 返回内容若带 "...[earlier/later conversation truncated]..." 标记，
-          说明会话较长只保留了命中附近部分；可用更精确的关键词再搜定位其他部分
+        Usage discipline (must follow):
+        - Use keywords rather than full sentences for query; for Chinese use words of 2+ characters,
+          separate multiple words with spaces (AND) or join them with OR (e.g. "广西 OR 桂林");
+          English phrases can be quoted (e.g. "docker compose")
+        - Only historical sessions are searched; the current session is automatically excluded
+        - When nothing is found, retry with synonyms or shorter keywords; do not repeat the same query
+        - If returned content carries a "...[earlier/later conversation truncated]..." marker,
+          the session is long and only the parts near the matches were kept; search again with more
+          precise keywords to locate other parts
 
         Args:
-            query: 搜索关键词（支持 AND/OR/NOT、引号短语、英文前缀 *）
-            max_sessions: 最多返回几个会话（1-5，默认 3）
+            query: search keywords (supports AND/OR/NOT, quoted phrases, English prefix *)
+            max_sessions: maximum number of sessions to return (1-5, default 3)
         """
         ctx = _extract_context(state, config)
         if not ctx["user_id"]:
-            return "会话搜索不可用：无法确定当前用户。"
+            return "Session search unavailable: cannot determine the current user."
         try:
             data = await _call_app("/api/internal/session-search", {
                 "username": ctx["user_id"],
@@ -223,10 +226,10 @@ def create_session_search_tool() -> BaseTool:
                 "max_sessions": max_sessions,
             })
         except RuntimeError as e:
-            return f"会话搜索失败: {e}"
+            return f"Session search failed: {e}"
         sessions = data.get("sessions") or []
         if not sessions:
-            return "未在历史会话中找到匹配的消息。可尝试更换关键词（更短、同义词或 OR 组合）。"
+            return "No matching messages found in historical sessions. Try different keywords (shorter, synonyms, or OR combinations)."
         summaries = await _summarize_all(sessions, query, ctx["user_id"])
         return _format_results(sessions, summaries)
 

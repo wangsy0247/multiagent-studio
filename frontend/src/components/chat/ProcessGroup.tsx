@@ -62,7 +62,7 @@ const ProcessGroup = React.memo(function ProcessGroup({ messages, isLive }: Proc
     setExpanded((e) => !e);
   };
 
-  // 两段式 (对齐 DeerFlow "只展示最新"): 历史步骤默认折叠为 "已完成 N 步", 最后一步常驻展示
+  // 两段式 ("只展示最新一步"): 历史步骤默认折叠为 "已完成 N 步", 最后一步常驻展示
   const latest = messages[messages.length - 1];
   const history = messages.slice(0, -1);
 

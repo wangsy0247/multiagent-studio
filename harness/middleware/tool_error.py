@@ -53,7 +53,7 @@ class ToolErrorHandlingMiddleware(HarnessAgentMiddleware):
 
         # All retries exhausted — return error ToolMessage instead of raising
         return ToolMessage(
-            content=f"工具执行失败（重试 {self.max_retries} 次后仍失败）: {last_error}",
+            content=f"Tool execution failed (still failing after {self.max_retries} retries): {last_error}",
             tool_call_id=request.tool_call.get("id", ""),
             name=request.tool_call.get("name", "unknown"),
             status="error",

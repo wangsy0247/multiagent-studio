@@ -125,14 +125,12 @@ _setup_lock = threading.Lock()
 
 
 def _load_tool_search_config() -> dict[str, Any]:
-    """读取 config.yaml 的 tool_search 段 (独立实例, 仅初始化时读一次)."""
+    """读取服务器配置的 tool_search 段 (独立实例, 仅初始化时读一次)."""
     try:
-        from pathlib import Path
-
         from harness.config.config_manager import ConfigManager
+        from harness.config.server_config import server_config_path
 
-        config_path = Path(__file__).resolve().parents[1] / "config.yaml"
-        cm = ConfigManager(str(config_path))
+        cm = ConfigManager(str(server_config_path()))
         cm.load()
         cfg = cm.get("tool_search")
         return cfg if isinstance(cfg, dict) else {}
@@ -189,9 +187,10 @@ def get_deferred_prompt_section() -> str:
     listing = "\n".join(names)
     return (
         "<available-deferred-tools>\n"
-        "以下外部工具已延迟加载: 你知道它们存在, 但看不到参数 schema, 不能直接调用。\n"
-        "需要使用时, 先调用 tool_search (关键词搜索, 或 select:工具名 精确选取) 获取完整 schema, "
-        "之后即可正常调用。\n"
+        "The following external tools are deferred: you know they exist, but you cannot see their\n"
+        "parameter schemas and cannot call them directly. When you need one, call tool_search first\n"
+        "(keyword search, or select:<tool_name> for exact selection) to load its full schema, then\n"
+        "you can call it normally.\n"
         f"{listing}\n"
         "</available-deferred-tools>"
     )
@@ -221,8 +220,8 @@ def _build_tool_search_tool(catalog: DeferredToolCatalog, max_results: int) -> B
                     "messages": [
                         ToolMessage(
                             content=(
-                                f"未找到匹配 '{query}' 的延迟加载工具。"
-                                "换个关键词重试, 或用 select:工具名 精确选取。"
+                                f"No deferred tools matched '{query}'. "
+                                "Retry with different keywords, or use select:<tool_name> for exact selection."
                             ),
                             tool_call_id=tool_call_id,
                             name="tool_search",
@@ -234,7 +233,7 @@ def _build_tool_search_tool(catalog: DeferredToolCatalog, max_results: int) -> B
         schemas = [convert_to_openai_function(t) for t in matched]
         names = [t.name for t in matched]
         content = (
-            "以下工具的完整 schema 已加载, 后续可直接调用:\n"
+            "The full schemas of the following tools have been loaded; you can now call them directly:\n"
             + json.dumps(schemas, ensure_ascii=False, indent=2, default=str)
         )
         logger.info("tool_search: query=%r → promoted %s", query, names)
@@ -260,8 +259,8 @@ def _build_tool_search_tool(catalog: DeferredToolCatalog, max_results: int) -> B
         coroutine=tool_search,
         name="tool_search",
         description=(
-            "搜索并加载延迟加载的外部工具 (MCP) 的完整 schema。"
-            "参数 query: 关键词 (regex), 或 'select:工具名1,工具名2' 精确选取。"
-            "搜索成功后这些工具即可直接调用。"
+            "Search and load the full schemas of deferred external tools (MCP). "
+            "Argument query: keywords (regex), or 'select:<tool1>,<tool2>' for exact selection. "
+            "After a successful search, these tools can be called directly."
         ),
     )

@@ -305,7 +305,7 @@ class TeamTaskStore:
                         bad_deps = [d for d in t.dependencies if d in failed_ids]
                         if bad_deps:
                             t.status = TeamTaskStatus.CANCELLED
-                            t.error = f"依赖任务失败/取消: {', '.join(bad_deps)}"
+                            t.error = f"Dependency task failed/cancelled: {', '.join(bad_deps)}"
                             t.updated_at = _now_iso()
                             cancelled.append(t)
                             failed_ids.add(t.id)  # 级联: 取消也是下游的失败原因
@@ -416,11 +416,11 @@ class TeamTaskStore:
                     t.retry_count += 1
                     if t.retry_count < t.max_retries:
                         t.status = TeamTaskStatus.INTERRUPTED
-                        t.error = "上次团队运行中断, 等待原成员恢复"
+                        t.error = "Previous team run was interrupted; waiting for the original member to recover"
                         t.updated_at = _now_iso()
                     else:
                         t.status = TeamTaskStatus.CANCELLED
-                        t.error = f"中断恢复失败: 已达最大重试次数 ({t.max_retries})"
+                        t.error = f"Interrupted recovery failed: max retries reached ({t.max_retries})"
                         t.updated_at = _now_iso()
                     recovered.append(t)
                     changed = True

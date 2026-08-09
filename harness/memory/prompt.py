@@ -318,7 +318,7 @@ def format_related_tasks_for_injection(tasks: list) -> str:
 
     lines = [
         "<task_memory>",
-        "以下是你或其他成员在历史类似任务中的经验，仅供参考:",
+        "Experience from similar past tasks by you or other members, for reference only:",
     ]
     for t in tasks:
         status_icon = "✅" if t.status in ("completed", "approved") else "❌"
@@ -330,15 +330,15 @@ def format_related_tasks_for_injection(tasks: list) -> str:
         # at most 2 pitfalls and 2 discoveries, each truncated to 60 chars
         details: list[str] = []
         for p in t.pitfalls[:2]:
-            details.append(f"踩坑: {p[:60]}")
+            details.append(f"Pitfall: {p[:60]}")
         for d in t.discoveries[:2]:
-            details.append(f"发现: {d[:60]}")
+            details.append(f"Discovery: {d[:60]}")
         if details:
             parts.append("| " + " | ".join(details))
 
         lines.append(" ".join(parts))
 
-    lines.append("(使用 memory_search(task_id=\"...\") 查询完整细节)")
+    lines.append("(Use memory_search(task_id=\"...\") to query full details)")
     lines.append("</task_memory>")
     return "\n".join(lines)
 

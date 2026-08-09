@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// 对齐 DeerFlow useSmoothStreamingContent (markdown-content.tsx):
+// 平滑流式渲染 (useSmoothStreamingContent):
 // 流式中大块增量不一次性砸进 Markdown, 而是在 ~300ms 内按每帧 >= 8 字符渐进揭示
 const SMOOTH_REVEAL_MIN_DELTA = 80;
 const SMOOTH_REVEAL_MIN_CHARS_PER_FRAME = 8;

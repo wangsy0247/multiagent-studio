@@ -76,7 +76,7 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-// ── Phase 7 辅助: 链接协议白名单 (对齐 DeerFlow) ──────────────────
+// ── Phase 7 辅助: 链接协议白名单 ─────────────────────────────────
 // 只放行 http/https/mailto/tel 与相对路径; javascript:/data: 等渲染为禁用纯文本
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
 function isAllowedHref(href: string): boolean {
@@ -363,7 +363,7 @@ export const markdownComponents: Record<string, React.FC<any>> = {
   },
 };
 
-// ── 流式渲染分级 (Phase 1, 对齐 DeerFlow) ──────────────────────────
+// ── 流式渲染分级 (Phase 1) ───────────────────────────────────────
 // 流式生长中的那条 AI 消息: 代码块降级为纯 <pre><code>, 不做语法高亮
 // (高亮是流式期间的主要渲染开销); isLiveStreaming 结束后 React 重渲染
 // 自然切回完整 markdownComponents, 恢复高亮。
@@ -434,7 +434,7 @@ function HumanAttachmentChips({ files }: { files: HumanAttachment[] }) {
 }
 
 // ── 思考过程卡片（折叠）───────────────────────────────────────────
-// 对齐 DeerFlow Reasoning: 流式中展开 + "思考中... Ns" 计时;
+// Reasoning 卡片: 流式中展开 + "思考中... Ns" 计时;
 // 思考结束 1s 后自动收起一次 (hasAutoClosedRef 防重复干预);
 // 历史消息默认收起, 用户手动展开后不再干预
 const ThinkingCard = React.memo(function ThinkingCard({ message }: { message: ChatMessage }) {
@@ -528,7 +528,7 @@ const MessageItem = React.memo(function MessageItem({ message, isLiveStreaming =
   }
 
   if (message.msgType === "tool_call" || message.msgType === "tool_result") {
-    // present_files → 产物文件卡片 (对齐 DeerFlow ArtifactFileList);
+    // present_files → 产物文件卡片;
     // 历史消息 tool_args 缺失/截断导致解析不出 filepaths 时降级为普通工具卡片
     if (
       message.msgType === "tool_call" &&

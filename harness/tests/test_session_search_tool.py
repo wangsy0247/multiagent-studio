@@ -117,7 +117,7 @@ async def test_tool_end_to_end(monkeypatch):
 async def test_tool_requires_user_id():
     tool = create_session_search_tool()
     result = await tool.coroutine(query="x", config=None, state={})
-    assert "无法确定当前用户" in result
+    assert "cannot determine the current user" in result
 
 
 @pytest.mark.asyncio
@@ -128,4 +128,4 @@ async def test_tool_no_hits(monkeypatch):
     monkeypatch.setattr(sst, "_call_app", fake_call_app)
     tool = create_session_search_tool()
     result = await tool.coroutine(query="x", config=None, state={"user_id": "tester"})
-    assert "未在历史会话中找到" in result
+    assert "No matching messages found" in result

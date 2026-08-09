@@ -52,7 +52,8 @@ make run     # 启动全部服务
 1. 创建 conda 环境 `harness`（Python 3.12）并安装后端依赖
 2. 生成根 `.env`（自动填入随机 `JWT_SECRET` / `INTERNAL_API_TOKEN`）
 3. 生成 `harness/.env`，**交互式询问模型 API 配置**
-4. 安装前端依赖
+4. 生成 `harness/config.yaml`（服务器基础设施配置），**交互式询问沙箱类型与记忆开关**
+5. 安装前端依赖
 
 `make run` 依次启动三个服务：
 
@@ -81,6 +82,22 @@ MEMORY_MODEL=      # 记忆事实提取
 ```
 
 修改后重启服务生效。用户 YAML 中即使存在旧 key 也会被服务器配置强制覆盖。
+
+### 服务器基础设施配置（harness/config.yaml）
+
+沙箱、记忆、存储等基础设施选项在首次 `make setup` 时由模板 `harness/config.example.yaml` 生成为 `harness/config.yaml`（服务器本地文件，不纳入 git）。常用项：
+
+```yaml
+sandbox:
+  use: harness.services.local_sandbox_provider:LocalSandboxProvider  # 默认: 本地直接执行
+  # use: harness.services.open_sandbox_provider:OpenSandboxProvider  # Docker 隔离 (需沙箱服务)
+memory:
+  enabled: true   # 记忆功能 (file 后端)
+checkpointer:
+  backend: sqlite # memory | sqlite | postgres
+```
+
+修改后重启 Harness 生效；该文件缺失时自动回退到 example 模板的默认值。
 
 ### 可选集成（harness/.env）
 

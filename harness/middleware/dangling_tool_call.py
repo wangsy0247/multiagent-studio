@@ -84,7 +84,7 @@ class DanglingToolCallMiddleware(HarnessAgentMiddleware):
                 for tc in msg.tool_calls:
                     if tc["id"] in dangling:
                         patched.append(ToolMessage(
-                            content="[工具执行被中断，未返回结果]",
+                            content="[Tool execution was interrupted; no result returned]",
                             tool_call_id=tc["id"],
                             name=tc.get("name", "unknown"),
                             status="error",

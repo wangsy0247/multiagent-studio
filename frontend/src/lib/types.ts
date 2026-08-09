@@ -133,6 +133,9 @@ export interface TokenUsage {
   total_tokens: number;
   cost_usd: number;
   model?: string;
+  cache_hit_tokens?: number;
+  cache_miss_tokens?: number;
+  source?: string;
 }
 
 export interface TodoItem {
@@ -432,8 +435,20 @@ export interface TokenUsageStats {
   total_completion_tokens: number;
   total_tokens: number;
   total_cost_usd: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
   by_model: Record<string, TokenUsage>;
   by_date: Array<{ date: string; tokens: number; cost: number }>;
+  by_source: Array<{
+    source: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cache_hit_tokens: number;
+    cache_miss_tokens: number;
+  }>;
 }
 
 // ===== Agent 对话日志 (对齐后端 agent_logs.py JSONL 格式) =====

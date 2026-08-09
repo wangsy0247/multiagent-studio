@@ -137,7 +137,7 @@ def test_delegate_with_full_spec_creates_structured_task(store):
             "acceptance_criteria": ["pytest 全绿"],
             "priority": "high",
         })
-        assert "已创建并委派任务" in out
+        assert "Created and delegated task" in out
 
         tasks = await store.load_tasks()
         assert len(tasks) == 1
@@ -149,8 +149,8 @@ def test_delegate_with_full_spec_creates_structured_task(store):
         assert t.spec.constraints == ["不得引入新依赖", "遵循现有代码风格"]
         assert t.spec.acceptance_criteria == ["pytest 全绿"]
         # 描述渲染自 spec + 提交要求 (引导 result JSON)
-        assert "[目标]" in t.description
-        assert "[提交要求]" in t.description
+        assert "[Goal]" in t.description
+        assert "[Submission Requirement]" in t.description
         assert "result" in t.description
 
     _run(_test())
@@ -166,14 +166,14 @@ def test_delegate_plain_text_degrades_gracefully(store):
             "description": "帮忙看一下 README 是否最新",
         })
         assert "Error" not in out
-        assert "已创建并委派任务" in out
+        assert "Created and delegated task" in out
 
         tasks = await store.load_tasks()
         assert len(tasks) == 1
         t = tasks[0]
         assert t.spec is None  # 纯文本降级路径不生成 spec
         assert "帮忙看一下 README 是否最新" in t.description
-        assert "[提交要求]" in t.description
+        assert "[Submission Requirement]" in t.description
 
     _run(_test())
 
@@ -222,7 +222,7 @@ def test_task_update_with_result_json(store):
                 "uncertainty": "medium",
             }, ensure_ascii=False),
         })
-        assert "已更新" in out
+        assert "updated" in out
 
         t = await store.get_task(task.id)
         assert t.status == TeamTaskStatus.IN_REVIEW
@@ -292,7 +292,7 @@ def test_task_update_plain_output_still_works(store):
             "status": "completed",
             "output": "旧式纯文本产出",
         })
-        assert "已更新" in out
+        assert "updated" in out
         t = await store.get_task(task.id)
         assert t.result is None
         assert t.output == "旧式纯文本产出"
@@ -385,12 +385,12 @@ def test_spec_render_contains_key_fields():
     )
     text = spec.render()
     for fragment in (
-        "[背景]", "背景信息",
-        "[目标]", "交付目标",
-        "[描述]", "详细描述",
-        "[约束]", "约束甲", "约束乙",
-        "[输出格式]", "Markdown 报告",
-        "[验收标准]", "标准一",
+        "[Background]", "背景信息",
+        "[Goal]", "交付目标",
+        "[Description]", "详细描述",
+        "[Constraints]", "约束甲", "约束乙",
+        "[Output Format]", "Markdown 报告",
+        "[Acceptance Criteria]", "标准一",
     ):
         assert fragment in text
 
@@ -399,8 +399,8 @@ def test_spec_render_light_task_goal_only():
     """轻任务只填 goal 也合法, 渲染只含目标段."""
     spec = TaskSpec(goal="只做一件事")
     text = spec.render()
-    assert "[目标]" in text and "只做一件事" in text
-    assert "[背景]" not in text and "[约束]" not in text
+    assert "[Goal]" in text and "只做一件事" in text
+    assert "[Background]" not in text and "[Constraints]" not in text
     assert not spec.is_empty()
 
 

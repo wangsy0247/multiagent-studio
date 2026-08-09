@@ -5,7 +5,7 @@
  *   - 切换会话时 ChatPanel unmount → 旧的 SSEClient.stop() 导致 agent 停止
  *   - 新方案: 连接在全局 Map 中管理, 组件只做订阅/取消订阅
  *
- * 断线续传 (Phase 3, 对齐 DeerFlow Last-Event-ID 思路):
+ * 断线续传 (Phase 3, Last-Event-ID 思路):
  *   - 每条事件携带后端分配的序号 (SSE `id:` 行), 收到后记录到
  *     sessionStorage (`sse:lastEvent:{threadId}`), 终态时清除;
  *   - 页面刷新后若 thread 仍在运行, 用 resume() 挂接

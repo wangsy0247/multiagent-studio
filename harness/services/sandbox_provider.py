@@ -138,12 +138,13 @@ def _resolve_sandbox_use() -> str:
 
 
 def _load_sandbox_yaml_section() -> dict[str, Any]:
-    """Return the ``sandbox`` section from ``config.yaml`` if it exists."""
-    yaml_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    """Return the ``sandbox`` section from the server config if it exists."""
+    from harness.config.server_config import server_config_path
+
     try:
         from harness.config.config_manager import ConfigManager
 
-        cfg_mgr = ConfigManager(config_path=str(yaml_path))
+        cfg_mgr = ConfigManager(config_path=str(server_config_path()))
         cfg_mgr.load()
         sandbox_cfg = cfg_mgr.get("sandbox", {})
         return sandbox_cfg if isinstance(sandbox_cfg, dict) else {}

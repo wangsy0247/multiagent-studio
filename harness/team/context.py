@@ -47,7 +47,7 @@ class TeamContext:
     def get_member_summary(self) -> str:
         """生成成员摘要文本 (运行时状态), 用于注入 system prompt."""
         if not self.members:
-            return "(无成员)"
+            return "(no members)"
 
         lines: list[str] = []
         for m in self.members:
@@ -59,7 +59,7 @@ class TeamContext:
                 "shutdown": "⚫",
                 "failed": "❌",
             }.get(m.status, "⚪")
-            task_info = f" (当前任务: {m.current_task_id})" if m.current_task_id else ""
+            task_info = f" (current task: {m.current_task_id})" if m.current_task_id else ""
             lines.append(
                 f"- {status_icon} **{m.agent_name}** ({m.role}) — {m.status}{task_info}"
             )
@@ -109,29 +109,29 @@ class TeamContext:
     def get_team_collaboration_rules(self) -> str:
         """返回 Team 协作规则文本."""
         return """<team_collaboration_rules>
-**角色分工:**
-- **Project Lead** 负责: 理解用户目标 → 拆解任务 → 分配 Member → 汇总输出
-- **Member Agent** 负责: 接收任务 → 使用自己的 SOUL + 工具执行 → 更新任务状态 → 报告结果
+**Role split:**
+- **Project Lead** is responsible for: understanding the user goal → breaking down tasks → assigning Members → aggregating output
+- **Member Agent** is responsible for: receiving tasks → executing with its own SOUL + tools → updating task status → reporting results
 
-**任务板使用规则:**
-1. Lead 使用 task_create 创建任务，明确指定标题、描述和分配对象
-2. Member 接收任务后立即使用 task_update 将状态改为 in_progress
-3. Member 完成后使用 task_update 将状态改为 completed 并附上结果
-4. 如执行失败，使用 task_update 将状态改为 failed 并说明原因
+**Task board rules:**
+1. Lead uses task_create to create tasks, clearly specifying title, description and assignee
+2. Member immediately uses task_update to set status to in_progress after receiving a task
+3. Member uses task_update to set status to completed with the result attached when done
+4. If execution fails, use task_update to set status to failed and explain the reason
 
-**通信规则:**
-1. Member 遇到需求不清、工具失败或依赖阻塞时，使用 send_message 向 Lead 提问或报告
-2. Lead 可使用 send_message 向特定 Member 发送私聊指令，或使用 broadcast 向全体 Member 发送通知
-3. Member 之间可使用 send_message 进行领域咨询 (如向具备特定工具的 Member 请求技术帮助)
-4. Member 提交高风险操作计划时，使用 request_plan_approval 向 Lead 请求审批
-5. Lead 收到 plan_approval_request 后，使用 approve_plan 回复审批结果
-6. 禁止在消息中传递大段代码 — 代码应写入文件并通过任务板引用
+**Communication rules:**
+1. When a Member hits unclear requirements, tool failures, or blocked dependencies, use send_message to ask or report to the Lead
+2. Lead can use send_message to send direct instructions to a specific Member, or broadcast to notify all Members
+3. Members can use send_message for domain consultation (e.g. requesting technical help from a Member with specific tools)
+4. When a Member submits a high-risk operation plan, use request_plan_approval to ask the Lead for approval
+5. After receiving a plan_approval_request, Lead replies with the approval result via approve_plan
+6. Do not pass large blocks of code in messages — code should be written to files and referenced via the task board
 
-**约束:**
-1. Member Agent 不能委派任务给成员 Agent，但是可以创建子 Agent 来进行并行完成
-2. 每个任务同一时间只能由一个 Member 执行
-3. 依赖未完成的任务不会被分配给 Member
-4. 单个任务最多重试 3 次，仍失败则标记为 failed 等待 Lead 决策
+**Constraints:**
+1. A Member Agent cannot delegate tasks to other member Agents, but can spawn sub-Agents for parallel work
+2. Each task can only be executed by one Member at a time
+3. Tasks with incomplete dependencies will not be assigned to Members
+4. A single task retries at most 3 times; if it still fails it is marked failed and awaits Lead's decision
 </team_collaboration_rules>"""
 
     # ------------------------------------------------------------------

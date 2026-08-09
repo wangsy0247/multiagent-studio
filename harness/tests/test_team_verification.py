@@ -153,7 +153,7 @@ def test_delegate_explicit_risk_respected_and_locked(store):
             "description": "查询日志",
             "risk": "high",
         })
-        assert "风险等级: high" in out
+        assert "Risk level: high" in out
         await tools["delegate_to_member"].ainvoke({
             "agent_name": "worker",
             "title": "只读查询且显式低危",
@@ -182,7 +182,7 @@ def test_delegate_low_risk_one_way_upgraded(store):
             "description": "在工作区创建文件",
             "risk": "low",
         })
-        assert "已升级" in out
+        assert "upgraded" in out
         t = (await store.load_tasks())[0]
         assert t.risk == "high"
         assert t.risk_locked is False
@@ -205,11 +205,11 @@ def test_delegate_member_check_roster_aware(store):
         out = await by_name["delegate_to_member"].ainvoke({
             "agent_name": "Frontend-Developer", "title": "查询任务",
         })
-        assert "不在当前团队" not in out
+        assert "not in the current team" not in out
         out2 = await by_name["delegate_to_member"].ainvoke({
             "agent_name": "Nobody", "title": "查询任务2",
         })
-        assert "不在当前团队" in out2
+        assert "not in the current team" in out2
         # list_teammates 应列出 standby 成员
         out3 = await by_name["list_teammates"].ainvoke({})
         assert "standby" in out3 and "Frontend-Developer" in out3
@@ -286,7 +286,7 @@ def test_low_risk_no_evidence_fast_track(store):
             "task_id": task.id, "status": "in_review",
             "result": json.dumps({"output": "查询结果汇总"}),
         })
-        assert "已直接完成" in out
+        assert "completed directly" in out
         t = await store.get_task(task.id)
         assert t.status == TeamTaskStatus.COMPLETED
 
@@ -311,7 +311,7 @@ def test_low_risk_evidence_exists_fast_track(store, tmp_paths):
             "task_id": task.id, "status": "in_review",
             "result": json.dumps({"output": "报告已生成", "evidence": ["report.md"]}),
         })
-        assert "已直接完成" in out
+        assert "completed directly" in out
         t = await store.get_task(task.id)
         assert t.status == TeamTaskStatus.COMPLETED
 
@@ -331,7 +331,7 @@ def test_low_risk_evidence_missing_goes_to_review(store, tmp_paths):
             "task_id": task.id, "status": "in_review",
             "result": json.dumps({"output": "报告已生成", "evidence": ["no_such_file.md"]}),
         })
-        assert "证据校验未通过" in out
+        assert "Evidence validation failed" in out
         t = await store.get_task(task.id)
         assert t.status == TeamTaskStatus.IN_REVIEW
 
@@ -555,7 +555,7 @@ def test_verdict_fail_revision_needed(store, tmp_paths):
         assert "第 2 条标准不满足" in t.review_feedback
         # 执行者收到打回通知 (含理由)
         inbox = await bus.read_inbox("worker")
-        assert any("验收不通过" in m.content for m in inbox)
+        assert any("verification rejected" in m.content for m in inbox)
 
     _run(_test())
 
@@ -641,7 +641,7 @@ def test_high_risk_cannot_complete_directly(store):
         out = await tools["task_update"].ainvoke({
             "task_id": task.id, "status": "completed", "output": "搞定了",
         })
-        assert "高风险任务不允许直接标记 completed" in out
+        assert "High-risk tasks cannot be marked completed directly" in out
         assert (await store.get_task(task.id)).status == TeamTaskStatus.IN_PROGRESS
         # 提交 in_review 则放行 (进入验收)
         out2 = await tools["task_update"].ainvoke({

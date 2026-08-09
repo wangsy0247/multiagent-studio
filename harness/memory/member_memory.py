@@ -39,26 +39,26 @@ _KIND_KEYS: dict[str, str] = {
 
 # ── 注入渲染用的中文标签 ──
 _KIND_LABELS: dict[str, str] = {
-    "practices": "实践",
-    "pitfalls": "教训",
-    "domain_notes": "笔记",
+    "practices": "practice",
+    "pitfalls": "pitfall",
+    "domain_notes": "note",
 }
 
 # ── 语义指纹: Jaccard 相似度 ≥ 此阈值视为同类经验 ──
 SIMILARITY_THRESHOLD = 0.6
 
 # ── L3→L1 泛化改写 prompt: LLM 只做泛化, 不得新增事实 ──
-_GENERALIZE_PROMPT = """将以下项目特定的经验改写为跨项目通用的经验。
+_GENERALIZE_PROMPT = """Rewrite the following project-specific experience as a cross-project general lesson.
 
-要求:
-- 去除项目特定的细节 (项目名、具体文件路径、具体业务名词)
-- 抽象为可复用的通用做法或教训
-- 不得新增任何事实, 只能泛化已有内容
-- 使用与原文相同的语言, 一句话, 120 字以内
-- 只输出改写后的文本, 不要任何解释或前后缀
+Requirements:
+- Remove project-specific details (project names, concrete file paths, business-specific terms)
+- Abstract it into a reusable general practice or lesson
+- Do not add any new facts; only generalize the existing content
+- Use the same language as the original; one sentence, within 120 characters
+- Output only the rewritten text, with no explanation, prefix, or suffix
 
-经验类型: {kind}
-原始经验: {text}"""
+Experience kind: {kind}
+Original experience: {text}"""
 
 # ── 注入时每条经验的文本截断长度 ──
 _INJECT_TEXT_MAX = 200
@@ -140,7 +140,7 @@ def extract_lessons_from_task(task: Any) -> list[tuple[str, str]]:
     if status == "failed":
         reason = (task.effective_failure_reason() or "").strip()
         if reason:
-            text = f"任务「{title}」失败: {reason}" if title else reason
+            text = f'Task "{title}" failed: {reason}' if title else reason
             lessons.append(("pitfall", text[:300]))
     elif status in ("completed", "approved"):
         output = (task.effective_output() or "").strip()
@@ -465,9 +465,12 @@ class MemberMemoryStore:
             if llm is None:
                 return ""
         try:
-            response = await llm.ainvoke(
-                _GENERALIZE_PROMPT.format(kind=kind, text=text)
-            )
+            from harness.observability.usage_ledger import usage_context
+
+            with usage_context(source="memory"):
+                response = await llm.ainvoke(
+                    _GENERALIZE_PROMPT.format(kind=kind, text=text)
+                )
             content = getattr(response, "content", response)
             if isinstance(content, list):  # LangChain content blocks
                 content = " ".join(
@@ -523,11 +526,11 @@ class MemberMemoryStore:
             return ""
         scored.sort(key=lambda x: (-x[0], x[2].get("created_at", "")))
 
-        lines = ["<project_memory>", "你在本项目中积累的相关经验:"]
+        lines = ["<project_memory>", "Relevant experience you have accumulated in this project:"]
         for _, key, e in scored[:top_k]:
             text = (e.get("text", "") or "")[:_INJECT_TEXT_MAX]
             reuse = e.get("reuse_count", 0)
-            suffix = f" (复用x{reuse})" if reuse else ""
+            suffix = f" (reused x{reuse})" if reuse else ""
             lines.append(f"- [{_KIND_LABELS.get(key, key)}] {text}{suffix}")
         lines.append("</project_memory>")
         return "\n".join(lines)
@@ -540,7 +543,7 @@ class MemberMemoryStore:
     def get_l1_context(self, agent: str) -> str:
         """返回 L1 全量, 渲染为 ``<member_memory>`` 块 (体量小, 每条截断)."""
         data = self._load_file(self._l1_path(agent))
-        lines = ["<member_memory>", "你跨项目积累的通用经验:"]
+        lines = ["<member_memory>", "General experience you have accumulated across projects:"]
         count = 0
         for key, entries in data.items():
             for e in entries:

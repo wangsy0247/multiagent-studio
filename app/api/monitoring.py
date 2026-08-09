@@ -47,14 +47,28 @@ async def get_trace(
 @router.get("/token-usage")
 async def get_token_usage(
     user_id: Optional[str] = Query(default=None),
+    thread_id: Optional[str] = Query(default=None),
     start_date: Optional[str] = Query(default=None),
     end_date: Optional[str] = Query(default=None),
     model: Optional[str] = Query(default=None),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """获取 Token 使用统计 (强制限定为当前用户, user_id 参数不可越权)"""
     harness = get_harness_client()
     params = {"user_id": current_user.username}
+    if thread_id:
+        # 会话归属校验 — 统计含按会话的明细, 不可越权查看他人会话
+        try:
+            thread_uuid = uuid_mod.UUID(thread_id)
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid thread_id")
+        result = await db.execute(
+            select(Thread).where(Thread.id == thread_uuid, Thread.user_id == current_user.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        params["thread_id"] = thread_id
     if start_date:
         params["start_date"] = start_date
     if end_date:

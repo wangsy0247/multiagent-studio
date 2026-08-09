@@ -242,9 +242,9 @@ combined with a FastAPI gateway for REST API access [citation:FastAPI](https://f
 - Every item in the Sources section MUST be a clickable markdown link with URL
 - Use standard markdown link `[Title](URL) - Description` format (NOT `[citation:...]` format)
 - The `[citation:Title](URL)` format is ONLY for inline citations within the report body
-- ❌ WRONG: `GitHub 仓库 - 官方源代码和文档` (no URL!)
+- ❌ WRONG: `GitHub Repository - official source code and docs` (no URL!)
 - ❌ WRONG in Sources: `[citation:GitHub Repository](url)` (citation prefix is for inline only!)
-- ✅ RIGHT in Sources: `[GitHub Repository](https://github.com/...) - 官方源代码和文档`
+- ✅ RIGHT in Sources: `[GitHub Repository](https://github.com/...) - official source code and docs`
 
 **WORKFLOW for Research Tasks:**
 1. Use web_search to find sources → Extract {{title, url, snippet}} from results
@@ -356,7 +356,7 @@ def _build_language_section() -> str:
             ):
                 if "chinese" in content or "中文" in content:
                     return (
-                        "The user prefers communicating in Chinese (中文). "
+                        "The user prefers communicating in Chinese. "
                         "You MUST think in Chinese and respond in Chinese. "
                         "Use Chinese for all output unless the user explicitly switches languages."
                     )
@@ -376,7 +376,7 @@ def _build_language_section() -> str:
             personal_lower = personal.lower()
             if any(kw in personal_lower for kw in ("chinese", "中文", "mandarin")):
                 return (
-                    "The user prefers communicating in Chinese (中文). "
+                    "The user prefers communicating in Chinese. "
                     "You MUST think in Chinese and respond in Chinese."
                 )
             if "english" in personal_lower:

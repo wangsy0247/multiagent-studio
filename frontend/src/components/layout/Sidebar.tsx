@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban, CalendarClock, Puzzle } from "lucide-react";
+import { Plus, MessageSquare, Search, Settings, Trash2, AlertTriangle, Workflow, Bot, FolderKanban, CalendarClock, Puzzle, BarChart3 } from "lucide-react";
 import { threadsAPI } from "@/lib/api-client";
 import { useChatStore } from "@/lib/chat-store";
 import { useUnreadStore } from "@/lib/unread-store";
@@ -168,6 +168,11 @@ export default function Sidebar() {
               {unreadTotal > 99 ? "99+" : unreadTotal}
             </span>
           )}
+        </button>
+        <button onClick={() => router.push("/monitoring")}
+          className={cn("w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+            pathname.startsWith("/monitoring") ? "bg-hermes-50 text-hermes-700 font-medium" : "text-slate-600 hover:bg-slate-50")}>
+          <BarChart3 className="w-4 h-4 text-slate-400" /> 用量监控
         </button>
       </div>
 

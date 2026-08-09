@@ -209,7 +209,7 @@ class TestToolSearchTool:
         tool = get_deferred_setup().tool_search_tool
         cmd = await tool.coroutine(query="zzz_no_match", tool_call_id="tc-2")
         assert "promoted_tools" not in cmd.update
-        assert "未找到" in cmd.update["messages"][0].content
+        assert "No deferred tools matched" in cmd.update["messages"][0].content
 
     @pytest.mark.asyncio
     async def test_max_results_respected(self, mcp_tools, monkeypatch):

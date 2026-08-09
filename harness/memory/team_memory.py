@@ -184,28 +184,28 @@ class TeamMemoryStore:
         important = [p for p in mem.best_practices
                      if p.get("importance") in ("critical", "high")]
         if important:
-            lines.append("团队最佳实践:")
+            lines.append("Team best practices:")
             for p in important[:5]:
                 lines.append(f"- [{p.get('importance', 'medium')}] {p.get('practice', '')}")
 
         # known pitfalls: top 3 most recent
         if mem.known_pitfalls:
-            lines.append("\n已知的坑:")
+            lines.append("\nKnown pitfalls:")
             for p in mem.known_pitfalls[:3]:
                 affected = p.get("affected", [])
                 if isinstance(affected, list) and affected:
                     affected_str = ", ".join(affected)
-                    lines.append(f"- {p.get('pitfall', '')} (影响: {affected_str})")
+                    lines.append(f"- {p.get('pitfall', '')} (affects: {affected_str})")
                 else:
                     lines.append(f"- {p.get('pitfall', '')}")
 
         # recent runs: last 1-2
         if mem.recent_runs:
-            lines.append("\n最近运行:")
+            lines.append("\nRecent runs:")
             for r in mem.recent_runs[:2]:
                 lines.append(
                     f"- [{r.get('thread_id', '?')}] {r.get('summary', '')} "
-                    f"({r.get('tasks_completed', 0)} 完成, {r.get('tasks_failed', 0)} 失败)"
+                    f"({r.get('tasks_completed', 0)} completed, {r.get('tasks_failed', 0)} failed)"
                 )
 
         lines.append("</team_memory>")

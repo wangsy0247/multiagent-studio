@@ -319,12 +319,59 @@ async def get_trace(
 @router.get("/metrics/token-usage")
 async def get_token_usage(
     user_id: str | None = None,
+    thread_id: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     harness: HarnessService = Depends(get_harness),
 ):
-    """Get token consumption statistics."""
-    return harness.observability.get_token_usage(user_id, start_date, end_date)
+    """Get token consumption statistics (usage ledger — 含旁路调用与缓存命中拆分)。"""
+    from datetime import datetime
+
+    from harness.observability.usage_ledger import get_usage_ledger
+
+    def _to_ts(date_str: str | None, *, end_of_day: bool = False) -> float | None:
+        if not date_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(date_str)
+        except ValueError:
+            return None
+        if end_of_day and len(date_str) == 10:  # 纯日期 → 当天末尾
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt.timestamp()
+
+    agg = get_usage_ledger().aggregate(
+        user_id or "default",
+        thread_id=thread_id,
+        start_ts=_to_ts(start_date),
+        end_ts=_to_ts(end_date, end_of_day=True),
+    )
+    return {
+        # 兼容旧响应形状 (admin 页 / TokenChart 在用)
+        "total_prompt_tokens": agg["prompt_tokens"],
+        "total_completion_tokens": agg["completion_tokens"],
+        "total_tokens": agg["total_tokens"],
+        "total_cost_usd": 0,
+        # 新字段
+        "prompt_tokens": agg["prompt_tokens"],
+        "completion_tokens": agg["completion_tokens"],
+        "cache_hit_tokens": agg["cache_hit_tokens"],
+        "cache_miss_tokens": agg["cache_miss_tokens"],
+        "by_model": {
+            r["model"]: {
+                "prompt_tokens": r["prompt_tokens"],
+                "completion_tokens": r["completion_tokens"],
+                "total_tokens": r["total_tokens"],
+                "cost_usd": 0,
+            }
+            for r in agg["by_model"]
+        },
+        "by_date": [
+            {"date": r["date"], "tokens": r["total_tokens"], "cost": 0}
+            for r in agg["by_date"]
+        ],
+        "by_source": agg["by_source"],
+    }
 
 
 # ---------------------------------------------------------------------------

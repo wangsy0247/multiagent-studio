@@ -33,10 +33,10 @@ function isProcessMessage(msg: ChatMessage): boolean {
     const et = (msg.metadata as Record<string, unknown> | undefined)?.event_type;
     return et !== "team_degrade";
   }
-  return false; // ai 正文 (text/message/clarification 等)
+  return false; // ai 正文 (text/message/clarification 等) — 全部保持可见
 }
 
-/** 把连续的过程消息聚合成折叠组 (Hermes 式"执行过程"分组) */
+/** 把连续的过程消息聚合成折叠组 ("执行过程 · N 步" 分组) */
 function groupMessages(messages: ChatMessage[]): MsgGroup[] {
   const groups: MsgGroup[] = [];
   for (const msg of messages) {
@@ -92,7 +92,7 @@ export default function MessageList({ messages, isStreaming }: MessageListProps)
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
       {groups.map((group, gi) => {
-        // ── 过程消息组: Hermes 式折叠 ("执行过程 · N 步") ──
+        // ── 过程消息组: 自动折叠 ("执行过程 · N 步") ──
         if (group.kind === "process") {
           const isLive = isStreaming && gi === groups.length - 1;
           return (

@@ -151,7 +151,7 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
 
         return {
             "id": str(uuid4()),
-            "question": args.get("question", "请确认"),
+            "question": args.get("question", "Please confirm"),
             "context": args.get("context", ""),
             "options": options,
             "required": args.get("required", False),
@@ -198,9 +198,10 @@ class ClarificationMiddleware(HarnessAgentMiddleware):
         return ToolMessage(
             id=self._stable_message_id(tool_call.get("id", ""), "unattended"),
             content=(
-                "当前为无人值守执行（定时任务），无法向用户提问。"
-                "请根据已有信息自行做出合理决策并继续完成任务，若无法进行判断则进行总结返回，待用户查看时决定。"
-                "不要再次调用 ask_clarification。"
+                "This is an unattended run (scheduled task); the user cannot be asked questions. "
+                "Make a reasonable decision based on the available information and continue the task; "
+                "if you cannot decide, summarize and return so the user can decide when reviewing. "
+                "Do not call ask_clarification again."
             ),
             tool_call_id=tool_call.get("id", ""),
             name="ask_clarification",

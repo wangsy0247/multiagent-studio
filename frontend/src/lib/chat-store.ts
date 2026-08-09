@@ -86,7 +86,83 @@ function _updateMessageMeta(
   );
 }
 
-// ── 渲染节流缓冲 (Phase 1, 对齐 DeerFlow) ──────────────────────────
+/** Remove a metadata key from a message by ID. */
+function _removeMessageMetaKey(
+  messages: ChatMessage[],
+  targetId: string,
+  key: string,
+): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.id !== targetId || !(key in m.metadata)) return m;
+    const metadata = { ...m.metadata };
+    delete metadata[key];
+    return { ...m, metadata };
+  });
+}
+
+// ── 本轮 token 累加器 (R1: 一轮内多次 LLM 调用分项累加, finished 后清零) ──
+function _emptyTurnTokens(): TokenUsage {
+  return {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    cost_usd: 0,
+    cache_hit_tokens: 0,
+    cache_miss_tokens: 0,
+  };
+}
+let _turnTokens: TokenUsage = _emptyTurnTokens();
+
+function _accumulateTurnTokens(t: TokenUsage) {
+  _turnTokens.prompt_tokens += t.prompt_tokens || 0;
+  _turnTokens.completion_tokens += t.completion_tokens || 0;
+  _turnTokens.total_tokens += t.total_tokens || 0;
+  _turnTokens.cache_hit_tokens = (_turnTokens.cache_hit_tokens || 0) + (t.cache_hit_tokens || 0);
+  _turnTokens.cache_miss_tokens = (_turnTokens.cache_miss_tokens || 0) + (t.cache_miss_tokens || 0);
+}
+
+/** 消息是否为可承载 token bar 的 AI 正文气泡 */
+function _isAiTextMessage(m: ChatMessage | undefined): boolean {
+  return !!m && m.role === "ai" && (m.msgType === "text" || m.msgType === "message");
+}
+
+/** 把本轮累计 token 写入指定消息并同步 per-thread 副本 */
+function _writeTurnTokensTo(messageId: string, tokens: TokenUsage | null) {
+  const s = useChatStore.getState();
+  let newMessages = tokens
+    ? _updateMessageMeta(s.messages, messageId, { tokens: { ...tokens } })
+    : _removeMessageMetaKey(s.messages, messageId, "tokens");
+  const tid = s.activeThreadId;
+  useChatStore.setState({
+    messages: newMessages,
+    ...(tid ? { threadMessages: { ...s.threadMessages, [tid]: newMessages } } : {}),
+  });
+}
+
+/**
+ * 把本轮累计 token 写到"当前正在生长的正文气泡"。
+ * 只写 AI 正文 (text/message), 过程消息 (工具/思考/系统/team 状态) 永不写入。
+ */
+function _applyTurnTokensToStreaming() {
+  if (_turnTokens.total_tokens <= 0) return;
+  const s = useChatStore.getState();
+  const msgId = s._streamingMessageId;
+  if (!msgId) return;
+  const msg = s.messages.find((m) => m.id === msgId);
+  if (!_isAiTextMessage(msg)) return;
+  _writeTurnTokensTo(msgId, _turnTokens);
+}
+
+/** 气泡被 tool_call/subagent_start 切断时调用: 移除旧正文气泡上的 token bar */
+function _stripTurnTokensFrom(messageId: string | null) {
+  if (!messageId) return;
+  const msg = useChatStore.getState().messages.find((m) => m.id === messageId);
+  if (!_isAiTextMessage(msg)) return;
+  if (!("tokens" in msg!.metadata)) return;
+  _writeTurnTokensTo(messageId, null);
+}
+
+// ── 渲染节流缓冲 (Phase 1) ───────────────────────────────────────
 // message/thinking 的增量 token 不再逐条 set(), 先写入缓冲, 由 50ms 定时器
 // 批量 flush — React 重渲染从 "每 token 一次" 降为 ~20 次/秒。
 // 结构性事件 (tool_call/finished/...) 到达时先同步 flush, 保证气泡边界语义不变。
@@ -295,6 +371,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         // 以便工具返回后的新 AI 回复创建新消息而不是追加到旧消息;
         // thinking 阶段同时结束, 记录结束时间
         _markThinkingEnd();
+        // 气泡被切断 — 移除过渡正文上的 token bar (bar 只跟随最新正文气泡)
+        _stripTurnTokensFrom(s._streamingMessageId);
         set({ _streamingMessageId: null, _streamingThinkingId: null });
         // 内部跟踪类工具不进消息流 (TODO 状态由 todo_update 的 chips/卡片呈现)
         if (HIDDEN_TOOLS.has(event.tool_name || "")) break;
@@ -322,6 +400,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case "subagent_start": {
         // task 工具调用触发了 subagent — 清除 streaming ID; thinking 阶段同时结束
         _markThinkingEnd();
+        // 气泡被切断 — 移除过渡正文上的 token bar (bar 只跟随最新正文气泡)
+        _stripTurnTokensFrom(s._streamingMessageId);
         set({ _streamingMessageId: null, _streamingThinkingId: null });
         const sName = event.subagent_name || "unknown";
         // 初始化子会话存储
@@ -581,6 +661,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         // team_end 语义上即 run 终止 — 无论后续 finished 是否到达,
         // 都必须解除 streaming 状态, 否则 UI 永远停在 "AI 正在思考..."
         _markThinkingEnd();
+        // 定格本轮 token 到最后一条 AI 正文并清零 (finished 可能不再到达)
+        if (_turnTokens.total_tokens > 0) {
+          const lastId = s._streamingMessageId;
+          if (lastId && _isAiTextMessage(s.messages.find((m) => m.id === lastId))) {
+            _writeTurnTokensTo(lastId, _turnTokens);
+          }
+          _turnTokens = _emptyTurnTokens();
+        }
         set({ isStreaming: false });
         get().addMessage({
           role: "system",
@@ -654,12 +742,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case "token_usage":
         if (event.tokens) {
           get().addTokenUsage(event.tokens);
+          // 轮内累加并实时写入当前正在生长的正文气泡 (R1)
+          _accumulateTurnTokens(event.tokens);
+          _applyTurnTokensToStreaming();
         }
         break;
 
       // ── 错误 / 澄清 / 结束 ───────────────────────────────────────
       case "error":
         _markThinkingEnd();
+        // 流中止 — 丢弃本轮累加值, 避免泄漏到下一轮
+        _turnTokens = _emptyTurnTokens();
         set({
           error: event.content || "执行出错",
           isStreaming: false,
@@ -679,6 +772,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case "clarification":
         _markThinkingEnd();
+        // 澄清暂停 — 丢弃本轮累加值 (澄清气泡不显示 token bar)
+        _turnTokens = _emptyTurnTokens();
         set({ isStreaming: false });
         if (event.request) {
           set({ pendingClarification: event.request });
@@ -704,6 +799,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case "finished":
         _markThinkingEnd();
+        // R1 定格: 把本轮最终累计 token 写到本轮最后一条 AI 正文消息, 然后清零累加器
+        if (_turnTokens.total_tokens > 0) {
+          const lastId = s._streamingMessageId;
+          if (lastId && _isAiTextMessage(s.messages.find((m) => m.id === lastId))) {
+            _writeTurnTokensTo(lastId, _turnTokens);
+          }
+          _turnTokens = _emptyTurnTokens();
+        }
         set({
           isStreaming: false,
           _stopClarificationFn: null,
@@ -730,6 +833,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   clearMessages: () => {
     // 消息即将清空, 缓冲内容直接丢弃 (flush 也无落点)
     _discardPendingAppends();
+    _turnTokens = _emptyTurnTokens();
     set({
       messages: [],
       todos: [],
@@ -755,12 +859,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         completion_tokens: s.cumulativeTokens.completion_tokens + usage.completion_tokens,
         total_tokens: s.cumulativeTokens.total_tokens + usage.total_tokens,
         cost_usd: s.cumulativeTokens.cost_usd + usage.cost_usd,
+        cache_hit_tokens: (s.cumulativeTokens.cache_hit_tokens || 0) + (usage.cache_hit_tokens || 0),
+        cache_miss_tokens: (s.cumulativeTokens.cache_miss_tokens || 0) + (usage.cache_miss_tokens || 0),
       },
     })),
 
   setActiveThread: (threadId) => {
     // 切换线程前 flush 节流缓冲, 让旧线程的残留增量先落进旧 threadMessages
     _flushPendingAppends();
+    // 轮内累加器属于旧线程的流, 一并丢弃
+    _turnTokens = _emptyTurnTokens();
     const s = get();
     const updated: Record<string, ChatMessage[]> = { ...s.threadMessages };
     if (s.activeThreadId) {
@@ -779,7 +887,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       isStreaming: false,
       todos: [],
       tokenUsage: null,
-      cumulativeTokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd: 0 },
+      cumulativeTokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cost_usd: 0, cache_hit_tokens: 0, cache_miss_tokens: 0 },
       error: null,
       pendingClarification: null,
       _streamingMessageId: null,

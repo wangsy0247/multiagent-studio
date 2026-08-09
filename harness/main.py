@@ -141,6 +141,13 @@ from harness.runtime.checkpointer.async_provider import AsyncCheckpointerProvide
 from harness.runtime.events.store import make_event_store
 from harness.runtime.events.store.base import RunEventStore
 from harness.runtime.journal import RunJournal
+from harness.observability.usage_ledger import (
+    SIDE_CHANNEL_RUN_NAMES,
+    extract_usage,
+    get_usage_ledger_callback,
+    set_usage_context,
+    usage_context,
+)
 from harness.runtime.runs.store import make_run_store
 from harness.runtime.runs.store.base import RunStore
 from harness.tools.registry import ToolRegistry
@@ -642,6 +649,8 @@ class HarnessService(_BaseService):
                 max_tokens=max_tokens,
                 request_timeout=30,
                 max_retries=1,
+                stream_usage=True,
+                callbacks=[get_usage_ledger_callback()],
             )
 
         return ChatOpenAI(
@@ -652,6 +661,8 @@ class HarnessService(_BaseService):
             max_tokens=max_tokens,
             request_timeout=120,  # 防止请求挂死 (默认 600s 太长)
             max_retries=2,
+            stream_usage=True,  # 流式末块返回 usage (OpenAI 兼容协议均需显式开启)
+            callbacks=[get_usage_ledger_callback()],
         )
 
     async def _cleanup_stale_worktrees(self) -> None:
@@ -1002,7 +1013,7 @@ class HarnessService(_BaseService):
                     await orch.message_bus.send(TeamMessage(
                         from_agent="user", to_agent=lead.name,
                         msg_type=TeamMessageType.TEXT,
-                        content=f"[用户追加需求] {message}",
+                        content=f"[Additional user requirement] {message}",
                     ))
                     yield {
                         "type": "message_injected",
@@ -1350,6 +1361,15 @@ class HarnessService(_BaseService):
         run_id = str(uuid.uuid4())
         logger.info("Starting run_id=%s thread=%s user=%s", run_id, thread_id, user_id)
 
+        # usage ledger 上下文 — 本次 run 内所有 LLM 调用 (含图内旁路) 据此归因
+        set_usage_context({
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "source": "main",
+            "model": ctx.effective_config.model,
+        })
+
         # Ensure sandbox directories exist
         try:
             get_paths().ensure_thread_dirs(thread_id, user_id=user_id)
@@ -1384,7 +1404,7 @@ class HarnessService(_BaseService):
         # Per-run streaming state
         final_state: dict[str, Any] = {}
         active_subagents: dict[str, str] = {}  # run_id → subagent_name
-        _collected_token_usage: dict[str, Any] = {}
+        _collected_token_usage = TokenUsage()  # 本轮主调用累加 (旁路调用不计入)
         _title_emitted = False  # 防止重复发送 title_update
         interrupted = False  # 技能进化器跳过中断的回合
 
@@ -1540,22 +1560,27 @@ class HarnessService(_BaseService):
                         output: Any = evt_data.get("output")
                         if output is None:
                             continue
-                        usage_meta = (
-                            getattr(output, "usage_metadata", None)
-                            or getattr(output, "response_metadata", {}).get("token_usage", {})
+                        usage = extract_usage(
+                            getattr(output, "usage_metadata", None),
+                            getattr(output, "response_metadata", None),
                         )
-                        if usage_meta:
-                            usage = TokenUsage(
-                                prompt_tokens=usage_meta.get("input_tokens", 0),
-                                completion_tokens=usage_meta.get("output_tokens", 0),
-                                total_tokens=usage_meta.get("total_tokens", 0),
-                                cost_usd=0,
-                            )
-                            _collected_token_usage = usage
-                            await sse_queue.put({
-                                "type": "token_usage", "thread_id": thread_id,
-                                "tokens": usage.model_dump(),
-                            })
+                        if not usage["total_tokens"]:
+                            continue
+                        # 图内旁路调用 (标题/摘要/memory) 只进 usage ledger,
+                        # 不进本轮气泡的实时统计 (避免覆盖主 agent 数据)
+                        if evt_name in SIDE_CHANNEL_RUN_NAMES:
+                            continue
+                        # 累加式: 一轮多次 LLM 调用全部计入
+                        _collected_token_usage = TokenUsage(
+                            prompt_tokens=_collected_token_usage.prompt_tokens + usage["prompt_tokens"],
+                            completion_tokens=_collected_token_usage.completion_tokens + usage["completion_tokens"],
+                            total_tokens=_collected_token_usage.total_tokens + usage["total_tokens"],
+                            cost_usd=0,
+                        )
+                        await sse_queue.put({
+                            "type": "token_usage", "thread_id": thread_id,
+                            "tokens": {**usage, "cost_usd": 0, "source": "main"},
+                        })
 
                     # ── Tool start ──
                     elif kind == "on_tool_start":
@@ -1660,7 +1685,7 @@ class HarnessService(_BaseService):
                             final_state = result
 
                 # ── Post-stream ──
-                if _collected_token_usage and self.observability:
+                if _collected_token_usage.total_tokens and self.observability:
                     self.observability.log_token_usage(trace_id, "", _collected_token_usage)
 
                 suggested_title = final_state.get("suggested_title")
@@ -1936,6 +1961,13 @@ class HarnessService(_BaseService):
             "base_url": ctx.effective_config.base_url,
             "model": ctx.effective_config.model,
         })
+        # usage ledger 上下文 (恢复运行 — 与 execute() 同口径)
+        set_usage_context({
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "source": "main",
+            "model": ctx.effective_config.model,
+        })
         from harness.skills.filter import set_current_enabled_skills
         set_current_enabled_skills(ctx.effective_config.enabled_skills)
         from harness.agents.subagent_manager import set_current_owner
@@ -2017,6 +2049,21 @@ class HarnessService(_BaseService):
                         )
                     if content:
                         yield {"type": "message", "content": str(content), "thread_id": thread_id}
+
+                elif kind == "on_chat_model_end":
+                    output: Any = evt_data.get("output")
+                    if output is None:
+                        continue
+                    usage = extract_usage(
+                        getattr(output, "usage_metadata", None),
+                        getattr(output, "response_metadata", None),
+                    )
+                    if not usage["total_tokens"] or evt_name in SIDE_CHANNEL_RUN_NAMES:
+                        continue
+                    yield {
+                        "type": "token_usage", "thread_id": thread_id,
+                        "tokens": {**usage, "cost_usd": 0, "source": "main"},
+                    }
 
                 elif kind == "on_tool_start":
                     tool_name = evt_name
@@ -2284,12 +2331,14 @@ async def main() -> None:
     from harness.api.server import app
 
     config = load_config()
-    yaml_path = Path(__file__).resolve().parent / "config.yaml"
+    from harness.config.server_config import server_config_path
+
+    yaml_path = server_config_path()
     config_mgr: ConfigManager | None = None
     if yaml_path.exists():
         config_mgr = ConfigManager(config_path=str(yaml_path))
         config_mgr.load()
-        logger.info("Loaded config.yaml from %s", yaml_path)
+        logger.info("Loaded server config from %s", yaml_path)
 
     harness = HarnessService(config, config_manager=config_mgr)
     await harness.initialize(agent_name="default", user_id="default")

@@ -136,17 +136,17 @@ def parse_skill_md(skill_md: str) -> tuple[str, str] | None:
 # LLM 提炼候选技能 (失败返回 None, 调用方跳过不阻断)
 # ──────────────────────────────────────────────────────────────────────────────
 
-SKILL_DISTILL_PROMPT = """将以下经验提炼为一个可复用的技能, 输出严格的 SKILL.md 格式。
+SKILL_DISTILL_PROMPT = """Distill the following experience into a reusable skill, output in strict SKILL.md format.
 
-要求:
-- 第一行开始是 YAML frontmatter (--- 包围), 必须含:
-  name: 小写字母/数字/连字符组成的技能名 (如 api-retry-workflow)
-  description: 一句话说明技能用途
-- frontmatter 之后是 Markdown 正文, 包含: 适用场景 / 步骤 (编号列表) / 注意事项
-- 不得新增经验中没有的事实, 只做结构化提炼
-- 只输出 SKILL.md 内容本身, 不要任何解释或代码块包裹
+Requirements:
+- Start with YAML frontmatter (enclosed by ---), which must contain:
+  name: skill name of lowercase letters/digits/hyphens (e.g. api-retry-workflow)
+  description: one sentence describing what the skill is for
+- After the frontmatter, a Markdown body containing: when to use / steps (numbered list) / caveats
+- Do not add facts not present in the experience; only restructure it
+- Output only the SKILL.md content itself, no explanation or code-block wrapping
 
-经验:
+Experience:
 {lesson}"""
 
 
@@ -187,11 +187,11 @@ def render_evolved_skills_section(records: list[dict[str, Any]]) -> str:
     """
     if not records:
         return ""
-    lines = ["<member_evolved_skills>", "你通过实践进化出的专属技能:"]
+    lines = ["<member_evolved_skills>", "Your own skills evolved through practice:"]
     has_probation = False
     for rec in records:
         state = rec.get("state", STATE_PROBATION)
-        tag = "（试验性，谨慎使用）" if state == STATE_PROBATION else ""
+        tag = " (experimental, use with caution)" if state == STATE_PROBATION else ""
         if state == STATE_PROBATION:
             has_probation = True
         content = (rec.get("content") or "")[:_INJECT_CONTENT_MAX]
@@ -201,9 +201,9 @@ def render_evolved_skills_section(records: list[dict[str, Any]]) -> str:
     if has_probation:
         # 上报约定: member 使用试验性技能后在 task_update 的 result JSON 里回填
         lines.append(
-            "使用试验性技能后, 请在 task_update 的 result JSON 中增加 "
-            'skill_feedback 字段上报使用效果: '
-            '[{"name": "技能名", "success": true|false}]'
+            "After using an experimental skill, report its outcome via the "
+            "skill_feedback field in the task_update result JSON: "
+            '[{"name": "skill-name", "success": true|false}]'
         )
     lines.append("</member_evolved_skills>")
     return "\n".join(lines)
@@ -212,20 +212,20 @@ def render_evolved_skills_section(records: list[dict[str, Any]]) -> str:
 def render_promotion_request(record: dict[str, Any], content: str) -> str:
     """渲染技能转正审批请求内容 (走 plan_approval 通道, Lead 据此审批)."""
     risky = is_risky_skill(content)
-    risk_label = "high (含写操作/命令执行, 需用户确认)" if risky else "low (只读/查询类)"
+    risk_label = "high (involves writes/command execution, requires user confirmation)" if risky else "low (read-only/query)"
     return (
         "<skill_promotion>\n"
-        f"成员 '{record.get('agent', '')}' 的进化技能申请转正:\n"
-        f"  技能名: {record.get('name', '')}\n"
-        f"  使用统计: 成功 {record.get('success_uses', 0)} 次 / "
-        f"失败 {record.get('fail_uses', 0)} 次\n"
-        f"  风险标记: {risk_label}\n"
-        f"  创建时间: {record.get('created_at', '')}\n\n"
-        "技能全文:\n"
+        f"Evolved skill of member '{record.get('agent', '')}' requests promotion:\n"
+        f"  Skill name: {record.get('name', '')}\n"
+        f"  Usage stats: {record.get('success_uses', 0)} succeeded / "
+        f"{record.get('fail_uses', 0)} failed\n"
+        f"  Risk flag: {risk_label}\n"
+        f"  Created at: {record.get('created_at', '')}\n\n"
+        "Full skill content:\n"
         f"{content}\n"
         "</skill_promotion>\n\n"
-        "请按技能转正审批规则处理: 审阅内容与统计后 approve_plan "
-        "(批准→转正, 拒绝→归档); 高风险技能先 ask_clarification 问用户。"
+        "Handle per the skill promotion approval rules: review the content and stats, then approve_plan "
+        "(approve -> promote, reject -> archive); for high-risk skills, ask_clarification the user first."
     )
 
 

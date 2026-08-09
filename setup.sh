@@ -5,10 +5,11 @@
 #   ./setup.sh --non-interactive  非交互 (start.sh 调用; 缺 Key 只警告)
 #
 # 做的事:
-#   1. 根 .env        — 不存在则从 .env.example 生成, 并生成随机 JWT_SECRET
-#   2. harness/.env   — 不存在则从模板生成 (模型 API 由服务器统一配置)
-#   3. Python 依赖    — 缺失才 pip install
-#   4. 前端依赖       — node_modules 不存在才 npm install
+#   1. 根 .env            — 不存在则从 .env.example 生成, 并生成随机 JWT_SECRET
+#   2. harness/.env       — 不存在则从模板生成 (模型 API 由服务器统一配置)
+#   3. harness/config.yaml — 不存在则从 config.example.yaml 生成 (沙箱/记忆等基础设施)
+#   4. Python 依赖        — 缺失才 pip install
+#   5. 前端依赖           — node_modules 不存在才 npm install
 # ============================================
 
 set -e
@@ -58,7 +59,7 @@ echo "=========================================="
 
 # ── 1. 根 .env (app 服务) ──
 echo ""
-echo "[1/4] 检查根 .env (app 服务配置)..."
+echo "[1/5] 检查根 .env (app 服务配置)..."
 if [ ! -f .env ]; then
   cp .env.example .env
   # 生成强随机 JWT_SECRET, 替换弱占位
@@ -77,7 +78,7 @@ fi
 
 # ── 2. harness/.env (模型 API — 服务器统一配置) ──
 echo ""
-echo "[2/4] 检查 harness/.env (模型 API 配置)..."
+echo "[2/5] 检查 harness/.env (模型 API 配置)..."
 if [ ! -f harness/.env ]; then
   cp harness/.env.example harness/.env
   # 同步 INTERNAL_API_TOKEN (app 与 harness 需一致)
@@ -104,9 +105,39 @@ if grep -q "^OPENAI_API_KEY=sk-your-api-key-here" harness/.env 2>/dev/null || ! 
   warn "harness/.env 的 OPENAI_API_KEY 未配置 — LLM 调用将失败, 请编辑后重启"
 fi
 
-# ── 3. Python 依赖 ──
+# ── 3. harness/config.yaml (服务器基础设施配置 — 首次启动生成) ──
 echo ""
-echo "[3/4] 检查 Python 依赖 (conda env: harness)..."
+echo "[3/5] 检查 harness/config.yaml (沙箱 / 记忆 / 存储等基础设施)..."
+if [ ! -f harness/config.yaml ]; then
+  cp harness/config.example.yaml harness/config.yaml
+  if [ "$NON_INTERACTIVE" -eq 0 ] && [ -t 0 ]; then
+    echo ""
+    echo "  沙箱用于隔离执行 agent 的代码/文件操作, 请选择:"
+    echo "    1) LocalSandbox 本地直接执行 (默认, 零依赖)"
+    echo "    2) OpenSandbox  Docker 隔离 (需 Docker / 沙箱服务)"
+    read -r -p "  沙箱类型 [1]: " SANDBOX_CHOICE
+    if [ "${SANDBOX_CHOICE:-1}" = "2" ]; then
+      sed -i 's|^  use: harness\.services\..*:.*Provider|  use: harness.services.open_sandbox_provider:OpenSandboxProvider|' harness/config.yaml
+      info "沙箱: OpenSandbox (Docker 隔离; 服务不可达时自动回退本地)"
+    else
+      info "沙箱: LocalSandbox (本地执行)"
+    fi
+    read -r -p "  是否启用记忆功能 (file 后端) [Y/n]: " MEM_CHOICE
+    if [ "${MEM_CHOICE:-Y}" = "n" ] || [ "${MEM_CHOICE:-Y}" = "N" ]; then
+      sed -i '/^memory:/,/^# --- Summarization ---/ s|^  enabled: True|  enabled: False|' harness/config.yaml
+      info "记忆: 已禁用"
+    else
+      info "记忆: 启用 (file 后端)"
+    fi
+  fi
+  info "已生成 harness/config.yaml (服务器本地配置, 不纳入 git; 模板为 config.example.yaml)"
+else
+  info "harness/config.yaml 已存在, 跳过 (如需重配请编辑该文件)"
+fi
+
+# ── 4. Python 依赖 ──
+echo ""
+echo "[4/5] 检查 Python 依赖 (conda env: harness)..."
 if $PY -c "import fastapi, uvicorn, langchain_openai, langgraph" >/dev/null 2>&1; then
   info "Python 依赖已就绪, 跳过安装"
 else
@@ -115,9 +146,9 @@ else
   info "Python 依赖安装完成"
 fi
 
-# ── 4. 前端依赖 ──
+# ── 5. 前端依赖 ──
 echo ""
-echo "[4/4] 检查前端依赖..."
+echo "[5/5] 检查前端依赖..."
 if [ -d frontend/node_modules ]; then
   info "node_modules 已存在, 跳过安装"
 else

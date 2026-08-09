@@ -59,7 +59,7 @@ interface ArtifactFileListProps {
   message: ChatMessage;
 }
 
-/** present_files 工具调用的产物文件卡片 (对齐 DeerFlow ArtifactFileList) */
+/** present_files 工具调用的产物文件卡片 */
 const ArtifactFileList = React.memo(function ArtifactFileList({ message }: ArtifactFileListProps) {
   const threadId = useChatStore((s) => s.activeThreadId);
   const selectArtifact = useChatStore((s) => s.selectArtifact);

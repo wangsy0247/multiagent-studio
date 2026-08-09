@@ -55,7 +55,7 @@ async def _call_app(method: str, path: str, **kwargs) -> Any:
     """调用 App 内部接口，错误统一转为 RuntimeError 由工具层格式化"""
     token = os.getenv("INTERNAL_API_TOKEN", "")
     if not token:
-        raise RuntimeError("定时任务功能未启用（服务未配置 INTERNAL_API_TOKEN）")
+        raise RuntimeError("Cron feature is not enabled (INTERNAL_API_TOKEN not configured on the server)")
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         resp = await client.request(
             method, f"{APP_SERVICE_URL}{path}",
@@ -66,7 +66,7 @@ async def _call_app(method: str, path: str, **kwargs) -> Any:
             detail = resp.json().get("detail", resp.text[:200])
         except Exception:
             detail = resp.text[:200]
-        raise RuntimeError(f"定时任务服务错误 ({resp.status_code}): {detail}")
+        raise RuntimeError(f"Cron service error ({resp.status_code}): {detail}")
     return resp.json()
 
 
@@ -90,37 +90,38 @@ def cron_tool() -> BaseTool:
         config: RunnableConfig = None,  # auto-injected by LangChain at call time
         state: Annotated[dict, InjectedState] = None,  # graph state (user_id, metadata)
     ) -> str:
-        """Manage scheduled tasks (定时任务) — 让 Agent 按时间表自动执行，无需用户在线。
+        """Manage scheduled tasks (cron jobs) — let the Agent run on a schedule without the user being online.
 
-        使用场景: 用户要求"每天早上 9 点做 X"、"每 30 分钟检查 Y"、"10 分钟后提醒我 Z"。
+        Use cases: the user asks for "do X every day at 9am", "check Y every 30 minutes", "remind me of Z in 10 minutes".
 
-        使用纪律（必须遵守）:
-        - 任务在无人值守的全新会话中执行 — prompt 必须完全自包含，不要引用"当前对话/刚才说的"
-        - 创建前先用 list 检查是否已存在类似任务，避免重复创建
-        - 禁止为定时任务再创建定时任务（递归调度）
-        - update/pause/resume/remove 前必须先 list 获取 job_id
+        Usage discipline (must follow):
+        - Tasks run unattended in a brand-new session — the prompt must be fully self-contained; do not reference "the current conversation / what we just said"
+        - Before creating, use list to check whether a similar task already exists to avoid duplicates
+        - Never create a scheduled task from within a scheduled task (no recursive scheduling)
+        - You must list first to obtain job_id before update/pause/resume/remove
 
-        时间表达三选一（按场景选择，不要自己估算当前时间）:
-        - delay: 相对时长，如 "10m"、"2h"、"1d"、"1h30m"。用户说"N 分钟后/小时后提醒我"时【必须】用它，
-          服务器会基于自己的时钟换算，你无需也无法知道当前时间
-        - cron_expr: 周期任务 5 字段表达式 "分 时 日 月 星期"（如 "0 9 * * *" = 每天 9 点）
-        - run_at: 一次性任务的绝对 ISO 时间（如 "2026-07-20T09:00:00"），仅在用户给出明确日期时间时用
+        Time expression — provide exactly one (choose by scenario; do not estimate the current time yourself):
+        - delay: relative duration, e.g. "10m", "2h", "1d", "1h30m". You MUST use it when the user says
+          "remind me in N minutes/hours" — the server converts it based on its own clock; you neither need
+          nor can know the current time
+        - cron_expr: recurring 5-field cron expression "minute hour day month weekday" (e.g. "0 9 * * *" = every day at 9am)
+        - run_at: absolute ISO time for a one-shot task (e.g. "2026-07-20T09:00:00"); use only when the user gives an explicit date/time
 
         Args:
-            action: create 创建 | list 列出全部 | update 修改 | pause 暂停 | resume 恢复 | remove 删除 | trigger 立即运行一次
-            job_id: 任务 ID（list 返回；update/pause/resume/remove/trigger 必填）
-            name: 任务名称（create 必填）
-            prompt: 到点发给 Agent 的自包含指令（create 必填）
-            cron_expr: 周期任务 cron 表达式（与 run_at/delay 三选一）
-            run_at: 一次性任务绝对触发时间，ISO 格式（与 cron_expr/delay 三选一）
-            delay: 一次性任务相对时长 "30s"/"10m"/"2h"/"1d"/"1h30m"（与 cron_expr/run_at 三选一，推荐用于"N 分钟后"）
-            timezone: cron 所用时区（默认 Asia/Shanghai）
+            action: create | list (all tasks) | update | pause | resume | remove | trigger (run once now)
+            job_id: task ID (returned by list; required for update/pause/resume/remove/trigger)
+            name: task name (required for create)
+            prompt: self-contained instruction sent to the Agent when the task fires (required for create)
+            cron_expr: cron expression for recurring tasks (exactly one of cron_expr/run_at/delay)
+            run_at: absolute trigger time for one-shot tasks, ISO format (exactly one of cron_expr/run_at/delay)
+            delay: relative duration "30s"/"10m"/"2h"/"1d"/"1h30m" (exactly one of cron_expr/run_at/delay; recommended for "in N minutes")
+            timezone: timezone for cron (default: Asia/Shanghai)
         """
         ctx = extract_cron_context(state, config)
         if ctx["unattended"]:
-            return "错误: 当前是无人值守的定时任务执行，禁止创建或修改定时任务（防递归调度）。"
+            return "Error: this is an unattended scheduled-task execution; creating or modifying scheduled tasks is forbidden (prevents recursive scheduling)."
         if not ctx["user_id"]:
-            return "错误: 无法确定任务归属用户（user_id 缺失）。"
+            return "Error: cannot determine the owning user of the task (user_id missing)."
 
         username = ctx["user_id"]
         try:
@@ -132,9 +133,9 @@ def cron_tool() -> BaseTool:
 
             if action == "create":
                 if not name or not prompt:
-                    return "错误: create 需要提供 name 和 prompt。"
+                    return "Error: create requires both name and prompt."
                 if sum(1 for x in (cron_expr, run_at, delay) if x) != 1:
-                    return "错误: cron_expr、run_at、delay 必须且只能提供一个。"
+                    return "Error: exactly one of cron_expr, run_at, or delay must be provided."
                 body: dict[str, Any] = {"username": username, "name": name, "prompt": prompt}
                 if cron_expr:
                     body["cron_expr"] = cron_expr
@@ -148,7 +149,7 @@ def cron_tool() -> BaseTool:
                 return json.dumps({"ok": True, "task": _slim(task)}, ensure_ascii=False, default=str)
 
             if not job_id:
-                return f"错误: {action} 需要 job_id（请先 list 获取）。"
+                return f"Error: {action} requires job_id (use list first to obtain it)."
 
             params = {"username": username}
             if action == "pause" or action == "resume":
@@ -174,13 +175,13 @@ def cron_tool() -> BaseTool:
                 if val is not None:
                     updates[key] = val
             if not updates:
-                return "错误: update 需要提供至少一个待修改字段。"
+                return "Error: update requires at least one field to modify."
             result = await _call_app(
                 "PATCH", f"/api/internal/scheduled-tasks/{job_id}", params=params, json=updates
             )
             return json.dumps(_slim(result), ensure_ascii=False, default=str)
         except Exception as e:
             logger.warning("cron tool %s failed: %s", action, e)
-            return f"错误: {e}"
+            return f"Error: {e}"
 
     return cron

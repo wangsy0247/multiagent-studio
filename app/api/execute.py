@@ -132,6 +132,8 @@ async def _pump_run(
                 if event_type == "clarification":
                     # 澄清暂停: 后端会正常结束流但不发 finished, 必须立即落库,
                     # 否则 session 关闭回滚导致本轮事件全部丢失
+                    # 先冲刷已累积的 AI 文本 — 暂停前的输出用户已经看到, 不能丢
+                    persister.flush()
                     await _persist_clarification(db, thread, thread_uuid, event)
                 else:
                     persister.handle(event_type, event)
@@ -144,6 +146,8 @@ async def _pump_run(
                     persister.finalize()
                     await _set_thread_status(db, thread, "finished")
                 elif event_type == "error":
+                    # 出错前已产生的文本用户已在流式中看到, 一并落库
+                    persister.flush()
                     await _set_thread_status(db, thread, "error")
                 elif event_type == "team_error":
                     # team 失败走 team_error 而非 error, 同样要落库终态,
@@ -151,6 +155,7 @@ async def _pump_run(
                     await _set_thread_status(db, thread, "error")
                 elif event_type == "team_end" and event.get("status") == "cancelled":
                     # 团队任务被取消时不会发 finished, 恢复 idle
+                    persister.flush()
                     await _set_thread_status(db, thread, "idle")
                 elif event_type == "title_update":
                     title_text = event.get("title", "")
@@ -160,10 +165,15 @@ async def _pump_run(
                         await db.commit()
 
         except HarnessUnavailableError:
+            persister.flush()
             await _set_thread_status(db, thread, "error")
             hub.publish(rs, json.dumps({'type': 'error', 'content': 'Harness 服务不可用，请稍后重试', 'status': 'service_unavailable'}))
         except Exception as e:
             logger.exception(f"SSE 泵任务异常: {e}")
+            try:
+                persister.flush()
+            except Exception:
+                logger.exception("泵任务异常后冲刷段落失败")
             try:
                 await _set_thread_status(db, thread, "error")
             except Exception:
@@ -480,14 +490,19 @@ class _StreamPersister:
         self._thread_uuid = thread_uuid
         self._ai_segment = ""
         self._thinking_segment = ""
-        self.token_total = 0
+        # 本轮 token 累加 (分项) — 每次 token_usage 事件累加, 终态写入最后一段
+        self.token_acc = {
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "cache_hit_tokens": 0, "cache_miss_tokens": 0,
+        }
 
-    def _flush_segments(self, token_count: int = 0) -> None:
+    def _flush_segments(self, token_count: int = 0, tokens: dict | None = None) -> None:
         if self._ai_segment.strip():
             self._db.add(Message(
                 thread_id=self._thread_uuid, role="ai",
                 content=self._ai_segment, msg_type="message",
-                extra_metadata={}, token_count=token_count,
+                extra_metadata={"tokens": tokens} if tokens else {},
+                token_count=token_count,
             ))
         self._ai_segment = ""
         if self._thinking_segment.strip():
@@ -539,11 +554,26 @@ class _StreamPersister:
             self._db.add(_build_team_message(self._thread_uuid, event_type, event))
         elif event_type == "token_usage":
             tokens = event.get("tokens", {})
-            self.token_total = tokens.get("total_tokens", 0) if isinstance(tokens, dict) else 0
+            if isinstance(tokens, dict):
+                for k in self.token_acc:
+                    self.token_acc[k] += int(tokens.get(k, 0) or 0)
+
+    def flush(self) -> None:
+        """非 finished 终态 (澄清暂停/错误/取消) — 冲刷已累积段落, 不回填 token。
+
+        用户在流式期间已经看到这些文本, 若不落库, 刷新后即"消失"。
+        """
+        self._flush_segments()
 
     def finalize(self) -> None:
         """终态 (finished) — 冲刷最后一个段落并回填 token 数."""
-        self._flush_segments(token_count=self.token_total)
+        tokens = (
+            {**self.token_acc, "cost_usd": 0}
+            if self.token_acc["total_tokens"] else None
+        )
+        self._flush_segments(
+            token_count=self.token_acc["total_tokens"], tokens=tokens,
+        )
 
 
 async def _persist_clarification(db: AsyncSession, thread: Thread, thread_uuid, event: dict) -> None:

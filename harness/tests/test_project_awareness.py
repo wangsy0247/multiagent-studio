@@ -113,7 +113,7 @@ class TestProjectsIndexInjection:
             reminder, _ = mw._build_full_reminder(user_id=USER)
         finally:
             set_memory_config(old_cfg)
-        assert "共 5 个项目" in reminder
+        assert "5 projects in total" in reminder
         # 只显示前 2 个项目
         assert reminder.count("(id: p") == 2
 
@@ -153,7 +153,7 @@ class TestFormatProjectsIndex:
         block = format_projects_index([
             {"id": "p1", "name": "A", "members": [{"name": "coder"}]},
         ])
-        assert "成员: coder" in block
+        assert "members: coder" in block
 
 
 # ── project_info 工具 ──────────────────────────────────────────────────────

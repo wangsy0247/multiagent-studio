@@ -101,7 +101,7 @@ def list_projects(user_id: str) -> list[dict[str, Any]]:
 def _format_member_names(members: Any) -> str:
     """members 兼容两种形态: ["agent_a", ...] 或 [{"name": ...}, ...]."""
     if not isinstance(members, list) or not members:
-        return "无"
+        return "none"
     names: list[str] = []
     for m in members:
         if isinstance(m, dict):
@@ -130,13 +130,13 @@ def format_projects_index(
         line = f"- {name} (id: {pid})"
         if desc:
             line += f" — {desc}"
-        line += f" | 成员: {_format_member_names(p.get('members'))}"
+        line += f" | members: {_format_member_names(p.get('members'))}"
         lines.append(line)
 
     if total > len(shown):
         lines.append(
-            f"(共 {total} 个项目, 仅显示前 {len(shown)} 个; "
-            f"可用 project_info 工具查看具体项目)"
+            f"({total} projects in total, showing the first {len(shown)}; "
+            f"use the project_info tool to view a specific project)"
         )
 
     return "<projects>\n" + "\n".join(lines) + "\n</projects>"
